@@ -384,3 +384,4 @@ build/
 client_secret*
 service_account*
 .planning/
+.planning
