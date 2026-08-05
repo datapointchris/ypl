@@ -45,6 +45,19 @@ class Chapter:
 
 
 @dataclass
+class PlaylistRef:
+    """A playlist YouTube says you have, before anything has been read of it.
+
+    What listing an account returns: enough to name it and to go and mirror it,
+    and nothing more. Distinct from `RemotePlaylist`, whose empty `videos` would
+    otherwise be indistinguishable from a playlist that really is empty.
+    """
+
+    playlist_id: str
+    title: str
+
+
+@dataclass
 class RemotePlaylist:
     playlist_id: str
     title: str

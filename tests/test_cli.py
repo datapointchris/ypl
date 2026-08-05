@@ -24,6 +24,7 @@ from ypl import ytdlp
 from ypl import ytmusic
 from ypl.main import app
 from ypl.models import Chapter
+from ypl.models import PlaylistRef
 from ypl.models import RemotePlaylist
 from ypl.models import RemoteVideo
 from ypl.remote import RemoteItem
@@ -1256,3 +1257,70 @@ def test_a_browser_yt_dlp_cannot_read_names_the_browser(signing_in, monkeypatch)
     result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
     assert result.exit_code == 1
     assert 'safari' in result.output
+
+
+@pytest.fixture
+def account(monkeypatch):
+    """Two playlists on YouTube, listed the way the account feed lists them."""
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_account_playlists',
+        lambda browser, **kwargs: [PlaylistRef(playlist_id='PLa', title='Deep Night'), PlaylistRef(playlist_id='PLb', title='Art')],
+    )
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_playlist',
+        lambda url, **kwargs: RemotePlaylist(
+            playlist_id=url,
+            title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
+            videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
+        ),
+    )
+
+
+def test_a_bare_sync_mirrors_the_whole_account(account):
+    """No hunting for URLs: signing in is enough to say what you have."""
+    result = runner.invoke(app, ['sync', '--browser', 'safari', '--json'])
+    assert result.exit_code == 0
+    assert [row['title'] for row in json.loads(result.stdout)] == ['Deep Night', 'Art']
+
+    listed = json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)
+    assert {row['title'] for row in listed} == {'Deep Night', 'Art'}
+
+
+def test_the_configured_browser_is_the_default_for_a_bare_sync(account):
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text('cookies_from_browser = "firefox"\n')
+    assert runner.invoke(app, ['sync', '--json']).exit_code == 0
+
+
+def test_a_bare_sync_with_no_browser_anywhere_says_what_to_do(account):
+    result = runner.invoke(app, ['sync'])
+    assert result.exit_code == 2
+    assert '--browser' in result.output
+
+
+def test_one_unreadable_playlist_does_not_cost_the_others_their_sync(account, monkeypatch):
+    """A collaborative list gone private must not end the run."""
+
+    def fetch(url, **kwargs):
+        if url == 'PLa':
+            raise ytdlp.YtdlpFailedError('ERROR: [youtube:tab] PLa: Playlist does not exist')
+        return RemotePlaylist(playlist_id=url, title='Art', videos=[RemoteVideo(video_id='vid1', title='A Mix')])
+
+    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
+
+    result = runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert result.exit_code == 0
+    assert 'Skipped Deep Night' in result.output
+    assert [row['title'] for row in json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)] == ['Art']
+
+
+def test_a_limited_sync_stops_where_it_was_told(account):
+    result = runner.invoke(app, ['sync', '--browser', 'safari', '--limit', '1', '--json'])
+    assert len(json.loads(result.stdout)) == 1
+
+
+def test_syncing_one_playlist_by_url_still_works(synced):
+    """The account sweep is the new default, not a replacement."""
+    assert runner.invoke(app, ['playlists', 'show', 'Get Insights']).exit_code == 0

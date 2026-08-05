@@ -299,18 +299,67 @@ def video_ids_from_stdin_or_exit() -> list[str]:
     return video_ids_or_exit([line for line in sys.stdin.read().splitlines() if line.strip()])
 
 
+def sync_account_or_exit(connection: sqlite3.Connection, browser: str, limit: int | None, quiet: bool) -> service.AccountSync:
+    def announce(reference) -> None:
+        if not quiet:
+            messages.print(f'  {reference.title}')
+
+    try:
+        return service.sync_account(connection, browser, limit=limit, on_playlist=announce)
+    except ytdlp.YtdlpUnavailableError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+    except ytdlp.YtdlpFailedError as error:
+        messages.print('[red]Could not list your playlists.[/red] Is that browser signed in to YouTube?')
+        messages.print(str(error))
+        raise typer.Exit(1) from error
+
+
 @app.command('sync', rich_help_panel=SYNCING)
 def sync(
-    url: str = typer.Argument(..., help='Playlist URL or id. A playlist enters the mirror this way; after that its title works.'),
+    url: str = typer.Argument(None, help='Playlist URL or id. Every playlist in your account when omitted.'),
+    browser: str = typer.Option(None, '--browser', '-b', help='Browser whose YouTube session to borrow. Defaults to cookies_from_browser.'),
+    limit: int = typer.Option(None, '--limit', '-n', help='Mirror at most this many playlists.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
-    """Mirror a playlist's contents locally.
+    """Mirror your playlists locally.
 
-    One request for the whole playlist however long it is, and no API quota.
-    Re-running picks up additions, removals and reordering.
+    With no URL this is your whole account: one request lists the playlists you
+    have, then one more mirrors each of them. Both are yt-dlp reads, so a
+    library of any size costs no API quota — which is why syncing everything is
+    the default rather than something to ration.
+
+    Listing an account needs a browser session, the same one private playlists
+    already need. A single playlist by URL needs nothing if it is public.
     """
     settings = load_config_or_exit()
     connection = db.connect()
+
+    if url is None:
+        source = browser or settings.cookies_from_browser
+        if not source:
+            messages.print('[red]Nothing to sync from.[/red] Give a playlist URL, or name a browser to read your account:')
+            messages.print('  [bold]ypl sync --browser safari[/bold]')
+            messages.print('  [bold]ypl config init[/bold] then set [bold]cookies_from_browser[/bold] to make it the default')
+            raise typer.Exit(2)
+
+        if not as_json:
+            messages.print('Reading your playlists...')
+        result = sync_account_or_exit(connection, source, limit, quiet=as_json)
+        if as_json:
+            print_json(
+                [
+                    {'playlist_id': playlist.playlist_id, 'title': playlist.title, 'video_count': len(playlist.videos)}
+                    for playlist in result.synced
+                ]
+            )
+            return
+        messages.print(f'Synced [bold]{len(result.synced)}[/bold] playlists, {result.video_count} videos')
+        for reference, reason in result.failures:
+            messages.print(f'[yellow]Skipped {reference.title}[/yellow] ({reference.playlist_id}): {reason}')
+        messages.print('Next: [bold]ypl enrich[/bold] to pull tracklists')
+        return
+
     try:
         playlist = service.sync_playlist(connection, url, cookies_from_browser=settings.cookies_from_browser)
     except ytdlp.YtdlpUnavailableError as error:

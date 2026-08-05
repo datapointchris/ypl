@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 from ypl.models import Chapter
+from ypl.models import PlaylistRef
 from ypl.models import RemotePlaylist
 from ypl.models import RemoteVideo
 from ypl.models import watch_url
@@ -30,6 +31,10 @@ COOKIE_DOMAIN = 'youtube.com'
 # A host that cannot resolve, so the cookie export happens and the run then
 # stops without a request. Any real URL would download a page to no purpose.
 UNRESOLVABLE_URL = 'https://cookies.invalid/'
+
+# The signed-in account's own playlists. Not the Music library, which is a
+# different list — see `fetch_account_playlists`.
+ACCOUNT_PLAYLISTS_URL = 'https://www.youtube.com/feed/playlists'
 
 
 class YtdlpUnavailableError(RuntimeError):
@@ -93,6 +98,28 @@ def browser_cookies(browser: str, domain: str = COOKIE_DOMAIN, timeout_seconds: 
         # Google's session cookies are exactly the ones that matter here.
         jar.load(ignore_discard=True, ignore_expires=True)
         return {cookie.name: cookie.value or '' for cookie in jar if domain in (cookie.domain or '')}
+
+
+def fetch_account_playlists(cookies_from_browser: str, timeout_seconds: int = 300) -> list[PlaylistRef]:
+    """Every playlist the signed-in account has, in one flat request.
+
+    Read from YouTube's own playlists feed rather than from the YouTube Music
+    library, because they are not the same list: a library call on this account
+    returns one podcast queue while the feed returns the forty-odd playlists
+    actually saved. Music's library is a view of Music, and the playlists worth
+    mirroring were made on YouTube.
+
+    Needs a browser session — the feed is per-account and returns nothing
+    without one, which is the same cookie already needed to read any private
+    playlist.
+    """
+    arguments = ['--flat-playlist', '--dump-single-json', *cookie_arguments(cookies_from_browser), ACCOUNT_PLAYLISTS_URL]
+    payload = json.loads(run(arguments, timeout_seconds))
+    return [
+        PlaylistRef(playlist_id=entry['id'], title=entry.get('title') or entry['id'])
+        for entry in payload.get('entries') or []
+        if entry.get('id')
+    ]
 
 
 def fetch_playlist(url: str, cookies_from_browser: str | None = None, timeout_seconds: int = 600) -> RemotePlaylist:

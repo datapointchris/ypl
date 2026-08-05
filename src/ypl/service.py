@@ -10,6 +10,7 @@ stores can say which — or refuse when the answer is both.
 
 import random
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC
@@ -24,6 +25,7 @@ from ypl import remote
 from ypl import tracklist
 from ypl import ytdlp
 from ypl.local import LocalPlaylist
+from ypl.models import PlaylistRef
 from ypl.models import RemotePlaylist
 from ypl.models import Track
 from ypl.remote import Backend
@@ -116,6 +118,49 @@ def sync_playlist(connection: sqlite3.Connection, url: str, cookies_from_browser
             [(playlist.playlist_id, video.video_id, position) for position, video in enumerate(playlist.videos, start=1)],
         )
     return playlist
+
+
+@dataclass
+class AccountSync:
+    """What mirroring a whole account managed and what it could not.
+
+    Failures are collected rather than raised: one playlist YouTube will not
+    serve — a collaborative list whose owner made it private, a region-locked
+    one — must not cost the other forty their sync. What it cannot read it
+    names at the end.
+    """
+
+    synced: list[RemotePlaylist] = field(default_factory=list)
+    failures: list[tuple[PlaylistRef, str]] = field(default_factory=list)
+
+    @property
+    def video_count(self) -> int:
+        return sum(len(playlist.videos) for playlist in self.synced)
+
+
+def sync_account(
+    connection: sqlite3.Connection,
+    cookies_from_browser: str,
+    limit: int | None = None,
+    on_playlist: Callable[[PlaylistRef], None] | None = None,
+) -> AccountSync:
+    """Mirror every playlist the account has.
+
+    Two requests deep: one to list the account's playlists, then one per
+    playlist for its contents. Both are yt-dlp reads, so a whole library costs
+    no quota — which is what makes syncing everything the sane default rather
+    than an indulgence.
+    """
+    result = AccountSync()
+    references = ytdlp.fetch_account_playlists(cookies_from_browser)
+    for reference in references[:limit] if limit else references:
+        if on_playlist:
+            on_playlist(reference)
+        try:
+            result.synced.append(sync_playlist(connection, reference.playlist_id, cookies_from_browser))
+        except ytdlp.YtdlpFailedError as error:
+            result.failures.append((reference, str(error).splitlines()[-1] if str(error) else 'unreadable'))
+    return result
 
 
 def store_tracks(connection: sqlite3.Connection, video_id: str, tracks: list[Track]) -> None:

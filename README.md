@@ -37,12 +37,19 @@ Needs [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and, for playback, [`mpv`](ht
 ## Use
 
 ```bash
-ypl sync 'https://www.youtube.com/playlist?list=...'   # mirror a playlist locally
+ypl sync --browser safari                              # mirror every playlist in your account
+ypl sync 'https://www.youtube.com/playlist?list=...'   # or just one, by URL
 ypl enrich --playlist 'Deep Night' --limit 50          # pull tracklists, resumably
 ypl playlists list                                     # everything, mirrored and local
 ypl playlists show 'Deep Night'                        # the videos in one
 ypl videos show <id>                                   # its tracklist with timestamps
 ```
+
+A bare `ypl sync` mirrors the whole account: one request lists the playlists you have, then one
+more mirrors each. Both are yt-dlp reads, so a library of any size costs no quota. Listing an
+account needs a browser session — `--browser`, or `cookies_from_browser` in the config to make it
+the default. Note that this reads YouTube's own playlists feed rather than the YouTube Music
+library, which is a different and usually much shorter list.
 
 A playlist is named by its title — a partial title works when it is unambiguous.
 
