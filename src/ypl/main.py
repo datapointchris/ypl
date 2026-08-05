@@ -109,10 +109,18 @@ Examples:
   ypl remote apply --limit 5                      a drain on a timer
 """
 
+# Says "click something" because the Network tab only records while it is open,
+# and Music is a single-page app that makes no requests at all once it has
+# loaded — a panel opened on an idle page stays empty however it is filtered,
+# which reads as the instructions being wrong rather than the page being quiet.
 AUTH_INSTRUCTIONS = """\
-Sign in at [bold]music.youtube.com[/bold], then in DevTools open the Network tab
-and filter for [bold]browse[/bold]. Click a POST request, copy the whole Request
-Headers block, paste it below, and press Ctrl-D.
+Sign in at [bold]music.youtube.com[/bold] and open DevTools on the Network tab.
+It only records while it is open, so click something — Library, or any playlist
+— to make the page talk.
+
+Filter for [bold]/youtubei/[/bold] and pick any POST; they all carry the same
+credentials. Copy its whole Request Headers block — in Chrome, [bold]view
+source[/bold] for the raw form — then paste it below and press Ctrl-D.
 """
 
 READING = 'Reading (the local mirror)'

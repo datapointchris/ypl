@@ -208,8 +208,10 @@ ypl remote auth                    # paste the headers, Ctrl-D
 pbpaste | ypl remote auth          # or pipe them in
 ```
 
-Sign in at [music.youtube.com](https://music.youtube.com), open DevTools → Network, filter for
-`browse`, click a POST request and copy the whole Request Headers block. They are stored at
+Sign in at [music.youtube.com](https://music.youtube.com) and open DevTools on the Network tab. It
+records only while it is open and Music makes no requests once it has loaded, so click something —
+Library, or any playlist — before expecting to see anything. Then filter for `/youtubei/`, pick any
+POST (they all carry the same credentials) and copy its whole Request Headers block. They are stored at
 `$XDG_CONFIG_HOME/ypl/ytmusic.json`, mode 0600 — the cookie in there is the entire credential, so
 treat the file as the password it is. `ypl remote auth` then asks YouTube whose account it reaches
 and prints the answer, because a paste that parses is not yet a session that works; one YouTube
