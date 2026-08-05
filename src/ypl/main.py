@@ -76,7 +76,14 @@ app.add_typer(config_app, name='config', rich_help_panel=ADMIN)
 # Data goes to stdout and nothing else does, so a caller parsing --json never
 # has to strip a warning line out of the payload first.
 console = Console(highlight=False)
-messages = Console(stderr=True, highlight=False)
+
+# soft_wrap because messages carry paths, playlist ids and video ids, and Rich's
+# default hard wrap inserts a real newline at the terminal width — mid-token.
+# A path broken as `.../ypl/config\n.toml` cannot be copied, which defeats the
+# only reason it was printed. Letting the terminal wrap instead keeps the token
+# intact on the clipboard. Tables keep the wrapping console; their columns
+# handle width themselves.
+messages = Console(stderr=True, highlight=False, soft_wrap=True)
 
 UPDATE_CONFIG = UpdateConfig(tool='ypl', owner='datapointchris')
 

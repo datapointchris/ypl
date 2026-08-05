@@ -168,6 +168,22 @@ def test_unparseable_config_is_a_usage_error_naming_the_file():
     assert 'config.toml' in result.output
 
 
+def test_a_narrow_terminal_does_not_break_a_path_across_lines(monkeypatch):
+    """Rich's default hard wrap inserted a newline mid-filename.
+
+    A path printed as `.../ypl/config\\n.toml` reads fine and pastes broken,
+    which is the whole point of printing it. Pinned at a width narrower than any
+    real path, because CI is where this surfaced and CI has no terminal.
+    """
+    monkeypatch.setenv('COLUMNS', '40')
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text('nope = = nope')
+
+    result = runner.invoke(app, ['config', 'show'])
+    assert result.exit_code == 2
+    assert str(paths.config_file()) in result.output
+
+
 def test_a_nonsense_batch_size_is_rejected_rather_than_used():
     paths.config_file().parent.mkdir(parents=True, exist_ok=True)
     paths.config_file().write_text('enrich_batch_size = 0')
