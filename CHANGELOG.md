@@ -1,6 +1,62 @@
 # CHANGELOG
 
 
+## v0.10.0 (2026-08-05)
+
+### Bug Fixes
+
+- **db**: Let a reader in while the background sync writes
+  ([`4a6a05e`](https://github.com/datapointchris/ypl/commit/4a6a05ef9e4be378ce9bac4d9f8240e44ba0e82d))
+
+The mirror had one writer and it was always the person typing. Now a timer spends most of a run
+  writing enrichment rows, and under the default journal `ypl playlists show` blocks behind it and
+  fails after five seconds — a command failing in your face because of a process nobody asked to
+  start.
+
+WAL, so a reader carries on against the last committed state, and a busy timeout long enough to
+  outlast a write rather than Python's five seconds. A tracklist arriving a minute later costs
+  nothing; a command that will not answer costs the whole point of running this unattended.
+
+### Features
+
+- **sync**: One command that runs itself, in both directions
+  ([`7b54481`](https://github.com/datapointchris/ypl/commit/7b5448116e56cb9dd8fd9ecc84c243514718cae9))
+
+Syncing was four commands in a fixed order — sync, adopt, pull, apply — plus enrich, and a sync you
+  have to drive is one that silently stops happening. `ypl sync` is now the whole loop, `ypl
+  schedule install` runs it at startup and on an interval, and `ypl status` is how you find out
+  whether it is working.
+
+The order is what makes it cheap. The mirror read costs no quota and is also the change detector, so
+  a playlist whose mirror still matches its file is never read through the write client — a library
+  where nothing moved overnight spends no write requests at all. Reconciling precedes pushing
+  because a push against a stale base refuses by design. Enrichment is last: it is the only
+  unbounded step, and the only one where stopping early costs nothing.
+
+Work is a queue derived on every run rather than stored, for the reason the push queue is: what is
+  owed is a fact about the files, the bases and the mirror, and a written-down copy is a second
+  answer that can disagree. It is ordered by what you would notice missing — a wrong local file
+  first, an edit that has not landed second, a playlist that has never been here third.
+
+One budget covers every action, priced by what each costs: a read is 1, a write 5, a playlist
+  creation 25, since that is the only endpoint with a limit anyone has measured. A run stops when
+  the budget is spent and the next one continues, which is safe only because every step re-derives
+  its own remaining work.
+
+Two failure modes that only appear once nobody is watching:
+
+- A playlist deleted here would be re-adopted by the next run, so the deletion is recorded in
+  `declined.json` — data, since nothing can rebuild an intention. - A video that will never extract
+  would be retried every run forever, so a full extraction saying it is gone is recorded in a new
+  `enrich_failures` table. A table rather than a flag on `videos` because a new table reaches an
+  existing mirror, and because `is_unavailable` is what the flat listing says and sync rewrites it
+  every run.
+
+Enrichment is ordered by playlists that live here before the rest of the mirror, so `Liked videos`
+  at five thousand entries cannot swallow days of budget ahead of the playlists that actually get
+  played.
+
+
 ## v0.9.0 (2026-08-05)
 
 ### Features
