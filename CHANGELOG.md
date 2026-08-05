@@ -1,6 +1,36 @@
 # CHANGELOG
 
 
+## v0.12.3 (2026-08-05)
+
+### Bug Fixes
+
+- **sync**: Leave the playlists Music will not serve out of it
+  ([`a8da618`](https://github.com/datapointchris/ypl/commit/a8da618419ce9f3e64bfa4addaff2e9270b478ff))
+
+The first real run against the account failed on 23 of its 42 playlists, every one of them the same
+  way: `Unable to find 'contents'`. It is not the session — that run reported `signed_in: true`, 16
+  playlists reconciled through the same client, and the response YouTube does return carries
+  `logged_in: 1` and `has_unlimited_entitlement: True`.
+
+It is privacy. Measured on the account: `BE HAPPY`, `Meditation` and `Yoga` read `availability:
+  public` and adopt fine; `Art` and `Computers` report no availability at all — private — and
+  YouTube Music answers a browse for either with a page holding a responseContext, a trackingParams
+  and nothing else. No contents, no error, for the owner with a live session. So a non-public
+  playlist cannot take part in the remote half at all, and one adopted before it went private can no
+  longer be reconciled or pushed either, which is why this filters all three rather than only the
+  sweep.
+
+Left out rather than attempted, and reported as a standing fact rather than a failure, for the
+  reason `skipped` already exists: nothing here can change it, so a run that called it a failure
+  would report the same 23 playlists every half hour for as long as the timer runs — and did, on top
+  of burying the counts `ypl status` exists to show.
+
+Decided from the mirror sweep that just ran rather than from a stored column: yt-dlp reports
+  `availability` on the same free request the mirror already makes, so this costs no request, needs
+  no re-sync, and re-answers itself the moment a playlist's privacy changes on YouTube.
+
+
 ## v0.12.2 (2026-08-05)
 
 ### Bug Fixes

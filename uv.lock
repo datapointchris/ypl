@@ -597,7 +597,7 @@ wheels = [
 
 [[package]]
 name = "ypl"
-version = "0.12.2"
+version = "0.12.3"
 source = { editable = "." }
 dependencies = [
     { name = "pyselfupdate", extra = ["typer"] },
