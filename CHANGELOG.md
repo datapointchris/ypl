@@ -1,6 +1,55 @@
 # CHANGELOG
 
 
+## v0.7.0 (2026-08-05)
+
+### Bug Fixes
+
+- **reads**: Pace the bulk reads, and stop when YouTube pushes back
+  ([`8c0c43e`](https://github.com/datapointchris/ypl/commit/8c0c43e6a8cdc9ab39c0b7aa81eed197e0bfabf5))
+
+`enrich --all` over a library is thousands of sequential extractions, and they carry your cookies.
+  Reads cost no API quota, which is why nothing here was ever paced — but quota is not the only
+  thing forty or four thousand back-to-back signed-in requests spend, and a burst is the shape that
+  gets an account looked at. The write path has been careful about exactly this since it was built;
+  the read path was not, and it is the one that makes the requests.
+
+So both bulk loops — `enrich` over videos and a bare `sync` over every playlist in the account — go
+  through the same floor the write path uses, at `request_interval_seconds` from the config, two
+  seconds by default.
+
+And yt-dlp saying "Sign in to confirm you're not a bot" or 429 is now its own error, distinct from a
+  video that simply cannot be read. One video failing is skipped and reported; this stops the run.
+  Answering "slow down" with more requests is the worst available move, and enrichment is resumable
+  by construction, so stopping costs time and nothing else.
+
+Throttle moves out of `remote` into its own module, so a read command can pace itself without
+  importing the write path. Its sleep resolves at call time rather than as a default argument, which
+  is what lets a test replace it — bound at import, the suite really slept, and a suite that sleeps
+  is a suite that gets its pacing deleted.
+
+### Features
+
+- **cli**: Complete playlist names, and titles inside the current one
+  ([`0ab474d`](https://github.com/datapointchris/ypl/commit/0ab474d7c25d24232dcf32d910d6676ba78e2248))
+
+`ypl playlists edit <TAB>` offers the playlists that exist. Nothing here should ever be retyped: the
+  names are long, they have spaces, and the tool already knows all of them.
+
+Commands that write offer only local playlists, because offering a mirrored one to `ypl playlists
+  edit` would be a lie about what it can do. The fragment arguments on `drop`, `later` and `sooner`
+  complete against the titles inside the current playlist, which is the same idea as the fragment
+  itself: what you can say about the thing playing is its name.
+
+Matching is anywhere in the title rather than at the start, because these titles begin with the
+  artist or the event and the part you remember is rarely the first word.
+
+Every failure answers with nothing. A completion runs on a keystroke, in a shell that will print a
+  traceback into the middle of the line being typed, and no reason for one is worth that.
+
+Run `ypl --install-completion` once per machine.
+
+
 ## v0.6.0 (2026-08-05)
 
 ### Features
