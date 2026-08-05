@@ -517,6 +517,20 @@ def short_state_home(monkeypatch):
 
 
 @pytest.fixture
+def long_state_home(tmp_path, monkeypatch):
+    """A state directory whose socket path cannot fit a unix socket address.
+
+    Built deliberately rather than inherited: pytest's own tmp_path is past the
+    104-byte limit under macOS's private temp directory and comfortably under it
+    on Linux, so a test that leans on it passes locally and fails in CI.
+    """
+    directory = tmp_path.joinpath(*['nested-enough-to-overflow'] * 4)
+    directory.mkdir(parents=True)
+    monkeypatch.setenv('XDG_STATE_HOME', str(directory))
+    return directory
+
+
+@pytest.fixture
 def played(monkeypatch):
     """Capture what would have been handed to mpv."""
     calls = []
@@ -540,11 +554,11 @@ def test_playing_opens_the_ipc_socket_so_now_can_read_it(short_state_home, synce
     assert played[0]['socket'] == paths.mpv_socket()
 
 
-def test_a_socket_path_too_long_for_the_kernel_plays_on_and_says_so(synced, played):
-    """pytest's own tmp_path is over the limit, which is the condition itself.
+def test_a_socket_path_too_long_for_the_kernel_plays_on_and_says_so(long_state_home, synced, played):
+    """mpv would log `Could not create IPC socket` and play on regardless.
 
-    mpv would log `Could not create IPC socket` and play regardless, leaving
-    `ypl now` reporting nothing with no way to tell why.
+    That leaves `ypl now` reporting nothing with no way to tell why, so ypl
+    checks the length itself and says what it gave up.
     """
     result = runner.invoke(app, ['play', 'Get Insights'])
     assert result.exit_code == 0
