@@ -1,6 +1,26 @@
 # CHANGELOG
 
 
+## v0.11.2 (2026-08-05)
+
+### Bug Fixes
+
+- **remote**: Rebuild the session from the browser before every run
+  ([`4d62be8`](https://github.com/datapointchris/ypl/commit/4d62be80546850c3358b93237a9cc0e16f2ce228))
+
+Why the session was signed out three hours after signing in: Google rotates `__Secure-1PSIDTS` and
+  `__Secure-3PSIDTS` while you stay signed in, and the session file is a photograph of them. yt-dlp
+  re-reads the cookie jar on every call, which is why `ypl sync` went on mirroring private playlists
+  all afternoon while the write path had quietly become a signed-out visitor.
+
+The browser is already recorded — that is what `auth.json` is for — so the session is now rebuilt
+  from it before anything that might write. It costs no request, the cookies come out of a local
+  file, and it makes signing in once actually mean once for as long as the browser stays signed in.
+
+A browser that cannot be read leaves the stored session alone. It may still be good, and stale beats
+  absent when nothing else can sign in.
+
+
 ## v0.11.1 (2026-08-05)
 
 ### Bug Fixes
