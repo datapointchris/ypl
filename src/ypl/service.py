@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 
+from ypl import history
 from ypl import local
 from ypl import m3u
 from ypl import tracklist
@@ -646,6 +647,59 @@ def video_tracks(connection: sqlite3.Connection, video_id: str) -> list[sqlite3.
             (video_id,),
         )
     )
+
+
+def recent_plays(connection: sqlite3.Connection, limit: int | None = None) -> list[dict]:
+    """Listens, most recent first, labelled from the mirror where it knows them.
+
+    Reversed from the log's append order rather than sorted by timestamp, which
+    also settles two listens logged inside the same second — the file records
+    the order they happened in, the clock does not.
+    """
+    plays = list(reversed(history.load()))[: limit or None]
+    known = videos_by_id(connection, [play.video_id for play in plays])
+    return [
+        {
+            'played_ts': play.played_ts,
+            'video_id': play.video_id,
+            'title': known[play.video_id]['title'] if play.video_id in known else '',
+            'channel': known[play.video_id]['channel'] if play.video_id in known else '',
+        }
+        for play in plays
+    ]
+
+
+def playable_videos(connection: sqlite3.Connection) -> list[dict]:
+    """Every video in the mirror worth putting on."""
+    return [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT video_id, title, channel, duration_seconds, upload_date
+            FROM videos WHERE is_unavailable = 0 ORDER BY video_id
+            """
+        )
+    ]
+
+
+def next_videos(
+    connection: sqlite3.Connection,
+    playlist: ResolvedPlaylist | None = None,
+    limit: int = 1,
+) -> list[dict]:
+    """What to put on next: least recently listened to, never-played first.
+
+    Shuffled before the sort rather than after, so the many videos that share a
+    rank — everything never played, on the first run that is the whole library —
+    come back in a different order each time instead of alphabetically forever.
+    `menu next` caches its draw, so the variation belongs here.
+    """
+    candidates = playlist_selection(connection, playlist, 'position') if playlist else playable_videos(connection)
+    listened = history.summary()
+    shuffled = list(candidates)
+    random.shuffle(shuffled)
+    ordered = sorted(shuffled, key=lambda row: (listened.get(row['video_id'], {}).get('last_played_ts') or '',))
+    return [row | listened.get(row['video_id'], {'last_played_ts': None, 'play_count': 0}) for row in ordered[:limit]]
 
 
 def track_at(connection: sqlite3.Connection, video_id: str, position_seconds: int) -> sqlite3.Row | None:

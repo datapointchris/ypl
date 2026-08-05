@@ -1,8 +1,11 @@
 """The mirror: what sync writes, what a re-sync preserves, how names resolve."""
 
+import sqlite3
+
 import pytest
 
 from ypl import db
+from ypl import history
 from ypl import service
 from ypl import ytdlp
 from ypl.models import Chapter
@@ -41,6 +44,38 @@ def stub_remote(monkeypatch):
             monkeypatch.setattr(ytdlp, 'fetch_video', lambda *args, **kwargs: fetched_video)
 
     return install
+
+
+def test_reopening_a_populated_mirror_neither_wipes_it_nor_duplicates_lookups(tmp_path, stub_remote):
+    """The schema runs on every open, which is what lets a new table reach an old mirror.
+
+    The risk that buys is re-running it over real data, so this pins that
+    re-running is harmless: rows survive and the seeded lookup does not double.
+    """
+    database = tmp_path / 'ypl.db'
+    first = db.connect(database)
+    stub_remote(playlist(video('a')))
+    service.sync_playlist(first, 'https://example.invalid/PL1')
+    first.close()
+
+    second = db.connect(database)
+    assert [row['video_id'] for row in service.playlist_videos(second, 'PL1')] == ['a']
+    assert second.execute('SELECT COUNT(*) AS found FROM track_sources').fetchone()['found'] == 4
+
+
+def test_a_table_added_to_the_schema_reaches_a_mirror_that_already_exists(tmp_path):
+    """A new table is the one migration this design supports, so it has to work.
+
+    Simulated by dropping an existing one, which is what a mirror created before
+    that table was added looks like.
+    """
+    database = tmp_path / 'ypl.db'
+    db.connect(database).close()
+    with sqlite3.connect(database) as raw:
+        raw.execute('DROP TABLE tracks')
+
+    reopened = db.connect(database)
+    assert reopened.execute("SELECT name FROM sqlite_master WHERE name = 'tracks'").fetchone() is not None
 
 
 def test_a_fresh_database_gets_the_schema_and_the_source_lookup(connection):
@@ -227,6 +262,71 @@ def test_listing_playlists_reports_how_many_videos_are_enriched(connection, stub
     row = service.playlist_summaries(connection)[0]
     assert row['item_count'] == 2
     assert row['enriched_count'] == 1
+
+
+def test_next_prefers_a_video_that_has_never_been_played(connection, stub_remote):
+    stub_remote(playlist(video('heard'), video('unheard')))
+    service.sync_playlist(connection, 'https://example.invalid/PL1')
+    history.record('heard')
+
+    assert [row['video_id'] for row in service.next_videos(connection, limit=2)] == ['unheard', 'heard']
+
+
+def test_next_returns_the_least_recently_played_once_everything_has_been_heard(connection, stub_remote):
+    """`second` is the oldest first listen and the newest last one.
+
+    Ordering on its earliest play would put it first, which is why the history
+    reads MAX rather than MIN — "when did I last hear this" is the question.
+    """
+    stub_remote(playlist(video('first'), video('second'), video('third')))
+    service.sync_playlist(connection, 'https://example.invalid/PL1')
+    history.record('second', '2026-08-01')
+    history.record('first', '2026-08-02')
+    history.record('third', '2026-08-03')
+    history.record('second', '2026-08-04')
+
+    assert [row['video_id'] for row in service.next_videos(connection, limit=3)] == ['first', 'third', 'second']
+
+
+def test_next_carries_the_play_count_so_a_caller_can_see_why(connection, stub_remote):
+    stub_remote(playlist(video('a')))
+    service.sync_playlist(connection, 'https://example.invalid/PL1')
+    history.record('a')
+    history.record('a')
+
+    suggestion = service.next_videos(connection, limit=1)[0]
+    assert suggestion['play_count'] == 2
+    assert suggestion['last_played_ts'] is not None
+
+
+def test_next_does_not_hand_back_the_same_order_every_time(connection, stub_remote):
+    """Nothing is played on the first run, so every candidate ties.
+
+    Sorted without shuffling first, that tie resolves to mirror order and the
+    same mix is suggested forever.
+    """
+    stub_remote(playlist(*[video(f'v{index:02d}') for index in range(20)]))
+    service.sync_playlist(connection, 'https://example.invalid/PL1')
+
+    firsts = {service.next_videos(connection, limit=1)[0]['video_id'] for _ in range(15)}
+    assert len(firsts) > 1
+
+
+def test_next_never_suggests_an_unavailable_video(connection, stub_remote):
+    stub_remote(playlist(video('gone', is_unavailable=True), video('fine')))
+    service.sync_playlist(connection, 'https://example.invalid/PL1')
+
+    assert [row['video_id'] for row in service.next_videos(connection, limit=5)] == ['fine']
+
+
+def test_next_can_be_scoped_to_one_playlist(connection, stub_remote):
+    stub_remote(playlist(video('inside'), playlist_id='PL1', title='Wanted'))
+    service.sync_playlist(connection, 'https://example.invalid/PL1')
+    stub_remote(playlist(video('outside'), playlist_id='PL2', title='Other'))
+    service.sync_playlist(connection, 'https://example.invalid/PL2')
+
+    wanted = service.resolve_playlist(connection, 'Wanted')
+    assert [row['video_id'] for row in service.next_videos(connection, wanted, limit=5)] == ['inside']
 
 
 def test_the_track_at_an_offset_is_the_latest_one_to_have_started(connection, stub_remote):

@@ -47,6 +47,15 @@ def playlists_dir() -> Path:
     return data_dir() / 'playlists'
 
 
+def plays_file() -> Path:
+    """Listening history — data, not state.
+
+    Beside the playlists rather than inside the mirror: both are authored, and
+    neither can be rebuilt by re-reading YouTube.
+    """
+    return data_dir() / 'plays.jsonl'
+
+
 def mpv_socket() -> Path:
     """Where `ypl play` opens mpv's IPC socket, and `ypl now` looks for it.
 

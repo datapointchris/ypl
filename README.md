@@ -92,6 +92,7 @@ Private and unlisted playlists need a logged-in session — set `cookies_from_br
 | --- | --- |
 | `$XDG_STATE_HOME/ypl/ypl.db` | The mirror. Rebuildable from `ypl sync`, so not worth syncing between machines. |
 | `$XDG_DATA_HOME/ypl/playlists/` | Local playlists as M3U. Authored, so these are the ones worth keeping. |
+| `$XDG_DATA_HOME/ypl/plays.jsonl` | Listening history, appended one line per listen. Not rebuildable from anything, so it sits with the playlists rather than in the mirror. |
 | `$XDG_CONFIG_HOME/ypl/config.toml` | Settings. `ypl config init` writes a starter. |
 | `$XDG_STATE_HOME/ypl/mpv.sock` | mpv's IPC socket while `ypl play` is running. Read by `ypl now`. |
 
@@ -122,6 +123,39 @@ Shimza for Cercle at Citadelle de Sisteron  0:42:13 / 2:05:33
 It exits 1 when nothing is playing, with nothing on stdout, so a status bar can run it unguarded.
 On Arch, waybar's built-in `mpris` module already shows mpv without any of this — install
 `mpv-mpris` and `ypl play` appears there on its own.
+
+## What to put on next
+
+```bash
+ypl next                        # least recently listened to, never-played first
+ypl next --playlist 'Sunday'    # choose from one playlist
+ypl plays add <id>              # record a listen
+ypl plays list                  # what has been played lately
+```
+
+History is recorded when a listen is logged, not inferred from playback: `ypl play` hands mpv the
+whole list at once and blocks, so it never learns which of it actually got played.
+
+It is a file rather than a table because the mirror is disposable — it re-syncs for free — and a
+record of what you have listened to cannot be rebuilt from anything. Deleting the mirror does not
+make `ypl next` forget.
+
+`ypl next` is the resolver [`menu next`](https://github.com/datapointchris/dotfiles) delegates to,
+so a pursuit answers with a mix rather than with the word "listen". In `~/.config/menu/pursuits.yml`:
+
+```yaml
+listen:
+  description: Put a mix on
+  weight: 15
+  resolve: ypl next --json
+  label: title
+  id: video_id
+  on_log: ypl plays add {id}
+```
+
+Each call draws afresh among everything tied at the same rank — on a library nothing has been
+played from, that is all of it — so repeated calls do not keep naming the same mix. `menu next`
+caches its own draw, which is where stability within a session comes from.
 
 ## Not done yet
 

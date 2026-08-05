@@ -1,5 +1,5 @@
--- Executed unconditionally on every open, so this is the file a change to an
--- already-populated mirror goes through. Every statement must be idempotent.
+-- Indexes only. Both this and schema.sql run on every open, so a new *table*
+-- belongs there rather than here.
 
 CREATE INDEX IF NOT EXISTS idx_playlist_videos_playlist ON playlist_videos (playlist_id, position);
 CREATE INDEX IF NOT EXISTS idx_playlist_videos_video ON playlist_videos (video_id);

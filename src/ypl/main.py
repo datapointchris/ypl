@@ -14,6 +14,7 @@ from rich.table import Table
 
 from ypl import config
 from ypl import db
+from ypl import history
 from ypl import local
 from ypl import m3u
 from ypl import paths
@@ -65,6 +66,18 @@ Examples:
   ypl videos show dQw4w9WgXcQ                     the tracklist with chapter timestamps
 """
 
+PLAYS_HELP = """\
+The listening history behind `ypl next`.
+
+Recorded when a listen is logged, not inferred from playback — `ypl play` hands
+mpv the whole list at once and never learns which of it got played.
+
+Examples:
+
+  ypl plays add dQw4w9WgXcQ                       record a listen
+  ypl plays list                                  what has been played lately
+"""
+
 CONFIG_HELP = """\
 The settings file at $XDG_CONFIG_HOME/ypl/config.toml.
 
@@ -85,9 +98,11 @@ app = typer.Typer(name='ypl', no_args_is_help=True, help=ROOT_HELP)
 playlists_app = typer.Typer(name='playlists', no_args_is_help=True, help=PLAYLISTS_HELP)
 videos_app = typer.Typer(name='videos', no_args_is_help=True, help=VIDEOS_HELP)
 config_app = typer.Typer(name='config', no_args_is_help=True, help=CONFIG_HELP)
+plays_app = typer.Typer(name='plays', no_args_is_help=True, help=PLAYS_HELP)
 
 app.add_typer(playlists_app, name='playlists', rich_help_panel=READING)
 app.add_typer(videos_app, name='videos', rich_help_panel=READING)
+app.add_typer(plays_app, name='plays', rich_help_panel=PLAYING)
 app.add_typer(config_app, name='config', rich_help_panel=ADMIN)
 
 # Data goes to stdout and nothing else does, so a caller parsing --json never
@@ -217,6 +232,17 @@ def video_ids_or_exit(values: list[str]) -> list[str]:
             raise typer.Exit(2)
         video_ids.append(video_id)
     return video_ids
+
+
+def video_id_argument(value: str) -> str:
+    """A URL or a bare id, without the eleven-character rule.
+
+    That rule earns its place where nothing downstream checks the id — adding a
+    video to a playlist file writes whatever it is told. Here the mirror is
+    about to reject an id it does not know, so guessing first would only replace
+    a precise error with a vague one.
+    """
+    return m3u.video_id_from(value) or value.strip()
 
 
 def video_ids_from_stdin_or_exit() -> list[str]:
@@ -667,6 +693,7 @@ def config_path() -> None:
     print(f'config    {paths.config_file()}')
     print(f'mirror    {paths.database_file()}')
     print(f'playlists {paths.playlists_dir()}')
+    print(f'plays     {paths.plays_file()}')
 
 
 @config_app.command('show')
@@ -770,6 +797,86 @@ def now(
     )
     if not track and video and not video['enriched_ts']:
         messages.print('Not enriched — run [bold]ypl enrich[/bold] to get the track instead of the video.')
+
+
+@app.command('next', rich_help_panel=PLAYING)
+def next_up(
+    playlist: str = typer.Option(None, '--playlist', '-p', help='Choose from one playlist instead of the whole mirror.'),
+    limit: int = typer.Option(1, '--limit', '-n', help='How many suggestions to emit.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """What to put on next — least recently listened to, never-played first.
+
+    The resolver `menu next` delegates to, so a `listen` pursuit answers with a
+    mix rather than with the word "listen". Register it as:
+
+      resolve: ypl next --json
+      label: title
+      id: video_id
+      on_log: ypl plays add {id}
+    """
+    connection = db.connect()
+    resolved = resolve_or_exit(connection, playlist) if playlist else None
+    suggestions = service.next_videos(connection, resolved, limit)
+    if as_json:
+        print_json([row | {'url': watch_url(row['video_id'])} for row in suggestions])
+        return
+    if not suggestions:
+        messages.print('Nothing to play. Run [bold]ypl sync <playlist-url>[/bold] to mirror something first.')
+        raise typer.Exit(1)
+    for row in suggestions:
+        print(f'{row["title"]}  {watch_url(row["video_id"])}')
+
+
+@plays_app.command('add', context_settings={'ignore_unknown_options': True})
+def plays_add(
+    video_id: str = typer.Argument(..., help='Video URL or id that was listened to.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Record that a video was listened to.
+
+    What `ypl next` reads to stop suggesting the same mix. Written when a listen
+    is logged rather than inferred from playback, because `ypl play` hands mpv
+    the whole list at once and never learns which of it got played.
+    """
+    resolved_id = video_id_argument(video_id)
+    connection = db.connect()
+    video = service.get_video(connection, resolved_id)
+    # Checked rather than recorded blindly: the log is append-only data with no
+    # remote to correct it from, so a typo would stay in it.
+    if not video:
+        messages.print(f'[red]{resolved_id} is not in the mirror.[/red] Sync a playlist containing it first.')
+        raise typer.Exit(1)
+
+    history.record(resolved_id)
+    if as_json:
+        print_json({'video_id': resolved_id, 'play_count': history.summary()[resolved_id]['play_count']})
+        return
+    messages.print(f'Logged [bold]{video["title"]}[/bold]')
+
+
+@plays_app.command('list')
+def plays_list(
+    limit: int = typer.Option(20, '--limit', '-n', help='Show at most this many.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """What has been listened to, most recent first."""
+    connection = db.connect()
+    rows = service.recent_plays(connection, limit)
+    if as_json:
+        print_json(rows)
+        return
+    if not rows:
+        messages.print('Nothing logged yet. [bold]ypl plays add <id>[/bold] records a listen.')
+        return
+    table = Table(title=f'{len(rows)} plays')
+    table.add_column('When')
+    table.add_column('Title')
+    table.add_column('Channel')
+    table.add_column('Id', overflow='fold')
+    for row in rows:
+        table.add_row(row['played_ts'], row['title'], row['channel'], row['video_id'])
+    console.print(table)
 
 
 @app.command('update', rich_help_panel=ADMIN)

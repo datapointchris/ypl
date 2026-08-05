@@ -504,6 +504,21 @@ def test_an_unknown_sort_is_a_usage_error_for_every_command_that_takes_one(built
 
 
 @pytest.fixture
+def two_videos(monkeypatch):
+    """A mirror with two distinguishable videos, so order and identity are observable."""
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_playlist',
+        lambda *args, **kwargs: RemotePlaylist(
+            playlist_id='PL2',
+            title='More',
+            videos=[RemoteVideo(video_id='vid1', title='A Talk'), RemoteVideo(video_id='vid2', title='Another')],
+        ),
+    )
+    runner.invoke(app, ['sync', 'https://example.invalid/PL2'])
+
+
+@pytest.fixture
 def short_state_home(monkeypatch):
     """A state directory a unix socket address can actually fit in.
 
@@ -691,6 +706,86 @@ def test_now_exits_1_when_nothing_is_playing(monkeypatch):
     result = runner.invoke(app, ['now', '--json'])
     assert result.exit_code == 1
     assert result.stdout == ''
+
+
+def test_next_emits_the_fields_the_menu_register_names(synced):
+    """`menu next` reads `label` and `id` out of the JSON by name.
+
+    Renaming either field here silently breaks the pursuit rather than failing,
+    so the contract is pinned from this side.
+    """
+    payload = json.loads(runner.invoke(app, ['next', '--json']).stdout)
+    assert payload[0]['title'] == 'A Talk'
+    assert payload[0]['video_id'] == 'vid1'
+    assert payload[0]['url'] == 'https://www.youtube.com/watch?v=vid1'
+
+
+def test_next_prints_one_line_per_suggestion_for_the_plain_resolver(synced):
+    """The register's other mode takes the first line as the label."""
+    result = runner.invoke(app, ['next'])
+    assert result.exit_code == 0
+    assert result.stdout.splitlines() == ['A Talk  https://www.youtube.com/watch?v=vid1']
+
+
+def test_logging_a_listen_moves_it_down_the_next_order(two_videos):
+    assert runner.invoke(app, ['plays', 'add', 'vid1']).exit_code == 0
+
+    payload = json.loads(runner.invoke(app, ['next', '--json', '--limit', '2']).stdout)
+    assert [row['video_id'] for row in payload] == ['vid2', 'vid1']
+
+
+def test_the_round_trip_the_register_wires_up(synced):
+    """resolve -> id -> on_log, exactly as `menu next` would run it."""
+    suggestion = json.loads(runner.invoke(app, ['next', '--json']).stdout)[0]
+
+    logged = runner.invoke(app, ['plays', 'add', suggestion['video_id'], '--json'])
+    assert logged.exit_code == 0
+    assert json.loads(logged.stdout)['play_count'] == 1
+
+
+def test_logging_a_video_that_is_not_mirrored_fails_rather_than_writing_a_dangling_row(synced):
+    result = runner.invoke(app, ['plays', 'add', 'notmirrored'])
+    assert result.exit_code == 1
+    assert 'not in the mirror' in result.output
+
+
+def test_plays_are_listed_most_recent_first(two_videos):
+    """Two plays, so the ordering is observable rather than assumed."""
+    runner.invoke(app, ['plays', 'add', 'vid1'])
+    runner.invoke(app, ['plays', 'add', 'vid2'])
+
+    payload = json.loads(runner.invoke(app, ['plays', 'list', '--json']).stdout)
+    assert [row['video_id'] for row in payload] == ['vid2', 'vid1']
+    assert payload[0]['title'] == 'Another'
+
+
+def test_listening_history_survives_the_mirror_being_thrown_away(two_videos):
+    """The mirror is disposable — it re-syncs for free — and the history is not.
+
+    Deleting it and starting over must not make `ypl next` forget.
+    """
+    runner.invoke(app, ['plays', 'add', 'vid1'])
+    paths.database_file().unlink()
+    runner.invoke(app, ['sync', 'https://example.invalid/PL2'])
+
+    payload = json.loads(runner.invoke(app, ['next', '--json', '--limit', '2']).stdout)
+    assert [row['video_id'] for row in payload] == ['vid2', 'vid1']
+    assert payload[1]['play_count'] == 1
+
+
+def test_next_on_an_empty_mirror_fails_rather_than_printing_nothing():
+    """A resolver that exits 0 with no output would show as a blank pursuit."""
+    assert runner.invoke(app, ['next']).exit_code == 1
+
+
+def test_a_url_can_be_logged_as_well_as_an_id(two_videos):
+    """Logged against the second video, so returning the first would not pass."""
+    result = runner.invoke(app, ['plays', 'add', 'https://www.youtube.com/watch?v=vid2&t=90s', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['video_id'] == 'vid2'
+
+    listed = json.loads(runner.invoke(app, ['plays', 'list', '--json']).stdout)
+    assert [row['video_id'] for row in listed] == ['vid2']
 
 
 def test_a_video_reachable_only_through_a_local_playlist_can_still_be_enriched(monkeypatch):

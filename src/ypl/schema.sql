@@ -1,10 +1,10 @@
--- Applied only to a fresh database. Anything added here never reaches an
--- existing one, so a change that must land on a populated mirror belongs in
--- indexes.sql or a hand-run statement. The mirror rebuilds from `ypl sync` at
--- no API cost, which is what makes that an acceptable trade rather than a
--- migration system.
+-- Executed on every open, so every statement here must be idempotent. That is
+-- what lets a new table reach an already-populated mirror without a migration
+-- system: adding one here is enough. Changing or dropping a *column* still is
+-- not — the mirror rebuilds from `ypl sync` at no API cost, which is what makes
+-- "delete it and re-sync" an acceptable answer to the rare case that needs one.
 
-CREATE TABLE playlists (
+CREATE TABLE IF NOT EXISTS playlists (
     playlist_id TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
@@ -13,7 +13,7 @@ CREATE TABLE playlists (
     synced_ts   TEXT NOT NULL
 );
 
-CREATE TABLE videos (
+CREATE TABLE IF NOT EXISTS videos (
     video_id         TEXT PRIMARY KEY,
     title            TEXT NOT NULL,
     channel          TEXT NOT NULL DEFAULT '',
@@ -30,7 +30,7 @@ CREATE TABLE videos (
 -- No UNIQUE(playlist_id, video_id): YouTube permits the same video twice in one
 -- playlist, and a music playlist built up over years does contain repeats.
 -- Position is the identity of a slot; the video is what fills it.
-CREATE TABLE playlist_videos (
+CREATE TABLE IF NOT EXISTS playlist_videos (
     playlist_video_id INTEGER PRIMARY KEY,
     playlist_id       TEXT NOT NULL REFERENCES playlists (playlist_id) ON DELETE CASCADE,
     video_id          TEXT NOT NULL REFERENCES videos (video_id) ON DELETE CASCADE,
@@ -38,7 +38,7 @@ CREATE TABLE playlist_videos (
     UNIQUE (playlist_id, position)
 );
 
-CREATE TABLE track_sources (
+CREATE TABLE IF NOT EXISTS track_sources (
     source      TEXT PRIMARY KEY,
     label       TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT ''
@@ -46,7 +46,7 @@ CREATE TABLE track_sources (
 
 -- One row per track inside a video. For a DJ mix that is the tracklist; for a
 -- single song it is one row or none.
-CREATE TABLE tracks (
+CREATE TABLE IF NOT EXISTS tracks (
     track_id      INTEGER PRIMARY KEY,
     video_id      TEXT NOT NULL REFERENCES videos (video_id) ON DELETE CASCADE,
     position      INTEGER NOT NULL,
@@ -62,7 +62,12 @@ CREATE TABLE tracks (
     UNIQUE (video_id, position)
 );
 
-INSERT INTO track_sources (source, label, description) VALUES
+-- Listening history is deliberately NOT here. It cannot be rebuilt by re-reading
+-- YouTube, so by the same rule that put local playlists in files it is data
+-- rather than state — see `history.py`. A mirror that can be deleted and
+-- re-synced must not be the only copy of something unrecoverable.
+
+INSERT OR IGNORE INTO track_sources (source, label, description) VALUES
     ('chapter',     'Chapter',     'YouTube chapter marker, carries real timestamps'),
     ('description', 'Description', 'Parsed from the video description'),
     ('llm',         'Claude',      'Extracted by Claude from unstructured text'),
