@@ -74,6 +74,37 @@ ypl playlists split 'Deep Night' --size 90             # into 'Deep Night 1', 'D
 ypl playlists order 'Sunday' --sort longest            # in place, or --into 'Sunday Long'
 ```
 
+### Rearranging
+
+```bash
+ypl playlists edit 'six-hour-work-uptempo-house'
+```
+
+Opens the playlist in `$EDITOR`, one line per video — the id first, then the title and duration:
+
+```text
+# six-hour-work-uptempo-house — 84 videos, 6:12:40
+#
+# Reorder these lines to reorder the playlist.
+# Delete a line to remove that video from it.
+# Add a line with a URL or id to add one.
+aaaaaaaaaaa  Cercle - At Citadelle de Sisteron       2:05:33
+bbbbbbbbbbb  Cercle - At Salle Wagram                1:48:02
+```
+
+Modelled on `git rebase -i`, and for the same reason: rearranging a list is something your editor
+is already better at than any command could be. `dd`/`p`, visual block, `:m`, `:sort`,
+`:g/Cercle/m$` — all of it works, on titles, and the ids are never typed. Save an empty buffer to
+abort, the way rebase does. A line that is not a video is refused with its line number and nothing
+is written.
+
+Piping a buffer in instead of opening an editor does the same thing, which is how Claude rewrites
+an order in one shot:
+
+```bash
+ypl playlists show 'Sunday' --json | claude -p 'order these to build energy' | ypl playlists edit 'Sunday'
+```
+
 `split` takes `--size` (roughly how many per part) or `--parts` (how many parts). Parts come out
 even rather than as full chunks and a stub — 140 videos at a size of 90 is two parts of 70, not a
 90 and a 50.

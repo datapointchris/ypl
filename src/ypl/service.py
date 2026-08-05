@@ -640,6 +640,43 @@ def pullable_playlists() -> list[LocalPlaylist]:
     return [playlist for playlist in local.list_playlists().playlists if playlist.synced and playlist.remote_id]
 
 
+@dataclass
+class Edit:
+    """What an edited buffer did to a playlist."""
+
+    playlist: LocalPlaylist
+    added: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    reordered: bool = False
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.removed or self.reordered)
+
+
+def apply_edit(connection: sqlite3.Connection, playlist: LocalPlaylist, video_ids: list[str]) -> Edit:
+    """Rewrite a playlist to the order an edited buffer asked for.
+
+    Entries already in the file are moved rather than rebuilt, so a title the
+    file recorded for a video the mirror has never seen survives being
+    reordered. Ids the file did not have are built from the mirror, which is
+    what makes pasting a URL into the buffer work.
+    """
+    before = playlist.video_ids
+    existing = {entry.video_id: entry for entry in playlist.entries}
+    new_ids = [video_id for video_id in video_ids if video_id not in existing]
+    built = {entry.video_id: entry for entry in entries_for(connection, new_ids)}
+
+    playlist.entries = [existing.get(video_id) or built[video_id] for video_id in video_ids]
+    local.save(playlist, overwrite=True)
+    return Edit(
+        playlist=playlist,
+        added=[video_id for video_id in video_ids if video_id not in before],
+        removed=[video_id for video_id in before if video_id not in video_ids],
+        reordered=before != video_ids,
+    )
+
+
 def delete_local_playlist(playlist: LocalPlaylist) -> None:
     """Delete a playlist file and the merge base that described it.
 

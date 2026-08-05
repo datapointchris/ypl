@@ -15,6 +15,7 @@ from rich.table import Table
 from ypl import basestore
 from ypl import config
 from ypl import db
+from ypl import editbuffer
 from ypl import history
 from ypl import local
 from ypl import m3u
@@ -697,6 +698,83 @@ def playlists_order(
         return
     messages.print(f'Ordered [bold]{ordered.name}[/bold] by {sort} — {len(ordered.entries)} videos')
     messages.print(str(ordered.path))
+
+
+@playlists_app.command('edit', rich_help_panel=BUILDING)
+def playlists_edit(
+    name: str = typer.Argument(..., help='Local playlist to rearrange.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Rearrange a playlist in your editor.
+
+    Opens one line per video — the id first, then the title — in $EDITOR. Move
+    lines to reorder, delete a line to remove that video, paste a URL on its own
+    line to add one. Save to apply, or save an empty buffer to abort.
+
+    Modelled on `git rebase -i`, because rearranging a list is something your
+    editor is already better at than any command could be. Reads the buffer from
+    stdin instead when something is piped in.
+    """
+    connection = db.connect()
+    playlist = local_or_exit(connection, name)
+    rows = service.local_playlist_videos(connection, playlist)
+
+    if sys.stdin.isatty():
+        try:
+            edited = editbuffer.open_in_editor(editbuffer.render(playlist.name, rows))
+        except editbuffer.EditorFailedError as error:
+            messages.print(f'[red]{error}[/red]')
+            raise typer.Exit(1) from error
+        if edited is None:
+            messages.print(f'[bold]{playlist.name}[/bold] unchanged')
+            return
+    else:
+        edited = sys.stdin.read()
+
+    try:
+        video_ids = editbuffer.parse(edited, m3u.video_id_from, frozenset(playlist.video_ids))
+    except editbuffer.EditBufferError as error:
+        messages.print(f'[red]{error}[/red]')
+        messages.print('Nothing was changed.')
+        raise typer.Exit(2) from error
+
+    if not video_ids:
+        # An empty buffer aborts rather than emptying the playlist, which is
+        # what `git rebase -i` does and what someone who deleted every line by
+        # accident needs it to do.
+        messages.print(f'[bold]{playlist.name}[/bold] unchanged — an empty buffer aborts')
+        return
+
+    unknown = [video_id for video_id in video_ids if not m3u.is_video_id(video_id)]
+    result = service.apply_edit(connection, playlist, video_ids)
+
+    if as_json:
+        print_json(
+            {
+                'name': result.playlist.name,
+                'slug': result.playlist.slug,
+                'video_count': len(result.playlist.entries),
+                'added': result.added,
+                'removed': result.removed,
+                'reordered': result.reordered,
+            }
+        )
+        return
+    if not result.changed:
+        messages.print(f'[bold]{result.playlist.name}[/bold] unchanged')
+        return
+    changes = []
+    if result.added:
+        changes.append(f'{len(result.added)} added')
+    if result.removed:
+        changes.append(f'{len(result.removed)} removed')
+    if result.reordered:
+        changes.append('reordered')
+    messages.print(f'[bold]{result.playlist.name}[/bold] — {", ".join(changes)}, {len(result.playlist.entries)} videos')
+    if unknown:
+        messages.print(f'{len(unknown)} of those are not eleven-character ids — check them if a player rejects the file')
+    if result.playlist.synced:
+        messages.print('Run [bold]ypl remote plan[/bold] to see what that means for YouTube')
 
 
 @playlists_app.command('promote', rich_help_panel=BUILDING)

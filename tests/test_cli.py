@@ -1324,3 +1324,55 @@ def test_a_limited_sync_stops_where_it_was_told(account):
 def test_syncing_one_playlist_by_url_still_works(synced):
     """The account sweep is the new default, not a replacement."""
     assert runner.invoke(app, ['playlists', 'show', 'Get Insights']).exit_code == 0
+
+
+def test_editing_a_playlist_applies_the_order_the_buffer_asked_for(two_videos):
+    """Piped rather than typed: the same path an editor takes, minus the editor."""
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+    buffer = 'vid2  Another\nvid1  A Talk\n'
+
+    result = runner.invoke(app, ['playlists', 'edit', 'Sunday', '--json'], input=buffer)
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['reordered'] is True
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid2', 'vid1']
+
+
+def test_a_deleted_line_removes_that_video(two_videos):
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+
+    result = runner.invoke(app, ['playlists', 'edit', 'Sunday', '--json'], input='vid1  A Talk\n')
+    assert json.loads(result.stdout)['removed'] == ['vid2']
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid1']
+
+
+def test_an_empty_buffer_aborts_rather_than_emptying_the_playlist(two_videos):
+    """Deleting every line by accident must not be how a playlist is lost."""
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+
+    result = runner.invoke(app, ['playlists', 'edit', 'Sunday'], input='# everything deleted\n')
+    assert result.exit_code == 0
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2']
+
+
+def test_a_line_that_is_not_a_video_changes_nothing(two_videos):
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+
+    result = runner.invoke(app, ['playlists', 'edit', 'Sunday'], input='vid1 A Talk\nnot a video at all\n')
+    assert result.exit_code == 2
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2']
+
+
+def test_a_url_pasted_into_the_buffer_adds_that_video(two_videos):
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+    buffer = 'vid1 A Talk\nvid2 Another\nhttps://youtu.be/vid9\n'
+
+    result = runner.invoke(app, ['playlists', 'edit', 'Sunday', '--json'], input=buffer)
+    assert json.loads(result.stdout)['added'] == ['vid9']
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2', 'vid9']
+
+
+def test_a_mirrored_playlist_cannot_be_edited(synced):
+    """It is a mirror; the fix is to make a local copy, and it says so."""
+    result = runner.invoke(app, ['playlists', 'edit', 'Get Insights'], input='vid1 A Talk\n')
+    assert result.exit_code == 1
+    assert 'read-only' in result.output
