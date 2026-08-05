@@ -368,14 +368,16 @@ def playlists_list(
         return
     table = Table(title=f'{len(rows)} playlists')
     table.add_column('Title')
-    table.add_column('Kind')
+    # Sync state rather than store, because "is this on YouTube yet" is the
+    # question a listing gets asked. Mirrored playlists read `remote`.
+    table.add_column('State')
     table.add_column('Videos', justify='right')
     table.add_column('Enriched', justify='right')
     # Folded, never truncated: an id with an ellipsis in it cannot be pasted
     # into the next command, which is the only reason it is in the table.
     table.add_column('Id', overflow='fold')
     for row in rows:
-        table.add_row(row['title'], row['kind'], str(row['item_count']), str(row['enriched_count']), row['identifier'])
+        table.add_row(row['title'], row['sync_state'], str(row['item_count']), str(row['enriched_count']), row['identifier'])
     console.print(table)
 
 
@@ -455,12 +457,15 @@ def playlists_create(
     sort: str = typer.Option('position', '--sort', help=f'One of: {", ".join(service.SORT_CLAUSES)}.'),
     limit: int = typer.Option(None, '--limit', '-n', help='Take at most this many videos.'),
     force: bool = typer.Option(False, '--force', help='Overwrite an existing playlist of the same name.'),
+    local_only: bool = typer.Option(False, '--local', help='Keep it here — do not sync it to YouTube.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Write a new local playlist, from another playlist or from piped URLs.
 
-    Nothing reaches YouTube: this writes one M3U file, which mpv, VLC and Kodi
-    play directly and which costs no quota to build, reorder or throw away.
+    The file is written immediately and nothing reaches YouTube in this
+    command — mpv, VLC and Kodi play it straight away. It is marked for syncing
+    by default, so it appears on your phone once the queue next drains. Pass
+    --local for one that should stay on this machine.
     """
     check_sort(sort)
     connection = db.connect()
@@ -477,7 +482,7 @@ def playlists_create(
         provenance = 'stdin'
 
     try:
-        playlist = service.create_local_playlist(connection, name, video_ids, source=provenance, overwrite=force)
+        playlist = service.create_local_playlist(connection, name, video_ids, source=provenance, overwrite=force, synced=not local_only)
     except local.LocalPlaylistExistsError as error:
         messages.print(f'[red]{error.path} already exists.[/red] Pass --force to overwrite it.')
         raise typer.Exit(1) from error
@@ -604,6 +609,45 @@ def playlists_order(
         return
     messages.print(f'Ordered [bold]{ordered.name}[/bold] by {sort} — {len(ordered.entries)} videos')
     messages.print(str(ordered.path))
+
+
+@playlists_app.command('promote', rich_help_panel=BUILDING)
+def playlists_promote(
+    name: str = typer.Argument(..., help='Local playlist to start syncing.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Start syncing a local playlist to YouTube.
+
+    It goes up on the next drain and appears in your library on every device
+    you are signed in on. Playlists are made synced by default, so this is for
+    one that was made with --local or demoted since.
+    """
+    connection = db.connect()
+    playlist = service.set_synced(local_or_exit(connection, name), True)
+    if as_json:
+        print_json({'name': playlist.name, 'slug': playlist.slug, 'sync_state': playlist.sync_state})
+        return
+    messages.print(f'[bold]{playlist.name}[/bold] will sync — it goes up on the next [bold]ypl remote apply[/bold]')
+
+
+@playlists_app.command('demote', rich_help_panel=BUILDING)
+def playlists_demote(
+    name: str = typer.Argument(..., help='Playlist to stop syncing.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Stop syncing a playlist, keeping the local file.
+
+    Anything already on YouTube is left alone — this changes what ypl pushes
+    from here, and does not reach across to delete it.
+    """
+    connection = db.connect()
+    playlist = service.set_synced(local_or_exit(connection, name), False)
+    if as_json:
+        print_json({'name': playlist.name, 'slug': playlist.slug, 'sync_state': playlist.sync_state})
+        return
+    messages.print(f'[bold]{playlist.name}[/bold] is local only now')
+    if playlist.remote_id:
+        messages.print(f'{playlist.remote_id} is still on YouTube — delete it there if you want it gone')
 
 
 @playlists_app.command('delete', rich_help_panel=BUILDING)

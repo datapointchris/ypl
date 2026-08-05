@@ -67,6 +67,20 @@ even rather than as full chunks and a stub — 140 videos at a size of 90 is two
 `--sort` means the same thing everywhere it appears: `position`, `oldest`, `newest`, `longest`,
 `shortest`, `title`, `random`.
 
+A playlist you make is synced to YouTube by default, so it turns up in the YouTube app on your
+phone once the queue next drains. It is written as `PRIVATE`, which still appears in your own
+library on every device you are signed in on. `--local` keeps one here instead, and `promote` /
+`demote` change their mind later:
+
+```bash
+ypl playlists create 'Scratch' --from 'Deep Night' --local   # stays on this machine
+ypl playlists promote 'Scratch'                              # goes up on the next drain
+ypl playlists demote 'Scratch'                               # stop pushing; leaves YouTube alone
+```
+
+`ypl playlists list` shows where each one sits: `local`, `pending` (synced but not on YouTube yet),
+`synced`, or `remote` for a mirrored one.
+
 `create` also reads URLs from a pipe, so a selection made by one command becomes a playlist:
 
 ```bash

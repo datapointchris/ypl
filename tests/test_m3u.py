@@ -52,6 +52,33 @@ def test_a_playlist_survives_being_written_and_read_back():
     assert reread.entries == original.entries
 
 
+def test_the_sync_binding_round_trips():
+    original = m3u.Playlist(name='Sunday', synced=True, remote_id='PL123', entries=[m3u.Entry(video_id='dQw4w9WgXcQ')])
+    reread = m3u.parse(m3u.render(original))
+    assert (reread.synced, reread.remote_id) == (True, 'PL123')
+
+
+def test_a_playlist_kept_off_youtube_says_so_rather_than_falling_to_the_default():
+    """The default is synced, so `no` has to be written to survive a re-read."""
+    reread = m3u.parse(m3u.render(m3u.Playlist(name='Scratch', synced=False)))
+    assert reread.synced is False
+
+
+@pytest.mark.parametrize('value', ['no', 'No', 'false', 'off', ''])
+def test_the_ways_a_hand_edit_might_say_no(value):
+    assert m3u.parse(f'#EXTM3U\n#YPL-SYNCED:{value}\n').synced is False
+
+
+@pytest.mark.parametrize('value', ['yes', 'true', 'YES'])
+def test_the_ways_a_hand_edit_might_say_yes(value):
+    assert m3u.parse(f'#EXTM3U\n#YPL-SYNCED:{value}\n').synced is True
+
+
+def test_a_file_written_before_syncing_existed_is_treated_as_synced():
+    """The default has to be the one that matches how these are made now."""
+    assert m3u.parse('#EXTM3U\n#PLAYLIST:Old\nhttps://youtu.be/dQw4w9WgXcQ\n').synced is True
+
+
 def test_the_rendered_file_starts_with_the_header_every_player_looks_for():
     rendered = m3u.render(m3u.Playlist(name='X', entries=[m3u.Entry(video_id='dQw4w9WgXcQ')]))
     assert rendered.splitlines()[0] == '#EXTM3U'

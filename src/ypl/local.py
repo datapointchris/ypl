@@ -35,10 +35,24 @@ class LocalPlaylist:
     entries: list[m3u.Entry] = field(default_factory=list)
     created_ts: str = ''
     source: str = ''
+    synced: bool = True
+    remote_id: str = ''
 
     @property
     def slug(self) -> str:
         return self.path.stem
+
+    @property
+    def sync_state(self) -> str:
+        """Where this playlist sits between "made here" and "on YouTube".
+
+        Three states rather than a flag, because the middle one is real: a
+        playlist is synced the moment it is made, but does not exist on YouTube
+        until the queue next drains.
+        """
+        if not self.synced:
+            return 'local'
+        return 'synced' if self.remote_id else 'pending'
 
     @property
     def video_ids(self) -> list[str]:
@@ -69,6 +83,8 @@ def load(path: Path) -> LocalPlaylist:
         entries=parsed.entries,
         created_ts=parsed.created_ts,
         source=parsed.source,
+        synced=parsed.synced,
+        remote_id=parsed.remote_id,
     )
 
 
@@ -86,6 +102,8 @@ def save(playlist: LocalPlaylist, overwrite: bool = False) -> Path:
         entries=playlist.entries,
         created_ts=playlist.created_ts,
         source=playlist.source,
+        synced=playlist.synced,
+        remote_id=playlist.remote_id,
     )
     playlist.path.write_text(m3u.render(document))
     return playlist.path

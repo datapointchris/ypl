@@ -273,6 +273,40 @@ def test_both_kinds_of_playlist_are_listed_together(built):
     assert {row['title']: row['kind'] for row in payload} == {'Get Insights': 'remote', 'Sunday': 'local'}
 
 
+def test_a_new_playlist_is_synced_by_default_and_waiting_to_go_up(built):
+    """Made here, meant for the phone — pending until the queue drains."""
+    payload = json.loads(runner.invoke(app, ['playlists', 'list', '--json', '--source', 'local']).stdout)
+    assert payload[0]['sync_state'] == 'pending'
+    assert payload[0]['synced'] is True
+    assert '#YPL-SYNCED:yes' in (paths.playlists_dir() / 'sunday.m3u').read_text()
+
+
+def test_a_playlist_can_be_kept_off_youtube_at_creation(synced):
+    runner.invoke(app, ['playlists', 'create', 'Scratch', '--from', 'Get Insights', '--local'])
+    payload = json.loads(runner.invoke(app, ['playlists', 'list', '--json', '--source', 'local']).stdout)
+    assert payload[0]['sync_state'] == 'local'
+    assert '#YPL-SYNCED:no' in (paths.playlists_dir() / 'scratch.m3u').read_text()
+
+
+def test_a_playlist_can_be_promoted_and_demoted_after_the_fact(synced):
+    runner.invoke(app, ['playlists', 'create', 'Scratch', '--from', 'Get Insights', '--local'])
+
+    promoted = runner.invoke(app, ['playlists', 'promote', 'Scratch', '--json'])
+    assert json.loads(promoted.stdout)['sync_state'] == 'pending'
+
+    demoted = runner.invoke(app, ['playlists', 'demote', 'Scratch', '--json'])
+    assert json.loads(demoted.stdout)['sync_state'] == 'local'
+
+
+def test_the_sync_state_survives_a_reorder_and_a_rename_of_its_contents(built):
+    """Every write goes through the same save, so the directives must round trip."""
+    runner.invoke(app, ['playlists', 'add', 'Sunday', '-4FPIL6e4SQ'])
+    runner.invoke(app, ['playlists', 'order', 'Sunday', '--sort', 'title'])
+
+    payload = json.loads(runner.invoke(app, ['playlists', 'list', '--json', '--source', 'local']).stdout)
+    assert payload[0]['sync_state'] == 'pending'
+
+
 @pytest.mark.parametrize(('source', 'expected'), [('local', ['Sunday']), ('remote', ['Get Insights'])])
 def test_the_listing_can_be_narrowed_to_one_kind(built, source, expected):
     payload = json.loads(runner.invoke(app, ['playlists', 'list', '--json', '--source', source]).stdout)

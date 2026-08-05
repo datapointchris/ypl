@@ -325,6 +325,7 @@ def playlist_summaries(connection: sqlite3.Connection, kind: str | None = None, 
             summaries.append(
                 {
                     'kind': REMOTE,
+                    'sync_state': REMOTE,
                     'title': row['title'],
                     'identifier': row['playlist_id'],
                     'item_count': row['item_count'],
@@ -342,7 +343,11 @@ def playlist_summaries(connection: sqlite3.Connection, kind: str | None = None, 
         known = videos_by_id(connection, video_ids)
         summaries.append(
             {
+                # `kind` stays which store holds it, because that is what
+                # `--source` filters on. Where it sits on the way to YouTube is
+                # a different question with its own field.
                 'kind': LOCAL,
+                'sync_state': playlist.sync_state,
                 'title': playlist.name,
                 'identifier': playlist.slug,
                 'item_count': len(video_ids),
@@ -350,6 +355,8 @@ def playlist_summaries(connection: sqlite3.Connection, kind: str | None = None, 
                 'created_ts': playlist.created_ts,
                 'source': playlist.source,
                 'path': str(playlist.path),
+                'synced': playlist.synced,
+                'remote_id': playlist.remote_id,
             }
         )
     return summaries[:limit] if limit else summaries
@@ -402,6 +409,7 @@ def create_local_playlist(
     video_ids: list[str],
     source: str = '',
     overwrite: bool = False,
+    synced: bool = True,
 ) -> LocalPlaylist:
     playlist = LocalPlaylist(
         name=name,
@@ -409,8 +417,21 @@ def create_local_playlist(
         entries=entries_for(connection, video_ids),
         created_ts=now_ts(),
         source=source,
+        synced=synced,
     )
     local.save(playlist, overwrite=overwrite)
+    return playlist
+
+
+def set_synced(playlist: LocalPlaylist, synced: bool) -> LocalPlaylist:
+    """Turn syncing on or off for a playlist.
+
+    Turning it off leaves any remote playlist alone rather than deleting it —
+    unbinding is about what ypl will push from here, and reaching across to
+    destroy something on YouTube is not what "stop syncing this" means.
+    """
+    playlist.synced = synced
+    local.save(playlist, overwrite=True)
     return playlist
 
 

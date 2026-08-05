@@ -28,6 +28,18 @@ from typing import Protocol
 
 DEFAULT_INTERVAL_SECONDS = 2.0
 
+# Playlist creation gets its own, far slower floor. It is the one endpoint with
+# a limit anyone has actually measured — roughly twenty in fifteen minutes
+# before a 429 that clears in hours — and it is also the operation that now
+# fires most often, because every playlist made here is synced. A single
+# creation still goes straight through; only a burst gets spaced out.
+CREATE_INTERVAL_SECONDS = 60.0
+
+# Private, so a playlist reaches your own phone and nobody else's. A private
+# playlist still appears in your library on every device you are signed in on,
+# which is the whole point of pushing it.
+DEFAULT_PRIVACY = 'PRIVATE'
+
 # Adds and removes carry an `actions` array, so a hundred of them cost one
 # request. Bounded anyway: the web client never sends an unbounded batch, and a
 # request that stands out is the thing worth avoiding.

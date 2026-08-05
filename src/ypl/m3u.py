@@ -28,6 +28,13 @@ INFO_DIRECTIVE = '#EXTINF:'
 CREATED_DIRECTIVE = '#YPL-CREATED:'
 SOURCE_DIRECTIVE = '#YPL-SOURCE:'
 
+# Two directives rather than one, because "should be synced" and "is bound to a
+# remote playlist" are genuinely different facts with a real window between
+# them: a playlist is promoted first and gets its remote id only when the queue
+# next drains.
+SYNCED_DIRECTIVE = '#YPL-SYNCED:'
+REMOTE_DIRECTIVE = '#YPL-REMOTE:'
+
 WATCH_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com'}
 SHORT_HOSTS = {'youtu.be'}
 # Every path shape YouTube serves a single video under. `watch?v=` carries the
@@ -81,6 +88,11 @@ class Playlist:
     entries: list[Entry] = field(default_factory=list)
     created_ts: str = ''
     source: str = ''
+    # Default True: a playlist made here is meant to end up on YouTube unless
+    # said otherwise. Creating one is cheap enough that syncing everything is
+    # also what keeps the merge path exercised rather than rehearsed.
+    synced: bool = True
+    remote_id: str = ''
 
 
 def is_video_id(text: str) -> bool:
@@ -155,6 +167,10 @@ def parse(text: str) -> Playlist:
                 playlist.created_ts = line[len(CREATED_DIRECTIVE) :].strip()
             elif line.startswith(SOURCE_DIRECTIVE):
                 playlist.source = line[len(SOURCE_DIRECTIVE) :].strip()
+            elif line.startswith(SYNCED_DIRECTIVE):
+                playlist.synced = line[len(SYNCED_DIRECTIVE) :].strip().lower() not in {'no', 'false', 'off', ''}
+            elif line.startswith(REMOTE_DIRECTIVE):
+                playlist.remote_id = line[len(REMOTE_DIRECTIVE) :].strip()
             elif line.startswith(INFO_DIRECTIVE):
                 pending_duration, pending_title = parse_info(line[len(INFO_DIRECTIVE) :])
             continue
@@ -176,6 +192,11 @@ def render(playlist: Playlist) -> str:
         lines.append(f'{CREATED_DIRECTIVE}{playlist.created_ts}')
     if playlist.source:
         lines.append(f'{SOURCE_DIRECTIVE}{playlist.source}')
+    # Written either way rather than only when true, so a file that came back
+    # from a hand edit says what it is instead of falling to the default.
+    lines.append(f'{SYNCED_DIRECTIVE}{"yes" if playlist.synced else "no"}')
+    if playlist.remote_id:
+        lines.append(f'{REMOTE_DIRECTIVE}{playlist.remote_id}')
     for entry in playlist.entries:
         lines.append('')
         duration = entry.duration_seconds if entry.duration_seconds is not None else -1

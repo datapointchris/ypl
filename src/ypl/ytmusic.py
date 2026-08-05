@@ -11,6 +11,8 @@ machine where the write path has never been set up.
 
 from pathlib import Path
 
+from ypl.remote import CREATE_INTERVAL_SECONDS
+from ypl.remote import DEFAULT_PRIVACY
 from ypl.remote import MAX_BATCH
 from ypl.remote import RemoteAuthError
 from ypl.remote import RemoteError
@@ -39,7 +41,7 @@ class YtMusicBackend:
     requests — which only holds if it does not then spend that saving on speed.
     """
 
-    def __init__(self, auth_file: Path, throttle: Throttle | None = None):
+    def __init__(self, auth_file: Path, throttle: Throttle | None = None, create_throttle: Throttle | None = None):
         try:
             from ytmusicapi import YTMusic
         except ImportError as error:  # pragma: no cover - dependency is declared
@@ -52,6 +54,10 @@ class YtMusicBackend:
         except Exception as error:
             raise self.translate(error) from error
         self.throttle = throttle or Throttle()
+        # Separate, because creation is the only endpoint with a measured limit
+        # and sharing one floor would either crawl every add or outrun the one
+        # limit we know about.
+        self.create_throttle = create_throttle or Throttle(CREATE_INTERVAL_SECONDS)
 
     @staticmethod
     def translate(error: Exception) -> RemoteError:
@@ -68,8 +74,8 @@ class YtMusicBackend:
             return RemoteAuthError(message)
         return RemoteError(message)
 
-    def call(self, method, *args, **kwargs):
-        self.throttle.wait()
+    def call(self, method, *args, throttle: Throttle | None = None, **kwargs):
+        (throttle or self.throttle).wait()
         try:
             return method(*args, **kwargs)
         except Exception as error:
@@ -95,7 +101,13 @@ class YtMusicBackend:
         ]
 
     def create_playlist(self, title: str, description: str = '') -> str:
-        created = self.call(self.client.create_playlist, title, description)
+        created = self.call(
+            self.client.create_playlist,
+            title,
+            description,
+            privacy_status=DEFAULT_PRIVACY,
+            throttle=self.create_throttle,
+        )
         if not isinstance(created, str):
             raise RemoteError(f'playlist was not created: {created}')
         return created
