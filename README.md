@@ -235,9 +235,36 @@ This is why deleting a base file is not free. Without it, everything in the play
 newly added here, and the next push sends it all back up — including whatever you deleted
 elsewhere.
 
+### Pushing
+
+`ypl remote plan` says what would change on YouTube; `ypl remote apply` does it. The plan is a dry
+run by construction rather than by flag — same reads, same arithmetic, stopping before the first
+write.
+
+```bash
+ypl remote plan                    # what would go up
+ypl remote apply                   # send it
+ypl remote apply --limit 5         # a drain on a timer
+```
+
+A playlist that has never been up is created on this run and bound to its new id before a single
+video goes into it — a creation that succeeded and was not written down is a playlist on YouTube
+that nothing here knows about, and the next run would make a second one. Everything else is a
+diff against the base: videos added here go up in batches of a hundred, videos deleted here are
+removed by the handle recorded for that slot, and the order is fixed with the fewest moves that
+produce it.
+
+Nothing is queued when you edit a playlist. The work is always whatever the local file and the
+base disagree about, so a plan is re-derived on demand and running one twice cannot ask for the
+same addition twice.
+
+If YouTube has changed since the last reconcile, that playlist is skipped rather than guessed at,
+and `ypl remote apply` exits 1 saying so — pushing on a stale base would decide a conflict without
+having seen it. Run `ypl remote pull` and apply again. Pull first, push second, always.
+
 ## Not done yet
 
-The queue and its drain — `ypl remote plan`, `push`, `apply`. Nothing has written to YouTube yet.
+Claude-assisted curation: mood and arc generation over the tracklist data.
 
 ## License
 

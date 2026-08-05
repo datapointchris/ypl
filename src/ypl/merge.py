@@ -58,6 +58,48 @@ class Merge:
         return bool(self.pending_add or self.pending_remove)
 
 
+@dataclass
+class PushDiff:
+    """What YouTube needs done to it to match the local file.
+
+    Removals are positions in the base rather than video ids, because the
+    handle that identifies a slot lives in the base at that position and a
+    video id cannot say which of its copies is meant.
+    """
+
+    add: list[str] = field(default_factory=list)
+    remove: list[int] = field(default_factory=list)
+    current_after: list[Key] = field(default_factory=list)
+    desired: list[Key] = field(default_factory=list)
+
+    @property
+    def empty(self) -> bool:
+        return not self.add and not self.remove and self.current_after == self.desired
+
+
+def push_plan(base: list[str], local: list[str]) -> PushDiff:
+    """The membership half of a push, derived rather than remembered.
+
+    Nothing is queued when a playlist is edited: the work is always whatever
+    the local file and the base disagree about, so this is re-derivable at any
+    time and running it twice cannot ask for the same addition twice.
+
+    `current_after` is what the playlist will hold once the removals and
+    additions have gone through — additions land at the end, which is where the
+    batch endpoint puts them — and is what the reorder is planned against.
+    """
+    base_keys, local_keys = keyed(base), keyed(local)
+    base_set, local_set = set(base_keys), set(local_keys)
+    kept = [key for key in base_keys if key in local_set]
+    added = [key for key in local_keys if key not in base_set]
+    return PushDiff(
+        add=[video_id for video_id, _ in added],
+        remove=[position for position, key in enumerate(base_keys) if key not in local_set],
+        current_after=kept + added,
+        desired=local_keys,
+    )
+
+
 def keyed(video_ids: list[str]) -> list[Key]:
     """Number each video by which copy of itself it is, in order."""
     seen: dict[str, int] = {}

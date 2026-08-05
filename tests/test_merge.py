@@ -166,3 +166,43 @@ def test_a_reconcile_run_twice_changes_nothing_the_second_time():
     assert second.order == first.order
     assert second.pending_remove == ['b']
     assert not second.changed_here
+
+
+def planned(base, local):
+    return merge.push_plan(list(base), list(local))
+
+
+def test_a_playlist_that_matches_its_base_needs_no_push():
+    assert planned('abc', 'abc').empty
+
+
+def test_videos_added_here_go_up():
+    diff = planned('abc', 'abcd')
+    assert diff.add == ['d']
+    assert diff.remove == []
+
+
+def test_videos_deleted_here_are_removed_by_position_in_the_base():
+    """A video id cannot say which of its copies is meant; a position can."""
+    diff = planned('aba', 'ab')
+    assert diff.add == []
+    assert diff.remove == [2]
+
+
+def test_a_reorder_alone_is_neither_an_add_nor_a_remove():
+    diff = planned('abc', 'cba')
+    assert not diff.add and not diff.remove
+    assert not diff.empty
+
+
+def test_additions_are_planned_as_landing_at_the_end():
+    """Which is where the batch endpoint puts them, and what the moves assume."""
+    diff = planned('ab', 'xaby')
+    assert [video_id for video_id, _ in diff.current_after] == ['a', 'b', 'x', 'y']
+    assert [video_id for video_id, _ in diff.desired] == ['x', 'a', 'b', 'y']
+
+
+def test_a_first_push_of_a_new_playlist_is_all_additions():
+    diff = planned('', 'abc')
+    assert diff.add == ['a', 'b', 'c']
+    assert diff.remove == []

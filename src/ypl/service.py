@@ -11,6 +11,7 @@ stores can say which — or refuse when the answer is both.
 import random
 import sqlite3
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import UTC
 from datetime import datetime
 
@@ -19,6 +20,7 @@ from ypl import history
 from ypl import local
 from ypl import m3u
 from ypl import merge
+from ypl import remote
 from ypl import tracklist
 from ypl import ytdlp
 from ypl.local import LocalPlaylist
@@ -473,6 +475,114 @@ def pull_playlist(connection: sqlite3.Connection, playlist: LocalPlaylist, backe
     local.save(playlist, overwrite=True)
     basestore.save(basestore.Base(slug=playlist.slug, playlist_id=playlist.remote_id, items=items))
     return Pull(playlist=playlist, result=result)
+
+
+@dataclass
+class Push:
+    """What one playlist needs pushed, and — after `apply_push` — what happened.
+
+    `stale` is the refusal: YouTube has moved since the last reconcile, so the
+    local file has not been merged against what is actually there and pushing
+    would decide a conflict blind. Pull first.
+    """
+
+    playlist: LocalPlaylist
+    diff: merge.PushDiff = field(default_factory=merge.PushDiff)
+    items: list[RemoteItem] = field(default_factory=list)
+    base: basestore.Base | None = None
+    create: bool = False
+    moves: int = 0
+    stale: bool = False
+
+    @property
+    def empty(self) -> bool:
+        return not self.create and not self.stale and self.diff.empty and not self.moves
+
+
+def plan_push(playlist: LocalPlaylist, backend: Backend) -> Push:
+    """What YouTube needs doing to it, without doing any of it.
+
+    Reads, because a plan made against the base alone would be a plan against
+    what YouTube looked like last time. The read is also the check: if it does
+    not match the base exactly, something changed there and this is a reconcile
+    rather than a push.
+    """
+    if not playlist.remote_id:
+        diff = merge.push_plan([], playlist.video_ids)
+        return Push(playlist=playlist, diff=diff, create=True)
+
+    items = backend.playlist_items(playlist.remote_id)
+    recorded = basestore.load(playlist.slug)
+    base_ids = recorded.video_ids if recorded else []
+    if [item.video_id for item in items] != base_ids:
+        return Push(playlist=playlist, items=items, base=recorded, stale=True)
+
+    diff = merge.push_plan(base_ids, playlist.video_ids)
+    return Push(
+        playlist=playlist,
+        diff=diff,
+        items=items,
+        base=recorded,
+        moves=len(remote.move_plan(diff.current_after, diff.desired)),
+    )
+
+
+def reorder_remote(playlist: LocalPlaylist, items: list[RemoteItem], backend: Backend) -> int:
+    """Move slots until YouTube's order matches the local file's.
+
+    Planned against a read taken after the additions, because a slot's handle
+    is the only way to move it and a video added a moment ago did not have one
+    until now. A playlist that no longer holds what the local file holds is
+    left unordered rather than forced: something changed underneath this run,
+    and the next reconcile is what should settle it.
+    """
+    by_key = dict(zip(merge.keyed([item.video_id for item in items]), items, strict=True))
+    desired = merge.keyed(playlist.video_ids)
+    if set(by_key) != set(desired):
+        return 0
+    moves = remote.move_plan(list(by_key), desired)
+    for key, before in moves:
+        backend.move_item(playlist.remote_id, by_key[key], by_key[before] if before else None)
+    return len(moves)
+
+
+def apply_push(push: Push, backend: Backend) -> Push:
+    """Carry out a plan, and record what YouTube holds afterwards.
+
+    The playlist is bound to its new remote id the moment it is created, before
+    a single video goes in. A creation that succeeded and was not written down
+    is a playlist on YouTube that nothing here knows about, and the next run
+    would make a second one.
+    """
+    playlist = push.playlist
+    if push.create:
+        playlist.remote_id = backend.create_playlist(playlist.name, playlist.source)
+        local.save(playlist, overwrite=True)
+        if playlist.video_ids:
+            backend.add_items(playlist.remote_id, playlist.video_ids)
+    else:
+        if push.diff.remove and push.base:
+            backend.remove_items(playlist.remote_id, [push.base.items[position] for position in push.diff.remove])
+        if push.diff.add:
+            backend.add_items(playlist.remote_id, push.diff.add)
+
+    items = backend.playlist_items(playlist.remote_id)
+    push.moves = reorder_remote(playlist, items, backend)
+    if push.moves:
+        items = backend.playlist_items(playlist.remote_id)
+    basestore.save(basestore.Base(slug=playlist.slug, playlist_id=playlist.remote_id, items=items))
+    push.items = items
+    return push
+
+
+def pushable_playlists() -> list[LocalPlaylist]:
+    """The playlists a bare `remote apply` covers.
+
+    Everything meant to sync, including the ones that have never been up: a
+    playlist with no remote id is not waiting for anything, it is the creation
+    this command exists to do.
+    """
+    return [playlist for playlist in local.list_playlists().playlists if playlist.synced]
 
 
 def pullable_playlists() -> list[LocalPlaylist]:

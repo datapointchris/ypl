@@ -849,17 +849,35 @@ HEADERS = 'cookie: __Secure-3PAPISID=aaa; SID=bbb\nx-goog-authuser: 0\n'
 
 
 class FakeBackend:
-    """A stored session, and what YouTube says about it.
+    """A YouTube that actually holds a playlist, so writes can be observed.
 
-    Class attributes rather than a constructor argument because the command
-    builds its own backend — the test sets what YouTube holds, then invokes.
+    Class attributes rather than constructor arguments because the command
+    builds its own backend — a test sets what YouTube holds, then invokes.
+    Writes mutate that state, so an assertion after `apply` is about what
+    YouTube ended up with rather than about which methods were called.
     """
 
     error: Exception | None = None
+    add_error: Exception | None = None
     items: list[RemoteItem] = []
+    created: list[str] = []
+    handles: int = 0
 
     def __init__(self, auth_file):
         self.auth_file = auth_file
+
+    @classmethod
+    def reset(cls):
+        cls.error = None
+        cls.add_error = None
+        cls.items = []
+        cls.created = []
+        cls.handles = 0
+
+    @classmethod
+    def handle(cls, video_id):
+        cls.handles += 1
+        return f'h{cls.handles}-{video_id}'
 
     def account(self):
         if self.error:
@@ -871,12 +889,38 @@ class FakeBackend:
             raise self.error
         return list(self.items)
 
+    def create_playlist(self, title, description=''):
+        if self.error:
+            raise self.error
+        FakeBackend.created.append(title)
+        FakeBackend.items = []
+        return 'PLNEW'
+
+    def add_items(self, playlist_id, video_ids):
+        if self.add_error:
+            raise self.add_error
+        FakeBackend.items = [*self.items, *(RemoteItem(video_id=v, set_video_id=self.handle(v)) for v in video_ids)]
+
+    def remove_items(self, playlist_id, items):
+        dropped = {item.set_video_id for item in items}
+        FakeBackend.items = [item for item in self.items if item.set_video_id not in dropped]
+
+    def move_item(self, playlist_id, item, before):
+        remaining = [held for held in self.items if held.set_video_id != item.set_video_id]
+        position = len(remaining)
+        if before:
+            position = next(index for index, held in enumerate(remaining) if held.set_video_id == before.set_video_id)
+        remaining.insert(position, item)
+        FakeBackend.items = remaining
+
 
 @pytest.fixture
 def signing_in(monkeypatch):
-    """Stand in for the one call `remote auth` makes to YouTube."""
+    """Stand in for YouTube, reset between tests because the state is class-level."""
+    FakeBackend.reset()
     monkeypatch.setattr(ytmusic, 'YtMusicBackend', FakeBackend)
-    return FakeBackend
+    yield FakeBackend
+    FakeBackend.reset()
 
 
 def test_signing_in_stores_the_session_and_names_the_account(signing_in):
@@ -923,10 +967,7 @@ def test_headers_that_do_not_parse_are_a_usage_error(signing_in):
 def test_a_session_youtube_rejects_is_not_left_behind(signing_in):
     """A stored credential that cannot work would only fail later, further from here."""
     signing_in.error = remote.RemoteAuthError('cookie expired')
-    try:
-        result = runner.invoke(app, ['remote', 'auth'], input=HEADERS)
-    finally:
-        signing_in.error = None
+    result = runner.invoke(app, ['remote', 'auth'], input=HEADERS)
     assert result.exit_code == 1
     assert not paths.ytmusic_auth_file().exists()
 
@@ -934,10 +975,7 @@ def test_a_session_youtube_rejects_is_not_left_behind(signing_in):
 def test_a_session_that_could_not_be_checked_is_kept(signing_in):
     """A throttle or a dead network says nothing about the headers."""
     signing_in.error = remote.RemoteRateLimitedError('slow down')
-    try:
-        result = runner.invoke(app, ['remote', 'auth'], input=HEADERS)
-    finally:
-        signing_in.error = None
+    result = runner.invoke(app, ['remote', 'auth'], input=HEADERS)
     assert result.exit_code == 1
     assert paths.ytmusic_auth_file().exists()
 
@@ -1040,10 +1078,7 @@ def test_a_pull_leaves_the_file_alone_when_the_base_cannot_be_read(bound):
 
 def test_a_rate_limit_stops_the_run_rather_than_retrying(bound):
     bound.error = remote.RemoteRateLimitedError('slow down')
-    try:
-        result = runner.invoke(app, ['remote', 'pull'])
-    finally:
-        bound.error = None
+    result = runner.invoke(app, ['remote', 'pull'])
     assert result.exit_code == 1
     assert 'slow down' in result.output
 
@@ -1083,3 +1118,101 @@ def test_a_demoted_playlist_is_not_pulled_into(bound):
     named = runner.invoke(app, ['remote', 'pull', 'Sunday'])
     assert named.exit_code == 1
     assert 'local only' in named.output
+
+
+def set_order(name: str, video_ids: list[str]) -> None:
+    """Rewrite a local playlist's order without going through a command."""
+    playlist = local.load(local.path_for(name))
+    by_id = {entry.video_id: entry for entry in playlist.entries}
+    playlist.entries = [by_id[video_id] for video_id in video_ids]
+    local.save(playlist, overwrite=True)
+
+
+def test_planning_reads_and_writes_nothing(bound):
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
+    runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1'])
+
+    result = runner.invoke(app, ['remote', 'plan', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)[0]['remove'] == 1
+    assert [item.video_id for item in bound.items] == ['vid1', 'vid2']
+
+
+def test_a_new_playlist_is_created_on_youtube_and_filled(two_videos, signing_in):
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+
+    result = runner.invoke(app, ['remote', 'apply'])
+    assert result.exit_code == 0
+    assert signing_in.created == ['Sunday']
+    assert [item.video_id for item in signing_in.items] == ['vid1', 'vid2']
+    assert local.load(local.path_for('Sunday')).remote_id == 'PLNEW'
+
+
+def test_a_created_playlist_is_bound_before_its_videos_go_up(two_videos, signing_in):
+    """Otherwise a failed fill orphans it, and the next run creates a second one."""
+    signing_in.add_error = remote.RemoteError('network went away')
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+
+    assert runner.invoke(app, ['remote', 'apply']).exit_code == 1
+    assert local.load(local.path_for('Sunday')).remote_id == 'PLNEW'
+
+    signing_in.add_error = None
+    assert runner.invoke(app, ['remote', 'apply']).exit_code == 0
+    assert signing_in.created == ['Sunday']
+
+
+def test_a_video_deleted_here_is_removed_on_youtube(bound):
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
+    runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1'])
+
+    assert runner.invoke(app, ['remote', 'apply']).exit_code == 0
+    assert [item.video_id for item in bound.items] == ['vid2']
+    assert basestore.load('sunday').video_ids == ['vid2']
+
+
+def test_a_reorder_here_becomes_moves_on_youtube(bound):
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
+    set_order('Sunday', ['vid2', 'vid1'])
+
+    result = runner.invoke(app, ['remote', 'apply', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)[0]['moves'] == 1
+    assert [item.video_id for item in bound.items] == ['vid2', 'vid1']
+
+
+def test_applying_twice_pushes_nothing_the_second_time(bound):
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
+    runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1'])
+    runner.invoke(app, ['remote', 'apply'])
+
+    result = runner.invoke(app, ['remote', 'apply'])
+    assert result.exit_code == 0
+    assert 'already up to date' in result.output
+    assert [item.video_id for item in bound.items] == ['vid2']
+
+
+def test_a_playlist_youtube_has_changed_is_refused_until_it_is_pulled(bound):
+    """Pushing on a stale base would decide a conflict without having seen it."""
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid9', set_video_id='h9')]
+    runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1'])
+
+    result = runner.invoke(app, ['remote', 'apply'])
+    assert result.exit_code == 1
+    assert 'ypl remote pull' in result.output
+    assert [item.video_id for item in bound.items] == ['vid1', 'vid9']
+
+
+def test_a_playlist_bound_to_youtube_with_no_base_is_refused_rather_than_pushed(bound):
+    """No base means no way to tell a local addition from a remote deletion."""
+    basestore.delete('sunday')
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1')]
+
+    result = runner.invoke(app, ['remote', 'plan', '--json'])
+    assert json.loads(result.stdout)[0]['stale'] is True
+
+
+def test_a_limited_run_says_how_much_it_left(bound):
+    runner.invoke(app, ['playlists', 'create', 'Monday', '--from', 'More'])
+    result = runner.invoke(app, ['remote', 'plan', '--limit', '1'])
+    assert result.exit_code == 0
+    assert '1 of 2' in result.output

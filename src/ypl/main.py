@@ -104,7 +104,9 @@ Examples:
 
   ypl remote auth                                 sign in, once per machine
   ypl remote pull                                 reconcile with YouTube
-  ypl remote pull 'Sunday'                        just the one playlist
+  ypl remote plan                                 what would go up
+  ypl remote apply                                send it
+  ypl remote apply --limit 5                      a drain on a timer
 """
 
 AUTH_INSTRUCTIONS = """\
@@ -1110,6 +1112,153 @@ def remote_pull(
         return
     for pull in pulls:
         report_pull(pull)
+
+
+def push_targets_or_exit(connection: sqlite3.Connection, name: str | None) -> list[local.LocalPlaylist]:
+    if name is None:
+        return service.pushable_playlists()
+    playlist = local_or_exit(connection, name)
+    if not playlist.synced:
+        messages.print(f'[red]{playlist.name} is local only.[/red] Run [bold]ypl playlists promote {playlist.name!r}[/bold] first.')
+        raise typer.Exit(1)
+    return [playlist]
+
+
+def describe_push(push: service.Push) -> str:
+    if push.stale:
+        return 'YouTube has changed since the last reconcile — run [bold]ypl remote pull[/bold] first'
+    parts = []
+    if push.create:
+        parts.append('create')
+    if push.diff.add:
+        parts.append(f'{len(push.diff.add)} to add')
+    if push.diff.remove:
+        parts.append(f'{len(push.diff.remove)} to remove')
+    if push.moves:
+        parts.append(f'{push.moves} moves')
+    return ', '.join(parts) if parts else 'nothing to push'
+
+
+def push_payload(push: service.Push) -> dict:
+    return {
+        'name': push.playlist.name,
+        'slug': push.playlist.slug,
+        'remote_id': push.playlist.remote_id,
+        'create': push.create,
+        'add': push.diff.add,
+        'remove': len(push.diff.remove),
+        'moves': push.moves,
+        'stale': push.stale,
+    }
+
+
+def plan_pushes(
+    connection: sqlite3.Connection, name: str | None, limit: int | None
+) -> tuple[ytmusic.YtMusicBackend | None, list[service.Push]]:
+    """Plan every target, and hand back the backend that read them.
+
+    The same backend carries on into `apply`, so a run is one signed-in session
+    and one throttle rather than a fresh one per playlist.
+    """
+    targets = push_targets_or_exit(connection, name)
+    if limit:
+        # Named rather than silent: a run that covered half the playlists and
+        # said "done" reads as everything being up on YouTube.
+        if len(targets) > limit:
+            messages.print(f'Planning {limit} of {len(targets)} playlists — run again for the rest.')
+        targets = targets[:limit]
+    if not targets:
+        return None, []
+
+    backend = backend_or_exit()
+    plans = []
+    try:
+        for playlist in targets:
+            plans.append(service.plan_push(playlist, backend))
+    except remote.RemoteRateLimitedError as error:
+        messages.print(f'[red]YouTube asked us to slow down.[/red] {error}')
+        raise typer.Exit(1) from error
+    except remote.RemoteError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+    except basestore.BaseStoreError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+    return backend, plans
+
+
+@remote_app.command('plan')
+def remote_plan(
+    name: str = typer.Argument(None, help='Playlist to plan. Every synced playlist when omitted.'),
+    limit: int = typer.Option(None, '--limit', '-n', help='Plan at most this many playlists.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """What `ypl remote apply` would change on YouTube.
+
+    A dry run by construction rather than by flag: this is the same reads and
+    the same arithmetic apply does, stopping before the first write.
+    """
+    connection = db.connect()
+    _, plans = plan_pushes(connection, name, limit)
+    if as_json:
+        print_json([push_payload(push) for push in plans])
+        return
+    if not plans:
+        messages.print('Nothing to plan — no playlist here is set to sync.')
+        return
+    for push in plans:
+        messages.print(f'[bold]{push.playlist.name}[/bold] — {describe_push(push)}')
+
+
+@remote_app.command('apply')
+def remote_apply(
+    name: str = typer.Argument(None, help='Playlist to push. Every synced playlist when omitted.'),
+    limit: int = typer.Option(None, '--limit', '-n', help='Push at most this many playlists, for a drain on a timer.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Make YouTube match the local files.
+
+    Slowly, and on purpose: every call is spaced, additions go up a hundred at
+    a time, and a rate limit stops the run instead of being retried into. A
+    playlist YouTube has changed since the last reconcile is skipped rather
+    than guessed at — [bold]ypl remote pull[/bold] is what settles that.
+    """
+    connection = db.connect()
+    backend, plans = plan_pushes(connection, name, limit)
+    if not plans or backend is None:
+        if not as_json:
+            messages.print('Nothing to apply — no playlist here is set to sync.')
+        return
+
+    done: list[service.Push] = []
+    failure: Exception | None = None
+    for push in plans:
+        if push.stale or push.empty:
+            done.append(push)
+            continue
+        try:
+            done.append(service.apply_push(push, backend))
+        except remote.RemoteError as error:
+            failure = error
+            break
+
+    if as_json:
+        print_json([push_payload(push) for push in done])
+    else:
+        for push in done:
+            if push.stale:
+                messages.print(f'[bold]{push.playlist.name}[/bold] — [yellow]skipped[/yellow]: {describe_push(push)}')
+            elif push.empty:
+                messages.print(f'[bold]{push.playlist.name}[/bold] — already up to date')
+            else:
+                messages.print(f'[bold]{push.playlist.name}[/bold] — pushed: {describe_push(push)}')
+
+    if failure:
+        messages.print(f'[red]{failure}[/red]')
+        messages.print(f'Stopped after {len(done)} of {len(plans)} — everything already pushed is recorded.')
+        raise typer.Exit(1)
+    if any(push.stale for push in done):
+        raise typer.Exit(1)
 
 
 @app.command('update', rich_help_panel=ADMIN)

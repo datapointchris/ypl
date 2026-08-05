@@ -23,6 +23,7 @@ trade ever stops being worth it.
 """
 
 import time
+from collections.abc import Hashable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -177,13 +178,14 @@ def longest_kept_run(order: list[int]) -> set[int]:
     return kept
 
 
-def move_plan(current: list[str], desired: list[str]) -> list[tuple[str, str | None]]:
+def move_plan[Slot: Hashable](current: list[Slot], desired: list[Slot]) -> list[tuple[Slot, Slot | None]]:
     """The shortest sequence of moves turning `current` into `desired`.
 
     Each pair is (what to move, what it should end up in front of), with None
     meaning the end. Keys must be unique and both lists must hold the same set —
-    a playlist may contain the same video twice, so callers key on the
-    playlist-item handle rather than the video id.
+    a playlist may contain the same video twice, so callers key on something
+    that separates the copies: the playlist-item handle once a slot exists, and
+    the occurrence of a video id while planning against slots that do not.
 
     Worth the trouble because a move is one request and cannot be batched.
     Rewriting a 200-item playlist slot by slot is 200 requests; moving only what
