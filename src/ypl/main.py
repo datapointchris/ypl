@@ -182,8 +182,10 @@ def matching_playlist_titles(incomplete: str, kind: str | None) -> list[str]:
         titles = [playlist.title for playlist in service.known_playlists(connection, kind)]
     except Exception:  # noqa: BLE001 - see the docstring; a completion never raises
         return []
-    lowered = incomplete.lower()
-    return [title for title in titles if lowered in title.lower()]
+    # Slugified on both sides, so that what completes and what resolves agree:
+    # typing `six hour` has to offer the `six-hour-work` this tool named itself.
+    typed = local.slugify(incomplete)
+    return [title for title in titles if typed in local.slugify(title)]
 
 
 # Typer reads a completion callback's signature and refuses any parameter it
@@ -635,7 +637,7 @@ def playlists_urls(
 
 @playlists_app.command('create', rich_help_panel=BUILDING)
 def playlists_create(
-    name: str = typer.Argument(..., help='What to call the new playlist.'),
+    name: str = typer.Argument(..., help='What to call the new playlist. Kebab-cased, whatever you type.'),
     from_playlist: str = typer.Option(None, '--from', '-f', help='Take the videos from this playlist, mirrored or local.'),
     sort: str = typer.Option('position', '--sort', help=f'One of: {", ".join(service.SORT_CLAUSES)}.'),
     limit: int = typer.Option(None, '--limit', '-n', help='Take at most this many videos.'),
@@ -649,6 +651,9 @@ def playlists_create(
     command — mpv, VLC and Kodi play it straight away. It is marked for syncing
     by default, so it appears on your phone once the queue next drains. Pass
     --local for one that should stay on this machine.
+
+    The name is kebab-cased: 'Six Hour Work' becomes six-hour-work, here and on
+    YouTube. Playlists made in the web player keep the names they were given.
     """
     check_sort(sort)
     connection = db.connect()

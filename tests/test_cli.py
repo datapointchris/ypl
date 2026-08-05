@@ -299,9 +299,34 @@ def test_a_created_playlist_records_where_it_came_from(built):
     assert '#YPL-SOURCE:remote PL1' in (paths.playlists_dir() / 'sunday.m3u').read_text()
 
 
+def test_a_playlist_made_here_is_named_in_kebab_case(synced):
+    """What this tool assembles is identifiable as such, on the phone as well as here."""
+    payload = json.loads(runner.invoke(app, ['playlists', 'create', 'Six Hour Work', '--from', 'Get Insights', '--json']).stdout)
+
+    assert (payload['name'], payload['slug']) == ('six-hour-work', 'six-hour-work')
+    assert '#PLAYLIST:six-hour-work' in (paths.playlists_dir() / 'six-hour-work.m3u').read_text()
+
+
+def test_a_name_that_came_from_youtube_is_left_exactly_as_it_is(synced):
+    """The other half of the rule. Re-casing a playlist made in the web player
+    would rewrite someone's own name for it on their own account."""
+    listed = json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)
+
+    assert [row['title'] for row in listed] == ['Get Insights']
+
+
+@pytest.mark.parametrize('typed', ['six hour work', 'Six Hour Work', 'six-hour-work', 'hour work'])
+def test_a_kebab_case_name_is_still_reachable_by_typing_it_any_way(synced, typed):
+    runner.invoke(app, ['playlists', 'create', 'Six Hour Work', '--from', 'Get Insights'])
+
+    result = runner.invoke(app, ['playlists', 'show', typed, '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)[0]['video_id'] == 'vid1'
+
+
 def test_both_kinds_of_playlist_are_listed_together(built):
     payload = json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)
-    assert {row['title']: row['kind'] for row in payload} == {'Get Insights': 'remote', 'Sunday': 'local'}
+    assert {row['title']: row['kind'] for row in payload} == {'Get Insights': 'remote', 'sunday': 'local'}
 
 
 def test_a_new_playlist_is_synced_by_default_and_waiting_to_go_up(built):
@@ -338,7 +363,7 @@ def test_the_sync_state_survives_a_reorder_and_a_rename_of_its_contents(built):
     assert payload[0]['sync_state'] == 'pending'
 
 
-@pytest.mark.parametrize(('source', 'expected'), [('local', ['Sunday']), ('remote', ['Get Insights'])])
+@pytest.mark.parametrize(('source', 'expected'), [('local', ['sunday']), ('remote', ['Get Insights'])])
 def test_the_listing_can_be_narrowed_to_one_kind(built, source, expected):
     payload = json.loads(runner.invoke(app, ['playlists', 'list', '--json', '--source', source]).stdout)
     assert [row['title'] for row in payload] == expected
@@ -454,7 +479,7 @@ def test_a_split_writes_one_playlist_per_part(many):
 
 def test_a_split_by_size_names_its_parts_after_the_source(many):
     payload = json.loads(runner.invoke(app, ['playlists', 'split', 'Long One', '--size', '5', '--json']).stdout)
-    assert [part['name'] for part in payload] == ['Long One 1', 'Long One 2']
+    assert [part['name'] for part in payload] == ['long-one-1', 'long-one-2']
 
 
 def test_a_split_can_be_named_something_other_than_its_source(many):
@@ -1169,7 +1194,7 @@ def test_a_new_playlist_is_created_on_youtube_and_filled(two_videos, signing_in)
 
     result = runner.invoke(app, ['remote', 'apply'])
     assert result.exit_code == 0
-    assert signing_in.created == ['Sunday']
+    assert signing_in.created == ['sunday']
     assert [item.video_id for item in signing_in.items] == ['vid1', 'vid2']
     assert local.load(local.path_for('Sunday')).remote_id == 'PLNEW'
 
@@ -1184,7 +1209,7 @@ def test_a_created_playlist_is_bound_before_its_videos_go_up(two_videos, signing
 
     signing_in.add_error = None
     assert runner.invoke(app, ['remote', 'apply']).exit_code == 0
-    assert signing_in.created == ['Sunday']
+    assert signing_in.created == ['sunday']
 
 
 def test_a_video_deleted_here_is_removed_on_youtube(bound):
@@ -1421,7 +1446,7 @@ def playing(monkeypatch, video_id: str | None) -> None:
 
 def test_the_current_playlist_is_remembered_between_commands(current):
     result = runner.invoke(app, ['use', '--json'])
-    assert json.loads(result.stdout)['playlist'] == 'Sunday'
+    assert json.loads(result.stdout)['playlist'] == 'sunday'
 
 
 def test_dropping_takes_out_what_is_playing_with_no_id_typed(current, monkeypatch):
@@ -1515,13 +1540,13 @@ def test_a_video_playing_from_a_different_playlist_says_so(current, monkeypatch)
 
     result = runner.invoke(app, ['drop'])
     assert result.exit_code == 1
-    assert 'Sunday' in result.output
+    assert 'sunday' in result.output
 
 
 def test_editing_with_no_name_edits_the_current_playlist(current):
     result = runner.invoke(app, ['playlists', 'edit', '--json'], input='https://youtu.be/vid2\n')
     assert result.exit_code == 0
-    assert json.loads(result.stdout)['name'] == 'Sunday'
+    assert json.loads(result.stdout)['name'] == 'sunday'
 
 
 @pytest.fixture
@@ -1652,14 +1677,14 @@ def test_playlist_names_complete_from_both_stores(synced):
     runner.invoke(app, ['playlists', 'create', 'Sunday Morning', '--from', 'Get Insights'])
 
     assert 'Get Insights' in main.complete_playlist('get')
-    assert 'Sunday Morning' in main.complete_playlist('sun')
+    assert 'sunday-morning' in main.complete_playlist('sun')
 
 
 def test_a_command_that_writes_only_completes_playlists_it_could_write_to(synced):
     """Offering a mirrored playlist to `ypl playlists edit` would be a lie."""
     runner.invoke(app, ['playlists', 'create', 'Sunday Morning', '--from', 'Get Insights'])
 
-    assert main.complete_local_playlist('') == ['Sunday Morning']
+    assert main.complete_local_playlist('') == ['sunday-morning']
 
 
 def test_completion_matches_anywhere_in_the_title_not_just_the_start(synced):

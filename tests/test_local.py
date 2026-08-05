@@ -34,6 +34,11 @@ def test_a_name_becomes_a_flat_lowercase_filename(name, expected):
     assert local.slugify(name) == expected
 
 
+def test_a_name_this_tool_authors_is_its_own_slug():
+    """One string, not two: a playlist made here is named the way it is filed."""
+    assert local.authored_name('Six Hour Work Uptempo House') == 'six-hour-work-uptempo-house'
+
+
 def test_a_name_cannot_escape_the_playlist_directory():
     """A slash in a playlist name must not become a path separator."""
     assert local.path_for('../../etc/passwd').parent == paths.playlists_dir()

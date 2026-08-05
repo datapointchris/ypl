@@ -71,6 +71,21 @@ def slugify(name: str) -> str:
     return '-'.join(part for part in replaced.split('-') if part)
 
 
+def authored_name(name: str) -> str:
+    """The name ypl gives a playlist it makes here: its own slug, verbatim.
+
+    Kebab-case rather than whatever was typed, so a playlist assembled here is
+    recognisable as one at a glance — in the listing, and on the phone, where it
+    sits among forty made by hand over a decade. It is also one string instead
+    of two: the display name and the filename cannot drift apart.
+
+    A name that came from YouTube goes the other way and is never passed through
+    here. `DRIVE TIME` stays `DRIVE TIME` — someone chose that, and re-casing it
+    would rewrite their own playlist under them on their own account.
+    """
+    return slugify(name)
+
+
 def path_for(name: str) -> Path:
     return paths.playlists_dir() / f'{slugify(name)}{SUFFIX}'
 

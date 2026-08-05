@@ -473,6 +473,7 @@ def create_local_playlist(
     overwrite: bool = False,
     synced: bool = True,
 ) -> LocalPlaylist:
+    name = local.authored_name(name)
     playlist = LocalPlaylist(
         name=name,
         path=local.path_for(name),
@@ -897,6 +898,7 @@ def order_local_playlist(
         playlist.entries = entries
         local.save(playlist, overwrite=True)
         return playlist
+    into = local.authored_name(into)
     ordered = LocalPlaylist(
         name=into,
         path=local.path_for(into),
@@ -935,16 +937,21 @@ def resolve_playlist(connection: sqlite3.Connection, name: str, kind: str | None
 
     An exact title beats a partial match of the same string, so a playlist
     called `Deep` stays reachable once `Deep Night` exists.
+
+    Both sides of the comparison are slugified, which makes casing, spacing and
+    punctuation irrelevant to finding a playlist. That is what keeps the naming
+    rule from becoming a tax on typing: `drive time` finds `DRIVE TIME`, and
+    `Six Hour Work` finds the `six-hour-work` this tool named itself.
     """
     candidates = known_playlists(connection, kind)
     for candidate in candidates:
         if candidate.identifier == name:
             return candidate
 
-    lowered = name.lower()
-    matches = [candidate for candidate in candidates if candidate.title.lower() == lowered]
+    needle = local.slugify(name)
+    matches = [candidate for candidate in candidates if local.slugify(candidate.title) == needle]
     if not matches:
-        matches = [candidate for candidate in candidates if lowered in candidate.title.lower()]
+        matches = [candidate for candidate in candidates if needle in local.slugify(candidate.title)]
     if not matches:
         raise PlaylistNotFoundError(name)
     if len(matches) > 1:

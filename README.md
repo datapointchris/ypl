@@ -70,9 +70,20 @@ ypl playlists create 'Sunday' --from 'Deep Night' --sort newest --limit 20
 ypl playlists add 'Sunday' 'https://youtu.be/...'      # URLs or bare ids
 ypl playlists remove 'Sunday' <id>
 ypl playlists delete 'Sunday'
-ypl playlists split 'Deep Night' --size 90             # into 'Deep Night 1', 'Deep Night 2'...
+ypl playlists split 'Deep Night' --size 90             # into 'deep-night-1', 'deep-night-2'...
 ypl playlists order 'Sunday' --sort longest            # in place, or --into 'Sunday Long'
 ```
+
+### Naming
+
+A playlist ypl makes is named in kebab-case, whatever you type: `create 'Six Hour Work'` writes
+`six-hour-work`, and that is the title it gets on YouTube too. A playlist made in the web player
+keeps the name it was given — `DRIVE TIME` stays `DRIVE TIME`, here and there. So the casing says
+where a playlist came from, in the listing and on the phone, without a field for it.
+
+Typing the name is unaffected: names are matched with the punctuation and casing taken out, so
+`drive time`, `DRIVE TIME` and `drive-time` all find the same playlist, as do `Six Hour Work` and
+`six-hour-work`.
 
 ### Rearranging
 
