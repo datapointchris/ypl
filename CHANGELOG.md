@@ -1,6 +1,27 @@
 # CHANGELOG
 
 
+## v0.8.0 (2026-08-05)
+
+### Features
+
+- **playlists**: Kebab-case what ypl names, keep what YouTube named
+  ([`dd8a8fc`](https://github.com/datapointchris/ypl/commit/dd8a8fcfd883cac20cd94653f10329e352d50684))
+
+A playlist made here is named its own slug — `create 'Six Hour Work'` writes `six-hour-work`, and
+  that is the title it gets on YouTube. The casing alone then says which playlists were assembled
+  here, among forty made by hand in the web player, with no field for it to keep in step.
+
+The other direction is the same rule read backwards: anything arriving from YouTube keeps its name
+  verbatim, because re-casing `DRIVE TIME` would rewrite someone's own playlist under them on their
+  own account.
+
+`local.authored_name` is the one boundary this passes through, so an adopted name simply never goes
+  near it. The resolver and the shell completion now compare slugified forms on both sides, which is
+  what keeps the rule from costing anything at the prompt: `drive time` finds `DRIVE TIME`, and `Six
+  Hour Work` finds `six-hour-work`.
+
+
 ## v0.7.1 (2026-08-05)
 
 ### Bug Fixes
