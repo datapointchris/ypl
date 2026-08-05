@@ -15,11 +15,14 @@ import pytest
 from typer.testing import CliRunner
 
 from ypl import basestore
+from ypl import db
 from ypl import local
+from ypl import main
 from ypl import paths
 from ypl import player
 from ypl import remote
 from ypl import service
+from ypl import throttle
 from ypl import ytdlp
 from ypl import ytmusic
 from ypl.main import app
@@ -38,6 +41,16 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'state'))
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
+
+
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    """Pacing is real behaviour, tested directly in test_throttle.
+
+    Left in here, every command that makes more than one request would sit out
+    its own interval and the suite would spend minutes asleep.
+    """
+    monkeypatch.setattr(throttle.time, 'sleep', lambda seconds: None)
 
 
 @pytest.fixture(autouse=True)
@@ -1579,3 +1592,89 @@ def test_enrich_all_does_not_stop_at_the_batch_size(two_videos, monkeypatch):
 
     result = runner.invoke(app, ['enrich', '--all', '--json'])
     assert json.loads(result.stdout)['enriched'] == 2
+
+
+def test_enrich_stops_when_youtube_pushes_back(two_videos, monkeypatch):
+    """Answering "slow down" with more requests is the worst available move."""
+
+    def rate_limited(video_id, **kwargs):
+        raise ytdlp.YtdlpRateLimitedError('ERROR: Sign in to confirm you are not a bot')
+
+    monkeypatch.setattr(ytdlp, 'fetch_video', rate_limited)
+
+    result = runner.invoke(app, ['enrich', '--all'])
+    assert result.exit_code == 1
+    assert 'pushing back' in result.output
+    assert 'request_interval_seconds' in result.output
+
+
+def test_enrich_keeps_what_it_managed_before_being_stopped(two_videos, monkeypatch):
+    """Stopping costs time and nothing else — the run is resumable by design."""
+    calls = []
+
+    def one_then_limited(video_id, **kwargs):
+        calls.append(video_id)
+        if len(calls) > 1:
+            raise ytdlp.YtdlpRateLimitedError('HTTP Error 429: Too Many Requests')
+        return RemoteVideo(video_id=video_id, title='A Mix', channel='Cercle')
+
+    monkeypatch.setattr(ytdlp, 'fetch_video', one_then_limited)
+
+    result = runner.invoke(app, ['enrich', '--all', '--json'])
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload['enriched'] == 1
+    assert payload['rate_limited'] is True
+
+
+def test_one_unreadable_video_is_skipped_rather_than_stopping_the_run(two_videos, monkeypatch):
+    """A video failing on its own merits is not YouTube pushing back."""
+
+    def one_bad(video_id, **kwargs):
+        if video_id == 'vid1':
+            raise ytdlp.YtdlpFailedError('ERROR: Video unavailable')
+        return RemoteVideo(video_id=video_id, title='A Mix', channel='Cercle')
+
+    monkeypatch.setattr(ytdlp, 'fetch_video', one_bad)
+
+    result = runner.invoke(app, ['enrich', '--all', '--json'])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload['enriched'] == 1
+    assert payload['failed'] == 1
+
+
+def test_playlist_names_complete_from_both_stores(synced):
+    """The whole point of completion here: nobody should retype a playlist name."""
+    runner.invoke(app, ['playlists', 'create', 'Sunday Morning', '--from', 'Get Insights'])
+
+    assert 'Get Insights' in main.complete_playlist('get')
+    assert 'Sunday Morning' in main.complete_playlist('sun')
+
+
+def test_a_command_that_writes_only_completes_playlists_it_could_write_to(synced):
+    """Offering a mirrored playlist to `ypl playlists edit` would be a lie."""
+    runner.invoke(app, ['playlists', 'create', 'Sunday Morning', '--from', 'Get Insights'])
+
+    assert main.complete_local_playlist('') == ['Sunday Morning']
+
+
+def test_completion_matches_anywhere_in_the_title_not_just_the_start(synced):
+    """Titles here start with the artist or the event, and you remember the middle."""
+    assert main.complete_playlist('insights') == ['Get Insights']
+
+
+def test_titles_inside_the_current_playlist_complete_for_the_id_free_verbs(current):
+    assert main.complete_entry('anot') == ['Another']
+
+
+def test_completion_answers_with_nothing_rather_than_raising(monkeypatch):
+    """It runs on a keystroke: a traceback would land in the middle of the line."""
+    monkeypatch.setattr(db, 'connect', lambda: (_ for _ in ()).throw(RuntimeError('database is locked')))
+
+    assert main.complete_playlist('any') == []
+    assert main.complete_entry('any') == []
+
+
+def test_completion_offers_nothing_when_no_playlist_is_current(two_videos):
+    assert main.complete_entry('') == []

@@ -26,6 +26,7 @@ from ypl import player
 from ypl import remote
 from ypl import service
 from ypl import session
+from ypl import throttle
 from ypl import ytdlp
 from ypl import ytmusic
 from ypl.models import watch_url
@@ -166,6 +167,54 @@ UPDATE_CONFIG = UpdateConfig(tool='ypl', owner='datapointchris')
 def root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand != 'update':
         notify(UPDATE_CONFIG)
+
+
+def matching_playlist_titles(incomplete: str, kind: str | None) -> list[str]:
+    """Playlist titles for the shell to offer.
+
+    Every failure is swallowed and answered with nothing. A completion runs on
+    a keystroke, in a shell that will happily print a traceback into the middle
+    of the line being typed, and no reason for one — an empty mirror, a
+    database mid-write, a config that stopped parsing — is worth that.
+    """
+    try:
+        connection = db.connect()
+        titles = [playlist.title for playlist in service.known_playlists(connection, kind)]
+    except Exception:  # noqa: BLE001 - see the docstring; a completion never raises
+        return []
+    lowered = incomplete.lower()
+    return [title for title in titles if lowered in title.lower()]
+
+
+# Typer reads a completion callback's signature and refuses any parameter it
+# does not recognise, so these take `incomplete` and nothing else. The shared
+# work lives in a function that is not a callback.
+def complete_playlist(incomplete: str) -> list[str]:
+    return matching_playlist_titles(incomplete, None)
+
+
+def complete_local_playlist(incomplete: str) -> list[str]:
+    """Only the playlists a command could actually change."""
+    return matching_playlist_titles(incomplete, service.LOCAL)
+
+
+def complete_entry(incomplete: str) -> list[str]:
+    """Titles inside the current playlist, for the verbs that take a fragment.
+
+    The same reasoning as the ids: what you can say about the thing playing is
+    its name, so the shell should finish it for you.
+    """
+    try:
+        connection = db.connect()
+        chosen = session.current()
+        if not chosen:
+            return []
+        playlist = service.resolve_playlist(connection, chosen, service.LOCAL)
+        rows = service.local_playlist_videos(connection, playlist.local) if playlist.local else []
+    except Exception:  # noqa: BLE001 - see complete_playlist
+        return []
+    lowered = incomplete.lower()
+    return [row['title'] for row in rows if row['title'] and lowered in row['title'].lower()]
 
 
 def print_json(data: object) -> None:
@@ -392,7 +441,7 @@ def sync(
 
 @app.command('enrich', rich_help_panel=SYNCING)
 def enrich(
-    playlist: str = typer.Option(None, '--playlist', '-p', help='Limit to one playlist, by title or id.'),
+    playlist: str = typer.Option(None, '--playlist', '-p', help='Limit to one playlist, by title or id.', autocompletion=complete_playlist),
     limit: int = typer.Option(None, '--limit', '-n', help='How many videos to fetch this run.'),
     everything: bool = typer.Option(False, '--all', help='Keep going until nothing is left, however long that takes.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
@@ -421,11 +470,20 @@ def enrich(
     enriched = 0
     tracks_found = 0
     failures: list[dict] = []
+    stopped = ''
+    # Paced, because this is the one command that makes thousands of requests
+    # in a row. A rate limit ends the run rather than being retried into: every
+    # video already enriched is stored, so stopping costs nothing but time.
+    pace = throttle.Throttle(settings.request_interval_seconds)
     with messages.status(f'Enriching {len(video_ids)} videos...') as status:
         for index, video_id in enumerate(video_ids, start=1):
             status.update(f'[{index}/{len(video_ids)}] {video_id}')
+            pace.wait()
             try:
                 tracks = service.enrich_video(connection, video_id, cookies_from_browser=settings.cookies_from_browser)
+            except ytdlp.YtdlpRateLimitedError as error:
+                stopped = str(error).splitlines()[-1] if str(error) else 'YouTube asked us to slow down'
+                break
             except ytdlp.YtdlpFailedError as error:
                 failures.append({'video_id': video_id, 'error': str(error).splitlines()[-1] if str(error) else 'unknown'})
                 continue
@@ -433,7 +491,17 @@ def enrich(
             tracks_found += len(tracks)
 
     if as_json:
-        print_json({'enriched': enriched, 'tracks_found': tracks_found, 'failed': len(failures), 'failures': failures})
+        print_json(
+            {
+                'enriched': enriched,
+                'tracks_found': tracks_found,
+                'failed': len(failures),
+                'failures': failures,
+                'rate_limited': bool(stopped),
+            }
+        )
+        if stopped:
+            raise typer.Exit(1)
         return
     messages.print(f'Enriched [bold]{enriched}[/bold] videos, found [bold]{tracks_found}[/bold] tracks')
     if failures:
@@ -441,6 +509,11 @@ def enrich(
         for failure in failures:
             messages.print(f'  {failure["video_id"]}  {failure["error"]}')
     remaining = len(service.unenriched_for(connection, resolved))
+    if stopped:
+        messages.print(f'[red]Stopped — YouTube is pushing back:[/red] {stopped}')
+        messages.print(f'{remaining} left. Leave it a few hours; everything enriched so far is already stored.')
+        messages.print('Raise [bold]request_interval_seconds[/bold] in the config to go gentler next time.')
+        raise typer.Exit(1)
     if remaining:
         messages.print(f'{remaining} still unenriched — run again to continue')
 
@@ -488,7 +561,7 @@ def report_unreadable_playlists(source: str | None) -> None:
 
 @playlists_app.command('show', rich_help_panel=READING)
 def playlists_show(
-    name: str = typer.Argument(..., help='Playlist title or id.'),
+    name: str = typer.Argument(..., help='Playlist title or id.', autocompletion=complete_playlist),
     limit: int = typer.Option(None, '--limit', '-n', help='Show at most this many videos.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
@@ -521,7 +594,7 @@ def playlists_show(
 
 @playlists_app.command('urls', rich_help_panel=READING)
 def playlists_urls(
-    name: str = typer.Argument(..., help='Playlist title or id.'),
+    name: str = typer.Argument(..., help='Playlist title or id.', autocompletion=complete_playlist),
     sort: str = typer.Option('position', '--sort', help='One of: position, oldest, newest, random.'),
     limit: int = typer.Option(None, '--limit', '-n', help='How many URLs to emit.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
@@ -597,7 +670,7 @@ def playlists_create(
 # hyphen, which Click would read as an unknown option.
 @playlists_app.command('add', rich_help_panel=BUILDING, context_settings={'ignore_unknown_options': True})
 def playlists_add(
-    name: str = typer.Argument(..., help='Local playlist to append to.'),
+    name: str = typer.Argument(..., help='Local playlist to append to.', autocompletion=complete_local_playlist),
     # Annotated form because a list default built by a call is the shared-mutable
     # -default bug the linter is right about, whatever Typer does with it.
     videos: Annotated[list[str] | None, typer.Argument(help='Video URLs or ids. Read from stdin when none are given.')] = None,
@@ -616,7 +689,7 @@ def playlists_add(
 
 @playlists_app.command('remove', rich_help_panel=BUILDING, context_settings={'ignore_unknown_options': True})
 def playlists_remove(
-    name: str = typer.Argument(..., help='Local playlist to remove from.'),
+    name: str = typer.Argument(..., help='Local playlist to remove from.', autocompletion=complete_local_playlist),
     videos: Annotated[list[str] | None, typer.Argument(help='Video URLs or ids. Read from stdin when none are given.')] = None,
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
@@ -636,7 +709,7 @@ def playlists_remove(
 
 @playlists_app.command('split', rich_help_panel=BUILDING)
 def playlists_split(
-    name: str = typer.Argument(..., help='Playlist to cut up, mirrored or local.'),
+    name: str = typer.Argument(..., help='Playlist to cut up, mirrored or local.', autocompletion=complete_playlist),
     size: int = typer.Option(None, '--size', '-s', help='Roughly how many videos per part.'),
     parts: int = typer.Option(None, '--parts', '-p', help='How many parts to cut it into.'),
     prefix: str = typer.Option(None, '--name', help="What to call the parts. Defaults to the source playlist's title."),
@@ -679,7 +752,7 @@ def playlists_split(
 
 @playlists_app.command('order', rich_help_panel=BUILDING)
 def playlists_order(
-    name: str = typer.Argument(..., help='Local playlist to reorder.'),
+    name: str = typer.Argument(..., help='Local playlist to reorder.', autocompletion=complete_local_playlist),
     sort: str = typer.Option(..., '--sort', help=f'One of: {", ".join(service.SORT_CLAUSES)}.'),
     into: str = typer.Option(None, '--into', help='Write the result as a new playlist instead of reordering this one.'),
     force: bool = typer.Option(False, '--force', help='Overwrite the playlist named by --into.'),
@@ -710,7 +783,9 @@ def playlists_order(
 
 @playlists_app.command('edit', rich_help_panel=BUILDING)
 def playlists_edit(
-    name: str = typer.Argument(None, help='Local playlist to rearrange. The current one when omitted.'),
+    name: str = typer.Argument(
+        None, help='Local playlist to rearrange. The current one when omitted.', autocompletion=complete_local_playlist
+    ),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Rearrange a playlist in your editor.
@@ -787,7 +862,7 @@ def playlists_edit(
 
 @playlists_app.command('promote', rich_help_panel=BUILDING)
 def playlists_promote(
-    name: str = typer.Argument(..., help='Local playlist to start syncing.'),
+    name: str = typer.Argument(..., help='Local playlist to start syncing.', autocompletion=complete_local_playlist),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Start syncing a local playlist to YouTube.
@@ -806,7 +881,7 @@ def playlists_promote(
 
 @playlists_app.command('demote', rich_help_panel=BUILDING)
 def playlists_demote(
-    name: str = typer.Argument(..., help='Playlist to stop syncing.'),
+    name: str = typer.Argument(..., help='Playlist to stop syncing.', autocompletion=complete_local_playlist),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Stop syncing a playlist, keeping the local file.
@@ -826,7 +901,7 @@ def playlists_demote(
 
 @playlists_app.command('delete', rich_help_panel=BUILDING)
 def playlists_delete(
-    name: str = typer.Argument(..., help='Local playlist to delete.'),
+    name: str = typer.Argument(..., help='Local playlist to delete.', autocompletion=complete_local_playlist),
     yes: bool = typer.Option(False, '--yes', '-y', help='Skip the confirmation.'),
 ) -> None:
     """Delete a local playlist file.
@@ -844,7 +919,7 @@ def playlists_delete(
 
 @videos_app.command('list', rich_help_panel=READING)
 def videos_list(
-    playlist: str = typer.Option(None, '--playlist', '-p', help='Only videos in this playlist.'),
+    playlist: str = typer.Option(None, '--playlist', '-p', help='Only videos in this playlist.', autocompletion=complete_playlist),
     artist: str = typer.Option(None, '--artist', '-a', help='Only videos with a track by an artist matching this.'),
     min_minutes: int = typer.Option(None, '--min-minutes', help='Only videos at least this long.'),
     max_minutes: int = typer.Option(None, '--max-minutes', help='Only videos at most this long.'),
@@ -995,7 +1070,7 @@ def config_show(
 
 @app.command('play', rich_help_panel=PLAYING)
 def play(
-    name: str = typer.Argument(..., help='Playlist to play, mirrored or local.'),
+    name: str = typer.Argument(..., help='Playlist to play, mirrored or local.', autocompletion=complete_playlist),
     sort: str = typer.Option('position', '--sort', help=f'One of: {", ".join(service.SORT_CLAUSES)}.'),
     limit: int = typer.Option(None, '--limit', '-n', help='Play at most this many videos.'),
     audio: bool = typer.Option(False, '--audio', '-a', help='Audio only, no video window.'),
@@ -1091,7 +1166,9 @@ def now(
 
 @app.command('use', rich_help_panel=PLAYING)
 def use(
-    name: str = typer.Argument(None, help='Playlist to work on. Prints the current one when omitted.'),
+    name: str = typer.Argument(
+        None, help='Playlist to work on. Prints the current one when omitted.', autocompletion=complete_local_playlist
+    ),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Set the playlist that `drop`, `later` and `sooner` act on.
@@ -1169,8 +1246,10 @@ def report_after_change(playlist: local.LocalPlaylist) -> None:
 
 @app.command('drop', rich_help_panel=PLAYING)
 def drop(
-    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.'),
-    playlist_name: str = typer.Option(None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.'),
+    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.', autocompletion=complete_entry),
+    playlist_name: str = typer.Option(
+        None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.', autocompletion=complete_local_playlist
+    ),
     keep_playing: bool = typer.Option(False, '--keep-playing', help='Do not skip it in mpv.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
@@ -1214,9 +1293,11 @@ def shift(connection: sqlite3.Connection, playlist_name: str | None, match: str 
 
 @app.command('later', rich_help_panel=PLAYING)
 def later(
-    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.'),
+    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.', autocompletion=complete_entry),
     count: int = typer.Option(1, '--count', '-n', help='How many places to move it back.'),
-    playlist_name: str = typer.Option(None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.'),
+    playlist_name: str = typer.Option(
+        None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.', autocompletion=complete_local_playlist
+    ),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Push a video further down the playlist."""
@@ -1225,9 +1306,11 @@ def later(
 
 @app.command('sooner', rich_help_panel=PLAYING)
 def sooner(
-    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.'),
+    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.', autocompletion=complete_entry),
     count: int = typer.Option(1, '--count', '-n', help='How many places to move it up.'),
-    playlist_name: str = typer.Option(None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.'),
+    playlist_name: str = typer.Option(
+        None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.', autocompletion=complete_local_playlist
+    ),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Bring a video further up the playlist."""
@@ -1445,7 +1528,9 @@ def report_pull(pull: service.Pull) -> None:
 
 @remote_app.command('pull')
 def remote_pull(
-    name: str = typer.Argument(None, help='Playlist to reconcile. Every synced playlist when omitted.'),
+    name: str = typer.Argument(
+        None, help='Playlist to reconcile. Every synced playlist when omitted.', autocompletion=complete_local_playlist
+    ),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Reconcile playlists with YouTube, letting YouTube win.
@@ -1578,7 +1663,7 @@ def plan_pushes(
 
 @remote_app.command('plan')
 def remote_plan(
-    name: str = typer.Argument(None, help='Playlist to plan. Every synced playlist when omitted.'),
+    name: str = typer.Argument(None, help='Playlist to plan. Every synced playlist when omitted.', autocompletion=complete_local_playlist),
     limit: int = typer.Option(None, '--limit', '-n', help='Plan at most this many playlists.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
@@ -1601,7 +1686,7 @@ def remote_plan(
 
 @remote_app.command('apply')
 def remote_apply(
-    name: str = typer.Argument(None, help='Playlist to push. Every synced playlist when omitted.'),
+    name: str = typer.Argument(None, help='Playlist to push. Every synced playlist when omitted.', autocompletion=complete_local_playlist),
     limit: int = typer.Option(None, '--limit', '-n', help='Push at most this many playlists, for a drain on a timer.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
