@@ -1,6 +1,34 @@
 # CHANGELOG
 
 
+## v0.6.0 (2026-08-05)
+
+### Features
+
+- **videos**: Hand over the library as something choosable
+  ([`91cfa6b`](https://github.com/datapointchris/ypl/commit/91cfa6b884e04122827fb351b2f6053199849311))
+
+`ypl videos list` is the read curation runs on. One row per mix: how long it is, whose channel it
+  came from, which of your playlists already hold it, and the artists inside it, commonest first.
+
+Collapsed rather than complete, because complete is unusable — forty tracks each across a library of
+  thousands is megabytes, and no amount of it answers the question being asked. What answers it is
+  which artists are in there.
+
+Nothing here labels genre or tempo, and nothing will: a chapter marker does not carry either.
+  Knowing that Shimza is uptempo and Bonobo is not is the reader's job, so this hands over the
+  artists and stops. The playlists a video already sits in are carried for the same reason — you
+  named those, so they are a judgement that already exists and costs nothing to pass on.
+
+Filters are the questions curation actually asks: long enough to work to, containing this artist
+  anywhere in the tracklist, from this playlist. The sort vocabulary is the same one as everywhere
+  else minus `position`, which means nothing across playlists, and a test pins that it invented no
+  names.
+
+`enrich --all` comes with it, because none of this exists until the tracklists do and the default
+  batch of fifty was never going to get there.
+
+
 ## v0.5.0 (2026-08-05)
 
 ### Features
