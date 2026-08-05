@@ -50,6 +50,7 @@ run. Everything else is reading:
 
 ```bash
 ypl status                                             # is it working, and how far behind
+ypl --version                                          # which build, including the background one
 ypl playlists list                                     # everything, mirrored and local
 ypl playlists show 'Deep Night'                        # the videos in one
 ypl videos show <id>                                   # its tracklist with timestamps
