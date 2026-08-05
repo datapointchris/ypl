@@ -10,6 +10,12 @@ from ypl.models import RemotePlaylist
 from ypl.models import RemoteVideo
 
 
+@pytest.fixture(autouse=True)
+def isolated_playlists(tmp_path, monkeypatch):
+    """Resolution reads the local playlist directory, so it must not be the real one."""
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
+
+
 @pytest.fixture
 def connection(tmp_path):
     return db.connect(tmp_path / 'ypl.db')
@@ -138,10 +144,10 @@ def test_a_playlist_resolves_by_id_exact_title_and_partial_title(connection, stu
     stub_remote(playlist(video('a'), title='Get Insights'))
     service.sync_playlist(connection, 'https://example.invalid/PL1')
 
-    assert service.resolve_playlist(connection, 'PL1')['title'] == 'Get Insights'
-    assert service.resolve_playlist(connection, 'Get Insights')['playlist_id'] == 'PL1'
-    assert service.resolve_playlist(connection, 'get insights')['playlist_id'] == 'PL1'
-    assert service.resolve_playlist(connection, 'Insights')['playlist_id'] == 'PL1'
+    assert service.resolve_playlist(connection, 'PL1').title == 'Get Insights'
+    assert service.resolve_playlist(connection, 'Get Insights').identifier == 'PL1'
+    assert service.resolve_playlist(connection, 'get insights').identifier == 'PL1'
+    assert service.resolve_playlist(connection, 'Insights').identifier == 'PL1'
 
 
 def test_an_ambiguous_partial_name_is_an_error_listing_the_candidates(connection, stub_remote):
@@ -152,7 +158,7 @@ def test_an_ambiguous_partial_name_is_an_error_listing_the_candidates(connection
 
     with pytest.raises(service.AmbiguousPlaylistError) as caught:
         service.resolve_playlist(connection, 'Deep Night')
-    assert {row['playlist_id'] for row in caught.value.candidates} == {'PL1', 'PL2'}
+    assert {candidate.identifier for candidate in caught.value.candidates} == {'PL1', 'PL2'}
 
 
 def test_an_exact_title_wins_over_a_partial_match_of_the_same_string(connection, stub_remote):
@@ -161,7 +167,7 @@ def test_an_exact_title_wins_over_a_partial_match_of_the_same_string(connection,
     stub_remote(playlist(video('b'), playlist_id='PL2', title='Deep Night'))
     service.sync_playlist(connection, 'https://example.invalid/PL2')
 
-    assert service.resolve_playlist(connection, 'Deep')['playlist_id'] == 'PL1'
+    assert service.resolve_playlist(connection, 'Deep').identifier == 'PL1'
 
 
 def test_an_unknown_name_raises_rather_than_returning_nothing(connection):
@@ -217,6 +223,6 @@ def test_listing_playlists_reports_how_many_videos_are_enriched(connection, stub
     stub_remote(fetched_video=RemoteVideo(video_id='a', title='A'))
     service.enrich_video(connection, 'a')
 
-    row = service.list_playlists(connection)[0]
+    row = service.playlist_summaries(connection)[0]
     assert row['item_count'] == 2
     assert row['enriched_count'] == 1

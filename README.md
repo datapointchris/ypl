@@ -32,12 +32,12 @@ Needs [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on `PATH`.
 ```bash
 ypl sync 'https://www.youtube.com/playlist?list=...'   # mirror a playlist locally
 ypl enrich --playlist 'Deep Night' --limit 50          # pull tracklists, resumably
-ypl playlists list                                     # what is mirrored
+ypl playlists list                                     # everything, mirrored and local
 ypl playlists show 'Deep Night'                        # the videos in one
 ypl videos show <id>                                   # its tracklist with timestamps
 ```
 
-Once synced, a playlist is named by its title — a partial title works when it is unambiguous.
+A playlist is named by its title — a partial title works when it is unambiguous.
 
 Every read takes `--json`, which goes to stdout with nothing else on it. `urls` emits bare URLs for
 piping:
@@ -45,6 +45,35 @@ piping:
 ```bash
 ypl playlists urls 'Get Insights' --sort oldest --limit 1 | xargs relate analyze
 ```
+
+## Playlists you build
+
+A playlist you make is an M3U file under `$XDG_DATA_HOME/ypl/playlists/`, and nothing about it
+touches YouTube:
+
+```bash
+ypl playlists create 'Sunday' --from 'Deep Night' --sort newest --limit 20
+ypl playlists add 'Sunday' 'https://youtu.be/...'      # URLs or bare ids
+ypl playlists remove 'Sunday' <id>
+ypl playlists delete 'Sunday'
+```
+
+`create` also reads URLs from a pipe, so a selection made by one command becomes a playlist:
+
+```bash
+ypl playlists urls 'Deep Night' --sort random --limit 20 | ypl playlists create 'Sunday'
+```
+
+An entry is a video. A DJ mix holding forty tracks is one entry, because a video is the smallest
+thing that can be played; the tracklist is metadata about it and lives in the mirror, where it is
+what ordering and similarity are computed from.
+
+The files are plain extended M3U, so `mpv --playlist ~/.local/share/ypl/playlists/sunday.m3u`
+plays one with no help from `ypl`, and VLC and Kodi open them too. What ypl needs beyond the
+format rides on `#YPL-` comment lines, which every player ignores.
+
+Both kinds of playlist answer to the same read commands. Only local ones can be changed:
+`ypl playlists list --source local` shows which are which.
 
 Private and unlisted playlists need a logged-in session — set `cookies_from_browser` in the config.
 
@@ -60,9 +89,9 @@ Private and unlisted playlists need a logged-in session — set `cookies_from_br
 
 ## Not done yet
 
-Local M3U playlists, playback, and the `remote` write queue. `youtube_playlists/main.py` is the
-previous argparse splitter, kept until the write path replaces it — it still runs as a script but
-is no longer part of the installed package.
+`ypl play`, splitting and reordering, and the `remote` write queue.
+`youtube_playlists/main.py` is the previous argparse splitter, kept until the write path replaces
+it — it still runs as a script but is no longer part of the installed package.
 
 ## License
 

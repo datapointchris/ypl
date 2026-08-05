@@ -238,3 +238,140 @@ def test_resolve_is_case_insensitive_from_the_cli(synced):
 
 def test_the_sort_names_the_cli_accepts_are_the_ones_the_service_implements():
     assert set(service.SORT_CLAUSES) == {'position', 'oldest', 'newest', 'random'}
+
+
+@pytest.fixture
+def built(synced):
+    """A local playlist copied out of the mirrored one."""
+    result = runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'Get Insights'])
+    assert result.exit_code == 0
+    return result
+
+
+def test_creating_a_local_playlist_writes_a_file_that_a_player_can_read(built):
+    contents = (paths.playlists_dir() / 'sunday.m3u').read_text()
+    assert contents.startswith('#EXTM3U')
+    assert 'https://www.youtube.com/watch?v=vid1' in contents
+
+
+def test_a_created_playlist_records_where_it_came_from(built):
+    assert '#YPL-SOURCE:remote PL1' in (paths.playlists_dir() / 'sunday.m3u').read_text()
+
+
+def test_both_kinds_of_playlist_are_listed_together(built):
+    payload = json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)
+    assert {row['title']: row['kind'] for row in payload} == {'Get Insights': 'remote', 'Sunday': 'local'}
+
+
+@pytest.mark.parametrize(('source', 'expected'), [('local', ['Sunday']), ('remote', ['Get Insights'])])
+def test_the_listing_can_be_narrowed_to_one_kind(built, source, expected):
+    payload = json.loads(runner.invoke(app, ['playlists', 'list', '--json', '--source', source]).stdout)
+    assert [row['title'] for row in payload] == expected
+
+
+def test_an_unknown_source_is_a_usage_error(built):
+    assert runner.invoke(app, ['playlists', 'list', '--source', 'sideways']).exit_code == 2
+
+
+def test_a_local_playlist_shows_the_mirror_metadata_for_its_videos(built):
+    payload = json.loads(runner.invoke(app, ['playlists', 'show', 'Sunday', '--json']).stdout)
+    assert payload[0]['title'] == 'A Talk'
+    assert payload[0]['in_mirror'] is True
+
+
+def test_urls_read_a_local_playlist_the_same_way_they_read_a_mirrored_one(built):
+    result = runner.invoke(app, ['playlists', 'urls', 'Sunday'])
+    assert result.exit_code == 0
+    assert result.stdout.strip() == 'https://www.youtube.com/watch?v=vid1'
+
+
+def test_creating_refuses_to_clobber_without_force(built):
+    assert runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'Get Insights']).exit_code == 1
+    assert runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'Get Insights', '--force']).exit_code == 0
+
+
+def test_a_playlist_can_be_built_from_piped_urls(synced):
+    """The other half of `playlists urls` — a selection becomes a playlist."""
+    result = runner.invoke(app, ['playlists', 'create', 'Piped', '--json'], input='https://youtu.be/vid1\n')
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['video_count'] == 1
+
+
+def test_a_piped_line_that_is_not_a_video_is_a_usage_error(synced):
+    result = runner.invoke(app, ['playlists', 'create', 'Piped'], input='https://example.invalid/nope\n')
+    assert result.exit_code == 2
+
+
+def test_videos_can_be_added_and_removed_by_url_or_bare_id(built):
+    added = runner.invoke(app, ['playlists', 'add', 'Sunday', 'https://youtu.be/-4FPIL6e4SQ', '--json'])
+    assert json.loads(added.stdout)['video_count'] == 2
+
+    removed = runner.invoke(app, ['playlists', 'remove', 'Sunday', '-4FPIL6e4SQ', '--json'])
+    assert json.loads(removed.stdout)['removed'] == 1
+    assert json.loads(removed.stdout)['video_count'] == 1
+
+
+def test_removing_something_that_is_not_there_is_not_a_failure(built):
+    result = runner.invoke(app, ['playlists', 'remove', 'Sunday', '-4FPIL6e4SQ', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['removed'] == 0
+
+
+def test_editing_a_mirrored_playlist_says_so_rather_than_claiming_it_is_missing(synced):
+    """`not found` would be a lie about a playlist that is plainly listed."""
+    result = runner.invoke(app, ['playlists', 'add', 'Get Insights', 'vid1'])
+    assert result.exit_code == 1
+    assert 'mirrored' in result.output
+
+
+def test_a_local_playlist_named_after_its_source_is_still_editable(synced):
+    """Copying `Deep Night` to a local `Deep Night` must not make the name unusable."""
+    assert runner.invoke(app, ['playlists', 'create', 'Get Insights', '--from', 'PL1']).exit_code == 0
+
+    result = runner.invoke(app, ['playlists', 'add', 'Get Insights', '-4FPIL6e4SQ', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['video_count'] == 2
+
+
+def test_a_name_matching_both_stores_is_ambiguous_for_reads(synced):
+    """Reads span both stores, so the same title in each has to be an error."""
+    assert runner.invoke(app, ['playlists', 'create', 'Get Insights', '--from', 'PL1']).exit_code == 0
+
+    result = runner.invoke(app, ['playlists', 'show', 'Get Insights'])
+    assert result.exit_code == 2
+    assert 'remote PL1' in result.output
+
+
+def test_deleting_a_local_playlist_asks_first(built):
+    assert runner.invoke(app, ['playlists', 'delete', 'Sunday'], input='n\n').exit_code == 1
+    assert (paths.playlists_dir() / 'sunday.m3u').exists()
+
+    assert runner.invoke(app, ['playlists', 'delete', 'Sunday', '--yes']).exit_code == 0
+    assert not (paths.playlists_dir() / 'sunday.m3u').exists()
+
+
+def test_an_unreadable_playlist_file_is_named_without_breaking_the_listing(synced):
+    paths.playlists_dir().mkdir(parents=True)
+    (paths.playlists_dir() / 'broken.m3u').write_text('#EXTM3U\n/not/a/video.mp3\n')
+
+    result = runner.invoke(app, ['playlists', 'list'])
+    assert result.exit_code == 0
+    assert 'broken.m3u' in result.output
+    assert 'Get Insights' in result.output
+
+
+def test_a_video_reachable_only_through_a_local_playlist_can_still_be_enriched(monkeypatch):
+    """Enrichment is a fact about a video, not about its membership of a mirror playlist."""
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_video',
+        lambda video_id, **kwargs: RemoteVideo(video_id=video_id, title='A Set', channel='Cercle', duration_seconds=3600),
+    )
+    assert runner.invoke(app, ['playlists', 'create', 'Hand Picked'], input='https://youtu.be/vid9\n').exit_code == 0
+
+    result = runner.invoke(app, ['enrich', '--playlist', 'Hand Picked', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['enriched'] == 1
+
+    shown = json.loads(runner.invoke(app, ['videos', 'show', 'vid9', '--json']).stdout)
+    assert shown['video']['title'] == 'A Set'
