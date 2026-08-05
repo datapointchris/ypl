@@ -10,10 +10,11 @@ dependencies = [
     "typer>=0.15.0",
     "rich>=13.0.0",
     "pyselfupdate[typer]>=0.2.2",
-    # The write path against the Data API. Reads go through the yt-dlp binary,
-    # which is deliberately not a dependency — see src/ypl/ytdlp.py.
-    "google-auth-oauthlib>=1.2.1",
-    "google-api-python-client>=2.146.0",
+    # The write path. Not the official Data API, which caps writes at 200/day
+    # forever — see src/ypl/remote.py for why that ceiling is the wrong shape
+    # for this tool. Reads go through the yt-dlp binary, which is deliberately
+    # not a dependency at all — see src/ypl/ytdlp.py.
+    "ytmusicapi>=1.12.1",
 ]
 
 [project.scripts]

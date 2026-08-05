@@ -157,11 +157,29 @@ Each call draws afresh among everything tied at the same rank — on a library n
 played from, that is all of it — so repeated calls do not keep naming the same mix. `menu next`
 caches its own draw, which is where stability within a session comes from.
 
+## Writing back to YouTube
+
+Writes go through the YouTube Music web client's own endpoints (`ytmusicapi`), not the official
+Data API. `playlistItems.insert` costs 50 units of a per-project 10,000/day, which is 200 writes a
+day permanently — splitting an 1,800-video playlist through it is eighteen days of queue draining,
+which forces the shape that looks least like a person: a daemon making requests around the clock
+for weeks.
+
+The web client protocol batches. One request carries an `actions` array of a hundred additions, so
+the same reorganisation is a couple of dozen requests — *less* traffic than doing it by hand in the
+browser. That is the argument for this route, and it only holds if the saving is not spent on
+speed, so every call goes through a throttle, batches are bounded, and a rate-limit response stops
+the run rather than retrying into it.
+
+Reordering is the exception: a move is one request and cannot be batched, so ypl computes the
+shortest move sequence rather than rewriting the playlist slot by slot. Moving one video to the
+front of a 200-track playlist is one request, not 200.
+
+The backend sits behind an interface, so the Data API remains a one-module swap.
+
 ## Not done yet
 
-The `remote` write queue.
-`youtube_playlists/main.py` is the previous argparse splitter, kept until the write path replaces
-it — it still runs as a script but is no longer part of the installed package.
+The `remote` sync commands themselves — the reconcile and the background queue that drains it.
 
 ## License
 
