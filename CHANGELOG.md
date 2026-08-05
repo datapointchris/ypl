@@ -1,6 +1,28 @@
 # CHANGELOG
 
 
+## v0.3.0 (2026-08-05)
+
+### Features
+
+- **sync**: Mirror the whole account, not one URL at a time
+  ([`8e52d67`](https://github.com/datapointchris/ypl/commit/8e52d67b0bb47ffb90ab7a24bc2cb930f4a0b251))
+
+`ypl sync` with no URL lists the playlists the signed-in account has and mirrors every one of them.
+  Pasting forty-two URLs in from a browser was never a reasonable way to start using this, and
+  nothing about the design required it — the account has always been able to say what it holds.
+
+Read from YouTube's own playlists feed rather than the YouTube Music library, because they are not
+  the same list: the library call returns one podcast queue on this account while the feed returns
+  the forty-odd playlists actually saved. Music's library is a view of Music, and these playlists
+  were made on YouTube.
+
+Both steps are yt-dlp reads, so a whole library costs no quota, which is what makes syncing
+  everything the default rather than something to ration. A playlist YouTube will not serve is
+  collected and named at the end rather than ending the run — one collaborative list gone private
+  must not cost the other forty their sync.
+
+
 ## v0.2.0 (2026-08-05)
 
 ### Features
