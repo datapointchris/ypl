@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Scoped per job rather than here: validate only reads, and it is the job that
+# runs the most third-party code.
+permissions:
+  contents: read
+
+jobs:
+  # Without this, release publishes whatever is on main, tested or not.
+  validate:
+    uses: ./.github/workflows/validate.yml
+
+  release:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: python-semantic-release/python-semantic-release@v9
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}

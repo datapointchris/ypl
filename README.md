@@ -22,10 +22,17 @@ anything back to YouTube is a separate, deliberate, queued act.
 ## Install
 
 ```bash
-uv tool install .
+uv tool install 'ypl @ git+https://github.com/datapointchris/youtube-playlists.git@v0.2.0'
+uv tool install .    # from a checkout, for development
 ```
 
-Needs [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on `PATH`.
+Not on PyPI, and installed from a release tag rather than the default branch: `ypl update` reads
+uv's receipt to decide what it may do, and a git requirement with no `rev=` reads as a dev checkout
+it will refuse to update over. Personal machines get this through dotfiles (`git_uv_tools`), which
+pins the same way.
+
+Needs [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and, for playback, [`mpv`](https://mpv.io) on
+`PATH`.
 
 ## Use
 

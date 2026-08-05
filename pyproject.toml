@@ -1,5 +1,9 @@
 [project]
-name = "youtube-playlists"
+# The distribution is named for the command, not for the repository. uv keys a
+# tool's receipt directory on the distribution name and pyselfupdate reads the
+# running version from it, so a distribution called `youtube-playlists` would
+# install a `ypl` whose own `update` could not find itself.
+name = "ypl"
 version = "0.1.0"
 description = "Organize YouTube music playlists of long DJ mixes."
 authors = [{ name = "Chris Birch", email = "datapointchris@gmail.com" }]
@@ -83,6 +87,19 @@ docstring-code-format = true
 [tool.pyright]
 typeCheckingMode = "standard"
 analyzeUnannotatedFunctions = true
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+commit_message = "build(release): {version}"
+# The package name is hardcoded because python-semantic-release sets no
+# variable for it, and `--upgrade-package "$PACKAGE_NAME"` silently no-ops and
+# ships a stale lock in the release commit.
+build_command = """
+    pip install uv
+    uv lock --upgrade-package ypl
+    git add uv.lock
+"""
 
 [tool.pytest.ini_options]
 addopts = "-vv"
