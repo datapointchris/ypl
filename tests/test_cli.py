@@ -236,8 +236,13 @@ def test_resolve_is_case_insensitive_from_the_cli(synced):
     assert json.loads(result.stdout)[0]['video_id'] == 'vid1'
 
 
-def test_the_sort_names_the_cli_accepts_are_the_ones_the_service_implements():
-    assert set(service.SORT_CLAUSES) == {'position', 'oldest', 'newest', 'random'}
+def test_every_sort_the_cli_accepts_is_implemented_for_both_kinds_of_playlist():
+    """The SQL and the Python sorts have to stay in step.
+
+    A name in the CLI's vocabulary with no local implementation is a KeyError
+    the moment someone points it at a local playlist.
+    """
+    assert set(service.SORT_CLAUSES) == set(service.LOCAL_SORT_KEYS) | {'position', 'random'}
 
 
 @pytest.fixture
@@ -358,6 +363,139 @@ def test_an_unreadable_playlist_file_is_named_without_breaking_the_listing(synce
     assert result.exit_code == 0
     assert 'broken.m3u' in result.output
     assert 'Get Insights' in result.output
+
+
+@pytest.fixture
+def many(monkeypatch):
+    """A mirrored playlist of ten videos, newest first, alternating lengths."""
+    videos = [
+        RemoteVideo(video_id=f'vid{index:02d}', title=f'Mix {index:02d}', channel='Cercle', duration_seconds=1000 + index)
+        for index in range(1, 11)
+    ]
+    monkeypatch.setattr(ytdlp, 'fetch_playlist', lambda *args, **kwargs: RemotePlaylist(playlist_id='PL9', title='Long One', videos=videos))
+    runner.invoke(app, ['sync', 'https://example.invalid/PL9'])
+
+
+def test_a_split_writes_one_playlist_per_part(many):
+    payload = json.loads(runner.invoke(app, ['playlists', 'split', 'Long One', '--parts', '3', '--json']).stdout)
+    assert [part['video_count'] for part in payload] == [4, 3, 3]
+    assert [part['slug'] for part in payload] == ['long-one-1', 'long-one-2', 'long-one-3']
+
+
+def test_a_split_by_size_names_its_parts_after_the_source(many):
+    payload = json.loads(runner.invoke(app, ['playlists', 'split', 'Long One', '--size', '5', '--json']).stdout)
+    assert [part['name'] for part in payload] == ['Long One 1', 'Long One 2']
+
+
+def test_a_split_can_be_named_something_other_than_its_source(many):
+    payload = json.loads(runner.invoke(app, ['playlists', 'split', 'Long One', '--parts', '2', '--name', 'Sunday', '--json']).stdout)
+    assert [part['slug'] for part in payload] == ['sunday-1', 'sunday-2']
+
+
+def test_a_split_keeps_every_video_exactly_once(many):
+    runner.invoke(app, ['playlists', 'split', 'Long One', '--parts', '3'])
+    split = [
+        row['video_id']
+        for slug in ['Long One 1', 'Long One 2', 'Long One 3']
+        for row in json.loads(runner.invoke(app, ['playlists', 'show', slug, '--json']).stdout)
+    ]
+    assert sorted(split) == [f'vid{index:02d}' for index in range(1, 11)]
+
+
+def test_a_split_needs_exactly_one_of_size_and_parts(many):
+    assert runner.invoke(app, ['playlists', 'split', 'Long One']).exit_code == 2
+    assert runner.invoke(app, ['playlists', 'split', 'Long One', '--size', '5', '--parts', '2']).exit_code == 2
+    assert runner.invoke(app, ['playlists', 'split', 'Long One', '--parts', '0']).exit_code == 2
+
+
+def test_a_split_that_would_overwrite_an_earlier_one_changes_nothing(many):
+    """Checked up front, so a half-overwritten split cannot happen."""
+    runner.invoke(app, ['playlists', 'split', 'Long One', '--parts', '2'])
+    before = (paths.playlists_dir() / 'long-one-1.m3u').read_text()
+
+    result = runner.invoke(app, ['playlists', 'split', 'Long One', '--parts', '3'])
+    assert result.exit_code == 1
+    assert (paths.playlists_dir() / 'long-one-1.m3u').read_text() == before
+    assert not (paths.playlists_dir() / 'long-one-3.m3u').exists()
+
+
+def test_a_forced_split_replaces_the_earlier_one(many):
+    runner.invoke(app, ['playlists', 'split', 'Long One', '--parts', '2'])
+    payload = json.loads(runner.invoke(app, ['playlists', 'split', 'Long One', '--parts', '2', '--force', '--json']).stdout)
+    assert [part['video_count'] for part in payload] == [5, 5]
+
+
+def test_ordering_rewrites_the_playlist_in_place(many):
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'Long One'])
+    assert runner.invoke(app, ['playlists', 'order', 'Sunday', '--sort', 'longest']).exit_code == 0
+
+    ordered = json.loads(runner.invoke(app, ['playlists', 'show', 'Sunday', '--json']).stdout)
+    assert [row['video_id'] for row in ordered] == [f'vid{index:02d}' for index in range(10, 0, -1)]
+
+
+def test_ordering_into_a_new_name_leaves_the_original_alone(many):
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'Long One'])
+    assert runner.invoke(app, ['playlists', 'order', 'Sunday', '--sort', 'longest', '--into', 'Sunday Long']).exit_code == 0
+
+    original = json.loads(runner.invoke(app, ['playlists', 'show', 'Sunday', '--json']).stdout)
+    assert original[0]['video_id'] == 'vid01'
+    assert (paths.playlists_dir() / 'sunday-long.m3u').exists()
+
+
+def test_ordering_into_an_existing_name_refuses_without_force(many):
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'Long One'])
+    runner.invoke(app, ['playlists', 'create', 'Taken', '--from', 'Long One'])
+
+    assert runner.invoke(app, ['playlists', 'order', 'Sunday', '--sort', 'title', '--into', 'Taken']).exit_code == 1
+    assert runner.invoke(app, ['playlists', 'order', 'Sunday', '--sort', 'title', '--into', 'Taken', '--force']).exit_code == 0
+
+
+def test_ordering_keeps_unavailable_videos_rather_than_selecting_them_out(monkeypatch):
+    """Reordering must not silently drop entries — that is what `create` is for."""
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_playlist',
+        lambda *args, **kwargs: RemotePlaylist(
+            playlist_id='PL1',
+            title='Mixed',
+            videos=[RemoteVideo(video_id='ok', title='Fine'), RemoteVideo(video_id='gone', title='[Deleted video]', is_unavailable=True)],
+        ),
+    )
+    runner.invoke(app, ['sync', 'https://example.invalid/PL1'])
+    runner.invoke(app, ['playlists', 'create', 'Kept'], input='https://youtu.be/ok\nhttps://youtu.be/gone\n')
+
+    result = runner.invoke(app, ['playlists', 'order', 'Kept', '--sort', 'title', '--json'])
+    assert json.loads(result.stdout)['video_count'] == 2
+
+
+def test_a_split_says_what_it_left_out_rather_than_coming_up_short_silently(monkeypatch):
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_playlist',
+        lambda *args, **kwargs: RemotePlaylist(
+            playlist_id='PL1',
+            title='Patchy',
+            videos=[
+                RemoteVideo(video_id='a', title='One'),
+                RemoteVideo(video_id='gone', title='[Deleted video]', is_unavailable=True),
+                RemoteVideo(video_id='b', title='Two'),
+            ],
+        ),
+    )
+    runner.invoke(app, ['sync', 'https://example.invalid/PL1'])
+
+    result = runner.invoke(app, ['playlists', 'split', 'Patchy', '--parts', '2'])
+    assert result.exit_code == 0
+    assert '1 unavailable' in result.output
+
+
+def test_ordering_a_mirrored_playlist_is_refused(synced):
+    assert runner.invoke(app, ['playlists', 'order', 'Get Insights', '--sort', 'random']).exit_code == 1
+
+
+def test_an_unknown_sort_is_a_usage_error_for_every_command_that_takes_one(built):
+    for command in [['playlists', 'urls', 'Sunday'], ['playlists', 'split', 'Sunday', '--parts', '2'], ['playlists', 'order', 'Sunday']]:
+        assert runner.invoke(app, [*command, '--sort', 'sideways']).exit_code == 2
 
 
 def test_a_video_reachable_only_through_a_local_playlist_can_still_be_enriched(monkeypatch):

@@ -226,3 +226,55 @@ def test_listing_playlists_reports_how_many_videos_are_enriched(connection, stub
     row = service.playlist_summaries(connection)[0]
     assert row['item_count'] == 2
     assert row['enriched_count'] == 1
+
+
+@pytest.mark.parametrize(
+    ('count', 'size', 'expected'),
+    [
+        (100, 50, [50, 50]),
+        (101, 50, [51, 50]),
+        (140, 90, [70, 70]),
+        (100, 90, [100]),
+        (10, 90, [10]),
+        (0, 90, []),
+        (5, 1, [1, 1, 1, 1, 1]),
+    ],
+)
+def test_a_split_by_size_spreads_the_remainder_rather_than_leaving_a_stub(count, size, expected):
+    """140 at a size of 90 is two of 70, not a 90 and a 50."""
+    runs = service.split_evenly(list(range(count)), size=size)
+    assert [len(run) for run in runs] == expected
+
+
+@pytest.mark.parametrize(
+    ('count', 'parts', 'expected'),
+    [
+        (10, 3, [4, 3, 3]),
+        (9, 3, [3, 3, 3]),
+        (2, 5, [1, 1]),
+        (1, 1, [1]),
+    ],
+)
+def test_a_split_by_parts_never_produces_more_parts_than_there_are_videos(count, parts, expected):
+    runs = service.split_evenly(list(range(count)), parts=parts)
+    assert [len(run) for run in runs] == expected
+
+
+def test_a_split_keeps_every_video_exactly_once_and_in_order():
+    runs = service.split_evenly(list(range(37)), size=10)
+    assert [item for run in runs for item in run] == list(range(37))
+
+
+@pytest.mark.parametrize('arguments', [{}, {'size': 10, 'parts': 3}])
+def test_a_split_needs_exactly_one_of_size_and_parts(arguments):
+    with pytest.raises(ValueError, match='exactly one'):
+        service.split_evenly([1, 2, 3], **arguments)
+
+
+@pytest.mark.parametrize(
+    ('count', 'expected_first', 'expected_last'),
+    [(3, 'Deep Night 1', 'Deep Night 3'), (12, 'Deep Night 01', 'Deep Night 12')],
+)
+def test_part_names_are_padded_so_ten_does_not_sort_before_two(count, expected_first, expected_last):
+    names = service.part_names('Deep Night', count)
+    assert (names[0], names[-1]) == (expected_first, expected_last)

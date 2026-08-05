@@ -52,6 +52,8 @@ Examples:
                                                   the next URL to feed to relate
   ypl playlists create 'Sunday' --from 'Deep Night' --sort random --limit 20
                                                   a new local playlist
+  ypl playlists split 'Deep Night' --size 90      cut a long one into parts
+  ypl playlists order 'Sunday' --sort longest     rearrange one you built
 """
 
 VIDEOS_HELP = """\
@@ -140,6 +142,22 @@ def load_config_or_exit() -> config.Config:
         messages.print(f'[red]{error.path} cannot be read:[/red] {error.reason}')
         messages.print('Run [bold]ypl config example[/bold] to see a valid file.')
         raise typer.Exit(2) from error
+
+
+def report_unavailable_skipped(total: int, kept: int) -> None:
+    """Say what a selection left behind.
+
+    Deleted and private videos are dropped from anything that produces something
+    to play, and a playlist that comes out five short with no explanation reads
+    as a bug in the split.
+    """
+    if total > kept:
+        messages.print(f'{total - kept} unavailable videos left out')
+
+
+def check_sort(sort: str) -> None:
+    if sort not in service.SORT_CLAUSES:
+        raise typer.BadParameter(f'{sort!r} is not a sort — choose one of: {", ".join(service.SORT_CLAUSES)}', param_hint='--sort')
 
 
 def print_candidates(name: str, error: service.AmbiguousPlaylistError) -> None:
@@ -391,11 +409,10 @@ def playlists_urls(
 
       ypl playlists urls 'Deep Night' --sort random --limit 20 | ypl playlists create 'Sunday'
     """
-    if sort not in service.SORT_CLAUSES:
-        raise typer.BadParameter(f'{sort!r} is not a sort — choose one of: {", ".join(service.SORT_CLAUSES)}', param_hint='--sort')
+    check_sort(sort)
     connection = db.connect()
     playlist = resolve_or_exit(connection, name)
-    rows = selected_videos(connection, playlist, sort, limit)
+    rows = service.playlist_selection(connection, playlist, sort, limit)
     if as_json:
         print_json([row | {'url': watch_url(row['video_id'])} for row in rows])
         return
@@ -403,18 +420,11 @@ def playlists_urls(
         print(watch_url(row['video_id']))
 
 
-def selected_videos(connection: sqlite3.Connection, playlist: service.ResolvedPlaylist, sort: str, limit: int | None) -> list[dict]:
-    """The sorted, playable videos of either kind of playlist."""
-    if playlist.local is not None:
-        return service.local_playlist_video_urls(connection, playlist.local, sort, limit)
-    return rows_to_dicts(service.playlist_video_urls(connection, playlist.identifier, sort, limit))
-
-
 @playlists_app.command('create', rich_help_panel=BUILDING)
 def playlists_create(
     name: str = typer.Argument(..., help='What to call the new playlist.'),
     from_playlist: str = typer.Option(None, '--from', '-f', help='Take the videos from this playlist, mirrored or local.'),
-    sort: str = typer.Option('position', '--sort', help='One of: position, oldest, newest, random.'),
+    sort: str = typer.Option('position', '--sort', help=f'One of: {", ".join(service.SORT_CLAUSES)}.'),
     limit: int = typer.Option(None, '--limit', '-n', help='Take at most this many videos.'),
     force: bool = typer.Option(False, '--force', help='Overwrite an existing playlist of the same name.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
@@ -424,12 +434,12 @@ def playlists_create(
     Nothing reaches YouTube: this writes one M3U file, which mpv, VLC and Kodi
     play directly and which costs no quota to build, reorder or throw away.
     """
-    if sort not in service.SORT_CLAUSES:
-        raise typer.BadParameter(f'{sort!r} is not a sort — choose one of: {", ".join(service.SORT_CLAUSES)}', param_hint='--sort')
+    check_sort(sort)
     connection = db.connect()
+    source = None
     if from_playlist:
         source = resolve_or_exit(connection, from_playlist)
-        video_ids = [row['video_id'] for row in selected_videos(connection, source, sort, limit)]
+        video_ids = [row['video_id'] for row in service.playlist_selection(connection, source, sort, limit)]
         provenance = f'{source.kind} {source.identifier}'
     else:
         # --sort is not applied here: whatever produced the pipe already chose
@@ -448,6 +458,8 @@ def playlists_create(
         print_json({'name': playlist.name, 'slug': playlist.slug, 'path': str(playlist.path), 'video_count': len(playlist.entries)})
         return
     messages.print(f'Wrote [bold]{playlist.name}[/bold] — {len(playlist.entries)} videos')
+    if source is not None and not limit:
+        report_unavailable_skipped(service.playlist_video_count(connection, source), len(playlist.entries))
     messages.print(str(playlist.path))
 
 
@@ -490,6 +502,80 @@ def playlists_remove(
         messages.print(f'None of those are in {playlist.name}.')
         return
     messages.print(f'Removed [bold]{removed}[/bold] from {playlist.name} — {len(playlist.entries)} videos')
+
+
+@playlists_app.command('split', rich_help_panel=BUILDING)
+def playlists_split(
+    name: str = typer.Argument(..., help='Playlist to cut up, mirrored or local.'),
+    size: int = typer.Option(None, '--size', '-s', help='Roughly how many videos per part.'),
+    parts: int = typer.Option(None, '--parts', '-p', help='How many parts to cut it into.'),
+    prefix: str = typer.Option(None, '--name', help="What to call the parts. Defaults to the source playlist's title."),
+    sort: str = typer.Option('position', '--sort', help=f'One of: {", ".join(service.SORT_CLAUSES)}.'),
+    force: bool = typer.Option(False, '--force', help='Overwrite parts left by an earlier split.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Cut a long playlist into several local ones.
+
+    Parts come out evenly rather than as full-size chunks and a stub: 140 videos
+    at a size of 90 is two parts of 70, not a 90 and a 50.
+
+      ypl playlists split 'Deep Night' --size 90 --sort random
+    """
+    if (size is None) == (parts is None):
+        raise typer.BadParameter('pass either --size or --parts, not both', param_hint='--size / --parts')
+    if (size is not None and size < 1) or (parts is not None and parts < 1):
+        raise typer.BadParameter('must be at least 1', param_hint='--size / --parts')
+    check_sort(sort)
+
+    connection = db.connect()
+    playlist = resolve_or_exit(connection, name)
+    try:
+        created = service.split_playlist(connection, playlist, prefix or playlist.title, size, parts, sort, overwrite=force)
+    except local.LocalPlaylistExistsError as error:
+        messages.print(f'[red]{error.path} already exists.[/red] Pass --force to overwrite the earlier split.')
+        raise typer.Exit(1) from error
+
+    if as_json:
+        print_json([{'name': part.name, 'slug': part.slug, 'path': str(part.path), 'video_count': len(part.entries)} for part in created])
+        return
+    if not created:
+        messages.print(f'[red]{playlist.title} has no playable videos to split.[/red]')
+        raise typer.Exit(1)
+    messages.print(f'Cut [bold]{playlist.title}[/bold] into {len(created)} playlists:')
+    for part in created:
+        messages.print(f'  {part.name}  {len(part.entries)} videos')
+    report_unavailable_skipped(service.playlist_video_count(connection, playlist), sum(len(part.entries) for part in created))
+
+
+@playlists_app.command('order', rich_help_panel=BUILDING)
+def playlists_order(
+    name: str = typer.Argument(..., help='Local playlist to reorder.'),
+    sort: str = typer.Option(..., '--sort', help=f'One of: {", ".join(service.SORT_CLAUSES)}.'),
+    into: str = typer.Option(None, '--into', help='Write the result as a new playlist instead of reordering this one.'),
+    force: bool = typer.Option(False, '--force', help='Overwrite the playlist named by --into.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Reorder a local playlist.
+
+    Unavailable videos are kept — this rearranges a playlist rather than
+    selecting from one.
+
+      ypl playlists order 'Sunday' --sort longest --into 'Sunday Long'
+    """
+    check_sort(sort)
+    connection = db.connect()
+    playlist = local_or_exit(connection, name)
+    try:
+        ordered = service.order_local_playlist(connection, playlist, sort, into, overwrite=force)
+    except local.LocalPlaylistExistsError as error:
+        messages.print(f'[red]{error.path} already exists.[/red] Pass --force to overwrite it.')
+        raise typer.Exit(1) from error
+
+    if as_json:
+        print_json({'name': ordered.name, 'slug': ordered.slug, 'path': str(ordered.path), 'video_count': len(ordered.entries)})
+        return
+    messages.print(f'Ordered [bold]{ordered.name}[/bold] by {sort} — {len(ordered.entries)} videos')
+    messages.print(str(ordered.path))
 
 
 @playlists_app.command('delete', rich_help_panel=BUILDING)

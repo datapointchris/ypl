@@ -261,12 +261,29 @@ def local_playlist_videos(connection: sqlite3.Connection, playlist: LocalPlaylis
     return rows[:limit] if limit else rows
 
 
+def upload_date_number(upload_date: str | None) -> int:
+    """yt-dlp's `YYYYMMDD` as a sortable integer, 0 when it is missing or odd."""
+    return int(upload_date) if upload_date and upload_date.isdigit() else 0
+
+
+# The direction lives in the key rather than in `reverse=True`, which would also
+# flip the position tiebreaker and pull the unknowns to the front. The leading
+# boolean is what puts them last in both directions, matching `NULLS LAST` in
+# the SQL above; position breaks every remaining tie so a sort is repeatable.
+LOCAL_SORT_KEYS = {
+    'oldest': lambda row: (row['upload_date'] is None, upload_date_number(row['upload_date']), row['position']),
+    'newest': lambda row: (row['upload_date'] is None, -upload_date_number(row['upload_date']), row['position']),
+    'longest': lambda row: (row['duration_seconds'] is None, -(row['duration_seconds'] or 0), row['position']),
+    'shortest': lambda row: (row['duration_seconds'] is None, row['duration_seconds'] or 0, row['position']),
+    'title': lambda row: (row['title'].lower(), row['position']),
+}
+
+
 def sort_local_rows(rows: list[dict], sort: str) -> list[dict]:
     """Apply the same sort vocabulary the mirror queries use.
 
     Sorted here rather than in SQL because a local playlist's order is the file,
-    and a video it names may have no row to sort by. Undated videos go last for
-    both directions, matching `NULLS LAST` in `SORT_CLAUSES`.
+    and a video it names may have no row in the mirror to sort by.
     """
     if sort == 'position':
         return rows
@@ -274,15 +291,7 @@ def sort_local_rows(rows: list[dict], sort: str) -> list[dict]:
         shuffled = list(rows)
         random.shuffle(shuffled)
         return shuffled
-    # The direction lives in the key rather than in `reverse=True`, which would
-    # also flip the position tiebreaker and pull undated videos to the front.
-    direction = -1 if sort == 'newest' else 1
-    return sorted(rows, key=lambda row: (row['upload_date'] is None, direction * upload_date_number(row['upload_date']), row['position']))
-
-
-def upload_date_number(upload_date: str | None) -> int:
-    """yt-dlp's `YYYYMMDD` as a sortable integer, 0 when it is missing or odd."""
-    return int(upload_date) if upload_date and upload_date.isdigit() else 0
+    return sorted(rows, key=LOCAL_SORT_KEYS[sort])
 
 
 def local_playlist_video_urls(
@@ -426,6 +435,118 @@ def remove_from_local_playlist(playlist: LocalPlaylist, video_ids: list[str]) ->
     return removed
 
 
+def playlist_video_count(connection: sqlite3.Connection, playlist: ResolvedPlaylist) -> int:
+    """How many videos a playlist holds, before anything is filtered out of it."""
+    if playlist.local is not None:
+        return len(playlist.local.entries)
+    return playlist.remote['item_count'] if playlist.remote else len(playlist_videos(connection, playlist.identifier))
+
+
+def playlist_selection(connection: sqlite3.Connection, playlist: ResolvedPlaylist, sort: str, limit: int | None = None) -> list[dict]:
+    """The sorted, playable videos of either kind of playlist.
+
+    The one selector behind `urls`, `create --from` and `split`, so a `--sort`
+    means the same thing wherever it is typed.
+    """
+    if playlist.local is not None:
+        return local_playlist_video_urls(connection, playlist.local, sort, limit)
+    return [dict(row) for row in playlist_video_urls(connection, playlist.identifier, sort, limit)]
+
+
+def split_evenly(items: list, size: int | None = None, parts: int | None = None) -> list[list]:
+    """Divide a list into runs of roughly `size`, or into exactly `parts` runs.
+
+    Given a size, the number of runs is chosen so that no run is more than one
+    item off the others: 140 videos at a size of 90 becomes two runs of 70, not
+    a 90 and a 50. A stub playlist is not what anyone splitting a playlist
+    wants, so the remainder is spread one item at a time instead.
+    """
+    if (size is None) == (parts is None):
+        raise ValueError('split needs exactly one of size or parts')
+    if not items:
+        return []
+    if parts is None and size is not None:
+        parts = max(1, round(len(items) / size))
+    parts = min(parts or 1, len(items))
+
+    run_size, remainder = divmod(len(items), parts)
+    runs = []
+    start = 0
+    for index in range(parts):
+        end = start + run_size + (1 if index < remainder else 0)
+        runs.append(items[start:end])
+        start = end
+    return runs
+
+
+def part_names(prefix: str, count: int) -> list[str]:
+    """Name the parts of a split so they list in the order they were cut.
+
+    Zero-padded to the width of the last one, because `X 10` sorts before `X 2`
+    otherwise and the listing is the only place these are seen together.
+    """
+    width = len(str(count))
+    return [f'{prefix} {index:0{width}d}' for index in range(1, count + 1)]
+
+
+def split_playlist(
+    connection: sqlite3.Connection,
+    playlist: ResolvedPlaylist,
+    prefix: str,
+    size: int | None = None,
+    parts: int | None = None,
+    sort: str = 'position',
+    overwrite: bool = False,
+) -> list[LocalPlaylist]:
+    """Cut a playlist into several local ones.
+
+    Every part is checked for a collision before any is written, so a split that
+    would half-overwrite an earlier one fails having changed nothing.
+    """
+    video_ids = [row['video_id'] for row in playlist_selection(connection, playlist, sort)]
+    runs = split_evenly(video_ids, size=size, parts=parts)
+    names = part_names(prefix, len(runs))
+    if not overwrite:
+        for name in names:
+            path = local.path_for(name)
+            if path.exists():
+                raise local.LocalPlaylistExistsError(path)
+    return [
+        create_local_playlist(connection, name, run, source=f'{playlist.kind} {playlist.identifier}', overwrite=True)
+        for name, run in zip(names, runs, strict=True)
+    ]
+
+
+def order_local_playlist(
+    connection: sqlite3.Connection,
+    playlist: LocalPlaylist,
+    sort: str,
+    into: str | None = None,
+    overwrite: bool = False,
+) -> LocalPlaylist:
+    """Reorder a local playlist, in place or into a new one.
+
+    Unavailable videos are kept rather than dropped: this rearranges a playlist
+    rather than selecting from one, and silently losing entries to a reorder is
+    not what the word means.
+    """
+    rows = sort_local_rows(local_playlist_videos(connection, playlist), sort)
+    entries = [playlist.entries[row['position'] - 1] for row in rows]
+    if into is None:
+        playlist.entries = entries
+        local.save(playlist, overwrite=True)
+        return playlist
+    ordered = LocalPlaylist(
+        name=into,
+        path=local.path_for(into),
+        entries=entries,
+        created_ts=now_ts(),
+        source=f'{LOCAL} {playlist.slug}',
+    )
+    local.save(ordered, overwrite=overwrite)
+    return ordered
+
+
 def known_playlists(connection: sqlite3.Connection, kind: str | None = None) -> list[ResolvedPlaylist]:
     """Every playlist either store holds, mirrored ones first."""
     found = []
@@ -491,6 +612,9 @@ SORT_CLAUSES = {
     'position': 'pv.position ASC',
     'oldest': 'v.upload_date ASC NULLS LAST, pv.position ASC',
     'newest': 'v.upload_date DESC NULLS LAST, pv.position ASC',
+    'longest': 'v.duration_seconds DESC NULLS LAST, pv.position ASC',
+    'shortest': 'v.duration_seconds ASC NULLS LAST, pv.position ASC',
+    'title': 'v.title COLLATE NOCASE ASC, pv.position ASC',
     'random': 'RANDOM()',
 }
 

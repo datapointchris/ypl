@@ -56,7 +56,16 @@ ypl playlists create 'Sunday' --from 'Deep Night' --sort newest --limit 20
 ypl playlists add 'Sunday' 'https://youtu.be/...'      # URLs or bare ids
 ypl playlists remove 'Sunday' <id>
 ypl playlists delete 'Sunday'
+ypl playlists split 'Deep Night' --size 90             # into 'Deep Night 1', 'Deep Night 2'...
+ypl playlists order 'Sunday' --sort longest            # in place, or --into 'Sunday Long'
 ```
+
+`split` takes `--size` (roughly how many per part) or `--parts` (how many parts). Parts come out
+even rather than as full chunks and a stub — 140 videos at a size of 90 is two parts of 70, not a
+90 and a 50.
+
+`--sort` means the same thing everywhere it appears: `position`, `oldest`, `newest`, `longest`,
+`shortest`, `title`, `random`.
 
 `create` also reads URLs from a pipe, so a selection made by one command becomes a playlist:
 
@@ -89,7 +98,7 @@ Private and unlisted playlists need a logged-in session — set `cookies_from_br
 
 ## Not done yet
 
-`ypl play`, splitting and reordering, and the `remote` write queue.
+`ypl play`, and the `remote` write queue.
 `youtube_playlists/main.py` is the previous argparse splitter, kept until the write path replaces
 it — it still runs as a script but is no longer part of the installed package.
 
