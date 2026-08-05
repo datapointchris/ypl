@@ -2106,3 +2106,31 @@ def test_a_base_with_no_handles_is_read_again_rather_than_trusted(library):
     basestore.save(basestore.Base(slug='drive-time', playlist_id='PLMINE', items=[RemoteItem(v.video_id, '') for v in stored.items]))
 
     assert service.needs_reconcile(db.connect(), local.load(local.path_for('DRIVE TIME'))) is True
+
+
+def test_the_session_is_rebuilt_from_the_browser_before_a_sync(account, signed_in, linux_timer, monkeypatch):
+    """A stored session is a photograph of something that moves.
+
+    Google rotates the session cookies while you stay signed in, so signing in
+    once only means once if the file is rebuilt from the browser each run —
+    which is why the first real run mirrored all afternoon while the write path
+    had quietly become a signed-out visitor.
+    """
+    session.remember_browser('safari')
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'fresh', 'SID': 'x'})
+    paths.ytmusic_auth_file().write_text('{"cookie": "stale"}')
+
+    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
+    assert 'fresh' in paths.ytmusic_auth_file().read_text()
+
+
+def test_a_browser_that_cannot_be_read_leaves_the_stored_session_alone(monkeypatch):
+    """Stale beats absent: it may still work, and nothing else can sign in."""
+    paths.ytmusic_auth_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.ytmusic_auth_file().write_text('{"cookie": "stored"}')
+    monkeypatch.setattr(
+        ytdlp, 'browser_cookies', lambda browser, **kwargs: (_ for _ in ()).throw(ytdlp.YtdlpFailedError('safari is locked'))
+    )
+
+    assert ytmusic.refresh_session('safari', paths.ytmusic_auth_file()) is False
+    assert 'stored' in paths.ytmusic_auth_file().read_text()

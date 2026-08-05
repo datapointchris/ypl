@@ -14,6 +14,7 @@ import os
 import time
 from pathlib import Path
 
+from ypl import ytdlp
 from ypl.remote import CREATE_INTERVAL_SECONDS
 from ypl.remote import DEFAULT_PRIVACY
 from ypl.remote import MAX_BATCH
@@ -109,6 +110,38 @@ def write_session(headers_raw: str, auth_file: Path) -> Path:
         os.fchmod(handle.fileno(), SESSION_MODE)
         handle.write(session)
     return auth_file
+
+
+def refresh_session(browser: str, auth_file: Path) -> bool:
+    """Rewrite the stored session from the browser's cookies as they are now.
+
+    A session file is a photograph of something that moves. Google rotates
+    `__Secure-1PSIDTS` and `__Secure-3PSIDTS` while you stay signed in, so a
+    copy taken at two o'clock is a signed-out visitor by five — which is exactly
+    what happened on the first real run: `ypl sync` went on mirroring private
+    playlists all afternoon, because yt-dlp re-reads the jar every time, while
+    the write path quietly stopped being logged in and said nothing.
+
+    So the session is rebuilt before every run that might write. It costs no
+    request — the cookies are read out of a local file — and it makes signing in
+    once actually mean once, for as long as the browser stays signed in.
+
+    A browser that cannot be read leaves the stored session alone: it may still
+    be good, and a stale session is worth more than no session.
+    """
+    if not browser:
+        return False
+    try:
+        cookies = ytdlp.browser_cookies(browser)
+    except (ytdlp.YtdlpUnavailableError, ytdlp.YtdlpFailedError):
+        return False
+    if not cookies.get(SAPISID_COOKIE):
+        return False
+    try:
+        write_session(session_headers(cookies), auth_file)
+    except (RemoteAuthError, OSError):
+        return False
+    return True
 
 
 class YtMusicBackend:

@@ -386,6 +386,9 @@ def signed_in_backend(quiet: bool) -> ytmusic.YtMusicBackend | None:
         if not quiet:
             messages.print('Not signed in — mirroring only. [bold]ypl remote auth --browser safari[/bold] syncs both ways.')
         return None
+    # Rebuilt from the browser first, because the stored copy goes stale on its
+    # own: Google rotates the session cookies while you stay signed in.
+    ytmusic.refresh_session(session.browser(), paths.ytmusic_auth_file())
     try:
         return ytmusic.YtMusicBackend(paths.ytmusic_auth_file())
     except remote.RemoteError as error:
@@ -1609,6 +1612,7 @@ def remote_auth(
 
 
 def backend_or_exit() -> ytmusic.YtMusicBackend:
+    ytmusic.refresh_session(session.browser(), paths.ytmusic_auth_file())
     try:
         return ytmusic.YtMusicBackend(paths.ytmusic_auth_file())
     except remote.RemoteAuthError as error:
