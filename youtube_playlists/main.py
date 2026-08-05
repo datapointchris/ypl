@@ -5,10 +5,11 @@ import random
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
+from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from enum import StrEnum
-from functools import lru_cache
 from pathlib import Path
 
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -17,9 +18,7 @@ from googleapiclient.errors import HttpError
 
 
 def youtube_authenticate_oauth(filename):
-    flow = InstalledAppFlow.from_client_secrets_file(
-        Path.cwd() / filename, scopes=['https://www.googleapis.com/auth/youtube']
-    )
+    flow = InstalledAppFlow.from_client_secrets_file(Path.cwd() / filename, scopes=['https://www.googleapis.com/auth/youtube'])
     return build('youtube', 'v3', credentials=flow.run_local_server())
 
 
@@ -158,6 +157,7 @@ class YoutubePlaylistSplitter:
 
     def __init__(self, checkpoint_filename: str):
         self.checkpoint_filename = checkpoint_filename
+        self.playlist_id_cache: dict[str, str] = {}
 
     def load(self) -> None:
         """
@@ -317,10 +317,12 @@ class YoutubePlaylistSplitter:
 
         :class:`QuotaExceededError` breaks out to be caught in the main while loop with :meth:`self.check_for_quota_violation`.
 
-        :class:`HttpError` indicates an error with the video.  Do not mind the reason, log the error and set the video status to ERROR and move past.
+        :class:`HttpError` indicates an error with the video.  Do not mind the reason, log the error
+        and set the video status to ERROR and move past.
         These errors may be video being deleted or set to private or being moved/renamed etc...
 
-        :Note: Actions are split between those that require API calls and those that do not in case of quota exceeded in the middle of processing.
+        :Note: Actions are split between those that require API calls and those that do not, in case
+        of quota exceeded in the middle of processing.
         No changes are saved in `self.data` unless the API call was successful, or they do not require an API call.
 
         """
@@ -340,9 +342,7 @@ class YoutubePlaylistSplitter:
                         video.previous_playlist_id = video.playlist_id
                         video.playlist_id = playlist.id
                         video.status = VideoStatus.SUCCESS
-                        self.log_info(
-                            f'Video {video.title}: {video.id} added to playlist {playlist.title}: {playlist.id}'
-                        )
+                        self.log_info(f'Video {video.title}: {video.id} added to playlist {playlist.title}: {playlist.id}')
                         self.save()
                     except QuotaExceededError:
                         raise
@@ -353,9 +353,14 @@ class YoutubePlaylistSplitter:
                         self.log_error(error_message)
                         self.save()
 
-    @lru_cache
     def get_playlist_id_from_name(self, playlist_name: str) -> str:
-        """Retrieve the playlist ID if the playlist can be found by name."""
+        """Retrieve the playlist ID if the playlist can be found by name.
+
+        Cached per instance: the main loop asks on every pass, and each miss is
+        a quota-costing `playlists.list` call.
+        """
+        if playlist_name in self.playlist_id_cache:
+            return self.playlist_id_cache[playlist_name]
         self.log_info(f"Searching for: '{playlist_name}'")
         request = self.youtube.playlists().list(part='snippet', mine=True, maxResults=50)
         with self.handle_quota_exceeded():
@@ -363,6 +368,7 @@ class YoutubePlaylistSplitter:
         for item in response['items']:
             if item['snippet']['title'] == playlist_name:
                 self.log_info(f'Found ID: {item["id"]}')
+                self.playlist_id_cache[playlist_name] = item['id']
                 return item['id']
         raise ValueError(f"Playlist '{playlist_name}' not found.")
 
@@ -371,17 +377,13 @@ class YoutubePlaylistSplitter:
         next_page_token = None
         videos = []
         while True:
-            request = self.youtube.playlistItems().list(
-                part='id,snippet', playlistId=playlist_id, maxResults=50, pageToken=next_page_token
-            )
+            request = self.youtube.playlistItems().list(part='id,snippet', playlistId=playlist_id, maxResults=50, pageToken=next_page_token)
             with self.handle_quota_exceeded():
                 response = request.execute()
             for item in response['items']:
                 video_id = item['snippet']['resourceId']['videoId']
                 video_title = item['snippet']['title']
-                videos.append(
-                    PlaylistVideo(id=video_id, id_with_playlist=item['id'], title=video_title, playlist_id=playlist_id)
-                )
+                videos.append(PlaylistVideo(id=video_id, id_with_playlist=item['id'], title=video_title, playlist_id=playlist_id))
             if not (next_page_token := response.get('nextPageToken')):
                 break
         self.log_info(f'Found {len(videos)} videos in playlist {playlist_id}')
@@ -394,13 +396,13 @@ class YoutubePlaylistSplitter:
         Eg. new_playlist_name-1, new_playlist_name-2, etc...
         """
         random.shuffle(videos)
-        for i, videos in enumerate(split_evenly(videos, target_size=target_size), start=1):
+        for i, chunk in enumerate(split_evenly(videos, target_size=target_size), start=1):
             title = f'{new_playlist_name}-{i}'
             playlist = Playlist(id=None, title=title, description='', videos=[])
-            for video in videos:
+            for video in chunk:
                 playlist.videos.append(video)
             self.data.playlists.append(playlist)
-            self.log_info(f'Added {len(videos)} videos to playlist {title}')
+            self.log_info(f'Added {len(chunk)} videos to playlist {title}')
             self.save()
         self.log_info('All videos added to new playlists.')
 
@@ -478,7 +480,6 @@ class YoutubePlaylistSplitter:
 
 
 def main(args):
-
     if args.view_logs:
         view_logs(args.checkpoint_file)
         sys.exit(0)
@@ -512,9 +513,7 @@ def main(args):
 
             if not splitter.has_playlists():
                 videos = splitter.get_videos_from_playlist_id(playlist_id)
-                splitter.split_playlist_videos(
-                    videos, new_playlist_name=args.new_playlist, target_size=args.target_size
-                )
+                splitter.split_playlist_videos(videos, new_playlist_name=args.new_playlist, target_size=args.target_size)
 
             if splitter.all_videos_processed():
                 sys.exit(0)
@@ -544,22 +543,12 @@ if __name__ == '__main__':
     """
 
     parser = argparse.ArgumentParser(description=help_msg, formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument(
-        '--checkpoint-file', required=False, default=CHECKPOINT_FILE, help='Filename to load and save progress'
-    )
-    parser.add_argument(
-        '--secret-file', required=False, default=YOUTUBE_CLIENT_SECRET_FILENAME, help='YouTube client secret filename'
-    )
+    parser.add_argument('--checkpoint-file', required=False, default=CHECKPOINT_FILE, help='Filename to load and save progress')
+    parser.add_argument('--secret-file', required=False, default=YOUTUBE_CLIENT_SECRET_FILENAME, help='YouTube client secret filename')
     parser.add_argument('--playlist', required=False, default=PLAYLIST_TO_SPLIT, help='Name of playlist to split')
-    parser.add_argument(
-        '--new-playlist', required=False, default=PLAYLIST_TO_SPLIT, help='Name of new playlists to create from split'
-    )
-    parser.add_argument(
-        '--target-size', required=False, default=PLAYLIST_SIZE, help='Target size of the split playlists'
-    )
-    parser.add_argument(
-        '--delete-original', required=False, action='store_true', help='Delete original playlist videos after splitting'
-    )
+    parser.add_argument('--new-playlist', required=False, default=PLAYLIST_TO_SPLIT, help='Name of new playlists to create from split')
+    parser.add_argument('--target-size', required=False, default=PLAYLIST_SIZE, help='Target size of the split playlists')
+    parser.add_argument('--delete-original', required=False, action='store_true', help='Delete original playlist videos after splitting')
     parser.add_argument('--view-logs', required=False, action='store_true', help='View progress logs')
     parser.add_argument('--view-stats', required=False, action='store_true', help='View saved playlist stats')
     parser.add_argument('--view-video-errors', required=False, action='store_true', help='View videos with errors')
