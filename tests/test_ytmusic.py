@@ -5,6 +5,7 @@ is the behaviour worth pinning — the parsing itself belongs to ytmusicapi.
 Nothing here reaches YouTube.
 """
 
+import hashlib
 import json
 import stat
 
@@ -59,3 +60,42 @@ def test_headers_without_a_cookie_are_refused_before_anything_is_written(tmp_pat
 def test_an_empty_paste_is_an_auth_error_not_a_traceback(tmp_path, headers_raw):
     with pytest.raises(remote.RemoteAuthError):
         ytmusic.write_session(headers_raw, tmp_path / 'ytmusic.json')
+
+
+COOKIES = {'__Secure-3PAPISID': 'secret', 'SID': 'bbb'}
+
+
+def parsed(headers_raw: str) -> dict:
+    return dict(line.split(': ', 1) for line in headers_raw.splitlines())
+
+
+def test_a_session_can_be_built_from_a_browsers_cookies_alone():
+    """The DevTools paste is only a delivery mechanism for what the jar holds."""
+    headers = parsed(ytmusic.session_headers(COOKIES))
+    assert headers['cookie'] == '__Secure-3PAPISID=secret; SID=bbb'
+    assert headers['x-goog-authuser'] == '0'
+    assert headers['origin'] == ytmusic.ORIGIN
+
+
+def test_the_synthesized_headers_are_what_ytmusicapi_accepts(tmp_path):
+    """The real check: ytmusicapi's own parser, which rejects a bad set."""
+    auth_file = tmp_path / 'ytmusic.json'
+    ytmusic.write_session(ytmusic.session_headers(COOKIES), auth_file)
+    stored = json.loads(auth_file.read_text())
+    assert stored['cookie'].startswith('__Secure-3PAPISID=')
+    # SAPISIDHASH is what marks the file as browser auth rather than OAuth.
+    assert 'SAPISIDHASH' in stored['authorization']
+
+
+def test_the_authorization_is_a_real_hash_of_the_sapisid_and_origin():
+    """Recomputed before every request, but wrong here means never recognised."""
+    headers = parsed(ytmusic.session_headers(COOKIES))
+    stamp, digest = headers['authorization'].removeprefix('SAPISIDHASH ').split('_')
+    expected = hashlib.sha1(f'{stamp} secret {ytmusic.ORIGIN}'.encode()).hexdigest()
+    assert digest == expected
+
+
+def test_a_browser_that_is_not_signed_in_says_so_rather_than_writing_a_dead_session():
+    with pytest.raises(remote.RemoteAuthError) as error:
+        ytmusic.session_headers({'SID': 'bbb'})
+    assert '__Secure-3PAPISID' in str(error.value)

@@ -11,9 +11,12 @@ lock file. Pinning it as a dependency would freeze the one component that must
 never be frozen.
 """
 
+import http.cookiejar
 import json
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 from ypl.models import Chapter
 from ypl.models import RemotePlaylist
@@ -21,6 +24,12 @@ from ypl.models import RemoteVideo
 from ypl.models import watch_url
 
 BINARY = 'yt-dlp'
+
+COOKIE_DOMAIN = 'youtube.com'
+
+# A host that cannot resolve, so the cookie export happens and the run then
+# stops without a request. Any real URL would download a page to no purpose.
+UNRESOLVABLE_URL = 'https://cookies.invalid/'
 
 
 class YtdlpUnavailableError(RuntimeError):
@@ -49,6 +58,41 @@ def run(arguments: list[str], timeout_seconds: int) -> str:
 def cookie_arguments(cookies_from_browser: str | None) -> list[str]:
     """Private and unlisted playlists are invisible without a logged-in session."""
     return ['--cookies-from-browser', cookies_from_browser] if cookies_from_browser else []
+
+
+def browser_cookies(browser: str, domain: str = COOKIE_DOMAIN, timeout_seconds: int = 120) -> dict[str, str]:
+    """The YouTube cookies a browser is holding, read through yt-dlp.
+
+    yt-dlp already decrypts every browser's cookie store — Safari's binary
+    format, Chrome's keychain-encrypted database, Firefox's sqlite — and it is
+    already a hard dependency here. Reimplementing any of that so the write
+    path could sign itself in would be writing a worse copy of a binary that is
+    already installed.
+
+    yt-dlp has no "just dump the cookies" mode, so the jar is written as a side
+    effect of a run that is made to fail: an unresolvable host means the cookies
+    are exported before anything reaches the network, and nothing is requested
+    from YouTube by a command whose only job is to read a local file. The exit
+    code is therefore ignored and the jar is what gets checked.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        jar_path = Path(directory) / 'cookies.txt'
+        arguments = ['--cookies-from-browser', browser, '--cookies', str(jar_path), '--simulate', UNRESOLVABLE_URL]
+        try:
+            subprocess.run(  # noqa: S603
+                [binary_path(), *arguments], capture_output=True, text=True, timeout=timeout_seconds
+            )
+        except subprocess.TimeoutExpired as error:
+            raise YtdlpFailedError(f'{BINARY} did not finish reading cookies from {browser}') from error
+        if not jar_path.exists():
+            raise YtdlpFailedError(f'{BINARY} read no cookies from {browser} — is it a browser it supports?')
+
+        jar = http.cookiejar.MozillaCookieJar(str(jar_path))
+        # Expiry and session flags are ignored deliberately: a cookie the
+        # browser is still holding is one the browser is still using, and
+        # Google's session cookies are exactly the ones that matter here.
+        jar.load(ignore_discard=True, ignore_expires=True)
+        return {cookie.name: cookie.value or '' for cookie in jar if domain in (cookie.domain or '')}
 
 
 def fetch_playlist(url: str, cookies_from_browser: str | None = None, timeout_seconds: int = 600) -> RemotePlaylist:

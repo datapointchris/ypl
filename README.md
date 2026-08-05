@@ -204,14 +204,21 @@ Signing in is a paste, once per machine. There is no OAuth: ytmusicapi's OAuth f
 TV-type Google client of your own, which is the Data API project setup this route exists to avoid.
 
 ```bash
-ypl remote auth                    # paste the headers, Ctrl-D
-pbpaste | ypl remote auth          # or pipe them in
+ypl remote auth --browser safari   # firefox, chrome, brave, edge, chromium, vivaldi, opera
 ```
 
-Sign in at [music.youtube.com](https://music.youtube.com) and open DevTools on the Network tab. It
-records only while it is open and Music makes no requests once it has loaded, so click something —
-Library, or any playlist — before expecting to see anything. Then filter for `/youtubei/`, pick any
-POST (they all carry the same credentials) and copy its whole Request Headers block. They are stored at
+That is the whole flow: no DevTools, no paste. yt-dlp already decrypts every browser's cookie
+store — it is how private playlists are read — so the session is built from the cookies of a
+browser you are already signed in to. With no `--browser`, `cookies_from_browser` from the config
+is used instead.
+
+The headers ytmusicapi wants are only a delivery mechanism for three facts, and the cookie jar
+holds all of them: the cookie itself, which account is selected, and a SAPISIDHASH. The last one
+looks like the important one and is the least — it is recomputed from the cookie before every
+request, and the stored value exists only so the session is recognised as browser auth.
+
+Pasting request headers still works (`ypl remote auth` with nothing piped, or `pbpaste | ypl remote
+auth`) if a browser's cookies are ever unreadable. They are stored at
 `$XDG_CONFIG_HOME/ypl/ytmusic.json`, mode 0600 — the cookie in there is the entire credential, so
 treat the file as the password it is. `ypl remote auth` then asks YouTube whose account it reaches
 and prints the answer, because a paste that parses is not yet a session that works; one YouTube

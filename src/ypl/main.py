@@ -109,18 +109,19 @@ Examples:
   ypl remote apply --limit 5                      a drain on a timer
 """
 
-# Says "click something" because the Network tab only records while it is open,
-# and Music is a single-page app that makes no requests at all once it has
-# loaded — a panel opened on an idle page stays empty however it is filtered,
-# which reads as the instructions being wrong rather than the page being quiet.
+# The fallback, and it stays a fallback: --browser needs none of this. Ctrl-D
+# is called out twice over because it only signals EOF at the start of a line,
+# so a paste with no trailing newline swallows the first one and looks broken.
 AUTH_INSTRUCTIONS = """\
-Sign in at [bold]music.youtube.com[/bold] and open DevTools on the Network tab.
-It only records while it is open, so click something — Library, or any playlist
-— to make the page talk.
+[bold]ypl remote auth --browser safari[/bold] does this without DevTools — the
+session comes out of a browser you are already signed in to. Otherwise:
 
-Filter for [bold]/youtubei/[/bold] and pick any POST; they all carry the same
-credentials. Copy its whole Request Headers block — in Chrome, [bold]view
-source[/bold] for the raw form — then paste it below and press Ctrl-D.
+Sign in at [bold]music.youtube.com[/bold], open DevTools on the Network tab,
+and click something — Library, or any playlist — to make the page talk; it
+records only while it is open. Filter for [bold]/youtubei/[/bold], pick any
+POST, and copy its whole Request Headers block.
+
+Paste it below, then press Enter and Ctrl-D.
 """
 
 READING = 'Reading (the local mirror)'
@@ -961,26 +962,54 @@ def plays_list(
     console.print(table)
 
 
+def headers_from_browser_or_exit(browser: str) -> str:
+    """Read the browser's YouTube cookies and build a session out of them."""
+    try:
+        cookies = ytdlp.browser_cookies(browser)
+    except ytdlp.YtdlpUnavailableError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+    except ytdlp.YtdlpFailedError as error:
+        messages.print(f'[red]Could not read cookies from {browser}.[/red] {error}')
+        raise typer.Exit(1) from error
+    try:
+        return ytmusic.session_headers(cookies)
+    except remote.RemoteAuthError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+
+
 @remote_app.command('auth')
 def remote_auth(
+    browser: str = typer.Option(
+        None, '--browser', '-b', help='Read the session from this browser: safari, firefox, chrome, brave, edge...'
+    ),
     replace: bool = typer.Option(False, '--replace', help='Overwrite a session that is already stored.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Store the YouTube session the write path signs in with.
 
-    Paste the request headers from a signed-in music.youtube.com tab, or pipe
-    them in. They are parsed here, written at 0600, and then used once to ask
-    YouTube whose account they reach — a paste that parses is not yet a session
-    that works.
+    [bold]ypl remote auth --browser safari[/bold] takes it straight out of a
+    browser you are already signed in to, through yt-dlp, and asks nothing of
+    you. With no --browser it falls back to `cookies_from_browser` in the
+    config, and failing that to pasted request headers on stdin.
+
+    Whatever the source, the session is written at 0600 and then used once to
+    ask YouTube whose account it reaches — headers that parse are not yet a
+    session that works.
     """
     auth_file = paths.ytmusic_auth_file()
     if auth_file.exists() and not replace:
         messages.print(f'[red]{auth_file} already exists.[/red] Pass --replace to sign in again.')
         raise typer.Exit(1)
 
-    if sys.stdin.isatty():
-        messages.print(AUTH_INSTRUCTIONS)
-    headers_raw = sys.stdin.read()
+    source = browser or load_config_or_exit().cookies_from_browser
+    if source:
+        headers_raw = headers_from_browser_or_exit(source)
+    else:
+        if sys.stdin.isatty():
+            messages.print(AUTH_INSTRUCTIONS)
+        headers_raw = sys.stdin.read()
 
     try:
         ytmusic.write_session(headers_raw, auth_file)

@@ -9,7 +9,9 @@ of ypl — every read command, every local playlist operation — keeps working 
 machine where the write path has never been set up.
 """
 
+import hashlib
 import os
+import time
 from pathlib import Path
 
 from ypl.remote import CREATE_INTERVAL_SECONDS
@@ -27,6 +29,12 @@ from ypl.remote import batched
 # is the whole credential — anything that can read it is signed in as you.
 SESSION_MODE = 0o600
 
+# What the SAPISIDHASH is computed against, and the origin YouTube Music's own
+# client sends. A hash built against a different origin is rejected.
+ORIGIN = 'https://music.youtube.com'
+
+SAPISID_COOKIE = '__Secure-3PAPISID'
+
 # What YouTube says when it wants us to slow down. Matched on text because it
 # arrives as a message inside a generic server error rather than as a status.
 RATE_LIMIT_MARKERS = ('rate_limit_exceeded', 'resource_exhausted', 'too many', '429')
@@ -37,6 +45,35 @@ AUTH_MARKERS = ('unauthorized', 'not authorized', 'authentication', 'cookie', '4
 def looks_like(message: str, markers: tuple[str, ...]) -> bool:
     lowered = message.lower()
     return any(marker in lowered for marker in markers)
+
+
+def session_headers(cookies: dict[str, str]) -> str:
+    """Build the request headers ytmusicapi wants out of a browser's cookies.
+
+    The headers pasted out of DevTools are only a delivery mechanism for three
+    facts, and every one of them is derivable from the cookie jar. `cookie` is
+    the credential. `x-goog-authuser` selects the signed-in account, and 0 is
+    the one you are signed in as unless you have several. `authorization` looks
+    like the important one and is the least: ytmusicapi recomputes the
+    SAPISIDHASH from the cookie before every single request, because it is
+    timestamped and would expire otherwise — the stored value exists only so
+    the session is recognised as browser auth rather than OAuth.
+
+    So this hashes one, correctly, and never relies on it again.
+    """
+    sapisid = cookies.get(SAPISID_COOKIE)
+    if not sapisid:
+        raise RemoteAuthError(f'that browser is not signed in to YouTube — no {SAPISID_COOKIE} cookie. Sign in and try again')
+    stamp = str(int(time.time()))
+    digest = hashlib.sha1(f'{stamp} {sapisid} {ORIGIN}'.encode()).hexdigest()  # noqa: S324 - Google's scheme, not a choice
+    return '\n'.join(
+        [
+            'cookie: ' + '; '.join(f'{name}={value}' for name, value in cookies.items()),
+            'x-goog-authuser: 0',
+            f'authorization: SAPISIDHASH {stamp}_{digest}',
+            f'origin: {ORIGIN}',
+        ]
+    )
 
 
 def write_session(headers_raw: str, auth_file: Path) -> Path:

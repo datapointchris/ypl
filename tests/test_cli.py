@@ -1216,3 +1216,43 @@ def test_a_limited_run_says_how_much_it_left(bound):
     result = runner.invoke(app, ['remote', 'plan', '--limit', '1'])
     assert result.exit_code == 0
     assert '1 of 2' in result.output
+
+
+def test_signing_in_from_a_browser_needs_no_paste(signing_in, monkeypatch):
+    """The whole point: no DevTools, no clipboard, no EOF on stdin."""
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'x', 'SID': 'y'})
+
+    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['account'] == 'Chris Birch'
+    assert stat.S_IMODE(paths.ytmusic_auth_file().stat().st_mode) == 0o600
+
+
+def test_the_configured_browser_is_used_when_no_flag_is_given(signing_in, monkeypatch):
+    """cookies_from_browser already says which browser is signed in."""
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text('cookies_from_browser = "firefox"\n')
+    asked = []
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: asked.append(browser) or {'__Secure-3PAPISID': 'x'})
+
+    assert runner.invoke(app, ['remote', 'auth']).exit_code == 0
+    assert asked == ['firefox']
+
+
+def test_a_browser_that_is_not_signed_in_fails_without_writing_anything(signing_in, monkeypatch):
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'SID': 'y'})
+
+    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    assert result.exit_code == 1
+    assert not paths.ytmusic_auth_file().exists()
+
+
+def test_a_browser_yt_dlp_cannot_read_names_the_browser(signing_in, monkeypatch):
+    def unreadable(browser, **kwargs):
+        raise ytdlp.YtdlpFailedError('could not find safari cookies database')
+
+    monkeypatch.setattr(ytdlp, 'browser_cookies', unreadable)
+
+    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    assert result.exit_code == 1
+    assert 'safari' in result.output
