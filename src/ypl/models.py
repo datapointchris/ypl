@@ -4,6 +4,16 @@ from dataclasses import dataclass
 from dataclasses import field
 
 
+def watch_url(video_id: str) -> str:
+    """The canonical URL for a video.
+
+    One definition because it is what local playlist files contain, what gets
+    piped to other tools, and what yt-dlp is handed — three places that have to
+    agree on the same string.
+    """
+    return f'https://www.youtube.com/watch?v={video_id}'
+
+
 @dataclass
 class RemoteVideo:
     """One video as YouTube describes it.
@@ -24,7 +34,7 @@ class RemoteVideo:
 
     @property
     def url(self) -> str:
-        return f'https://www.youtube.com/watch?v={self.video_id}'
+        return watch_url(self.video_id)
 
 
 @dataclass

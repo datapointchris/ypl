@@ -18,6 +18,7 @@ import subprocess
 from ypl.models import Chapter
 from ypl.models import RemotePlaylist
 from ypl.models import RemoteVideo
+from ypl.models import watch_url
 
 BINARY = 'yt-dlp'
 
@@ -97,7 +98,7 @@ def fetch_video(video_id: str, cookies_from_browser: str | None = None, timeout_
         '--dump-json',
         '--skip-download',
         *cookie_arguments(cookies_from_browser),
-        f'https://www.youtube.com/watch?v={video_id}',
+        watch_url(video_id),
     ]
     payload = json.loads(run(arguments, timeout_seconds))
     return RemoteVideo(
