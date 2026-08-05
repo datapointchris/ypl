@@ -1,6 +1,35 @@
 # CHANGELOG
 
 
+## v0.2.0 (2026-08-05)
+
+### Features
+
+- **remote**: Sign in from a browser, without DevTools
+  ([`2b944bf`](https://github.com/datapointchris/ypl/commit/2b944bf9e8505026fedd011394873fea2f5cf376))
+
+`ypl remote auth --browser safari` reads the cookies of a browser already signed in to YouTube and
+  builds the session from them. No Network tab, no hunting for a request, no pasting a header block
+  into a terminal and guessing at when EOF arrives.
+
+The paste was never the point. Those headers carry three facts and the cookie jar holds all of them:
+  the cookie itself, which account is selected, and a SAPISIDHASH — and that last one, which looks
+  like the important one, is the least. ytmusicapi recomputes it from the cookie before every
+  request because it is timestamped; the stored value exists only so the file is recognised as
+  browser auth rather than OAuth.
+
+Cookies come from yt-dlp, which already decrypts Safari's binary format, Chrome's keychain-encrypted
+  database and Firefox's sqlite, and which is already a hard dependency because every read goes
+  through it. It has no "dump the cookies" mode, so the jar is written as a side effect of a run
+  aimed at an unresolvable host: the export happens before the network does, so nothing is requested
+  from YouTube by a command reading a local file.
+
+With no --browser it falls back to `cookies_from_browser` from the config, which already names the
+  browser holding a YouTube session, and only then to a paste on stdin. The paste instructions now
+  say to press Enter before Ctrl-D, because EOF only registers at the start of a line and a paste
+  without a trailing newline swallows the first one.
+
+
 ## v0.1.1 (2026-08-05)
 
 ### Bug Fixes
