@@ -5,10 +5,12 @@ the API rather than a nicety.
 """
 
 import json
+import tomllib
 
 import pytest
 from typer.testing import CliRunner
 
+from ypl import paths
 from ypl import service
 from ypl import ytdlp
 from ypl.main import app
@@ -144,11 +146,34 @@ def test_config_init_refuses_to_clobber_without_force():
 
 
 def test_the_example_config_is_valid_toml():
-    import tomllib
-
     result = runner.invoke(app, ['config', 'example'])
     assert result.exit_code == 0
     tomllib.loads(result.stdout)
+
+
+def test_the_starter_config_written_by_init_loads_back():
+    """The example and the loader have to agree, or `config init` ships a broken file."""
+    assert runner.invoke(app, ['config', 'init']).exit_code == 0
+    result = runner.invoke(app, ['config', 'show', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['enrich_batch_size'] == 50
+
+
+def test_unparseable_config_is_a_usage_error_naming_the_file():
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text('this is not = = toml')
+
+    result = runner.invoke(app, ['config', 'show'])
+    assert result.exit_code == 2
+    assert 'config.toml' in result.output
+
+
+def test_a_nonsense_batch_size_is_rejected_rather_than_used():
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text('enrich_batch_size = 0')
+
+    result = runner.invoke(app, ['enrich'])
+    assert result.exit_code == 2
 
 
 def test_showing_an_unmirrored_video_fails_rather_than_printing_an_empty_table():

@@ -112,6 +112,16 @@ def timestamp_words(seconds: int | None) -> str:
     return f'{hours}:{minutes:02d}:{secs:02d}' if hours else f'{minutes}:{secs:02d}'
 
 
+def load_config_or_exit() -> config.Config:
+    """A broken config is a usage error, not a crash — it got that way by hand."""
+    try:
+        return config.load()
+    except config.ConfigError as error:
+        messages.print(f'[red]{error.path} cannot be read:[/red] {error.reason}')
+        messages.print('Run [bold]ypl config example[/bold] to see a valid file.')
+        raise typer.Exit(2) from error
+
+
 def resolve_or_exit(connection: sqlite3.Connection, name: str) -> sqlite3.Row:
     """Turn a playlist name into a row, or exit with a message naming the fix."""
     try:
@@ -137,7 +147,7 @@ def sync(
     One request for the whole playlist however long it is, and no API quota.
     Re-running picks up additions, removals and reordering.
     """
-    settings = config.load()
+    settings = load_config_or_exit()
     connection = db.connect()
     try:
         playlist = service.sync_playlist(connection, url, cookies_from_browser=settings.cookies_from_browser)
@@ -178,7 +188,7 @@ def enrich(
     not. One request per video, so this is the slow half — it is resumable, and
     a video already enriched is skipped.
     """
-    settings = config.load()
+    settings = load_config_or_exit()
     connection = db.connect()
     playlist_id = resolve_or_exit(connection, playlist)['playlist_id'] if playlist else None
     video_ids = service.unenriched_video_ids(connection, playlist_id, limit or settings.enrich_batch_size)
@@ -369,7 +379,7 @@ def config_show(
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Print the settings in effect, including defaults."""
-    settings = config.load()
+    settings = load_config_or_exit()
     if as_json:
         print_json({'cookies_from_browser': settings.cookies_from_browser, 'enrich_batch_size': settings.enrich_batch_size})
         return

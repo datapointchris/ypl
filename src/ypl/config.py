@@ -24,6 +24,20 @@ class Config:
     enrich_batch_size: int = 50
 
 
+class ConfigError(ValueError):
+    """A config file exists but cannot be used.
+
+    Distinct from a missing file, which is normal. This one is always the result
+    of a hand edit, so the message has to name the file and the parser's
+    complaint rather than surfacing a traceback.
+    """
+
+    def __init__(self, path: Path, reason: str):
+        self.path = path
+        self.reason = reason
+        super().__init__(f'{path}: {reason}')
+
+
 def load() -> Config:
     """Read the config file, or return defaults when there is none.
 
@@ -33,10 +47,16 @@ def load() -> Config:
     path = paths.config_file()
     if not path.exists():
         return Config()
-    payload = tomllib.loads(path.read_text())
+    try:
+        payload = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as error:
+        raise ConfigError(path, str(error)) from error
+    batch_size = payload.get('enrich_batch_size', 50)
+    if not isinstance(batch_size, int) or batch_size < 1:
+        raise ConfigError(path, f'enrich_batch_size must be a positive integer, got {batch_size!r}')
     return Config(
         cookies_from_browser=payload.get('cookies_from_browser'),
-        enrich_batch_size=payload.get('enrich_batch_size', 50),
+        enrich_batch_size=batch_size,
     )
 
 
