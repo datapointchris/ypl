@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v0.12.2 (2026-08-05)
+
+### Bug Fixes
+
+- **sync**: Schedule the ypl symlink, not what it points at
+  ([`e606965`](https://github.com/datapointchris/ypl/commit/e606965c3a77db01d2d906e71e581686f9e2b03a))
+
+`~/.local/bin/ypl` is a link into uv's tool directory, and resolving it put that directory's
+  internal layout into the launch agent. uv promises to keep the link; where it points is uv's
+  business, and a version of it that reorganises leaves a timer naming a path that no longer exists.
+  Absolute without following symlinks — absoluteness was the point, since launchd and systemd run
+  with almost no PATH.
+
+### Documentation
+
+- **readme**: Mention --version among the reads
+  ([`e3d83b2`](https://github.com/datapointchris/ypl/commit/e3d83b20fbe8a7d7b66c48825b75b19e54bdc731))
+
+
 ## v0.12.1 (2026-08-05)
 
 ### Bug Fixes
