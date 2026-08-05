@@ -424,3 +424,19 @@ def test_a_split_needs_exactly_one_of_size_and_parts(arguments):
 def test_part_names_are_padded_so_ten_does_not_sort_before_two(count, expected_first, expected_last):
     names = service.part_names('Deep Night', count)
     assert (names[0], names[-1]) == (expected_first, expected_last)
+
+
+def test_the_mirror_lets_a_reader_in_while_a_writer_holds_it(tmp_path):
+    """Two writers now: a timer that syncs, and whoever is at the prompt.
+
+    Under the default journal a read blocks behind an open write, so a
+    background process nobody asked for would fail the command in front of you.
+    """
+    database = tmp_path / 'ypl.db'
+    writer = db.connect(database)
+    reader = db.connect(database)
+
+    assert writer.execute('PRAGMA journal_mode').fetchone()[0] == 'wal'
+    writer.execute('BEGIN')
+    writer.execute("INSERT INTO videos (video_id, title) VALUES ('a', 'A Mix')")
+    assert reader.execute('SELECT COUNT(*) FROM videos').fetchone()[0] == 0
