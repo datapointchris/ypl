@@ -1,6 +1,18 @@
 # CHANGELOG
 
 
+## v0.12.1 (2026-08-05)
+
+### Bug Fixes
+
+- **status**: Point at the command, not a bare count
+  ([`279e96e`](https://github.com/datapointchris/ypl/commit/279e96e4983d6c6ab6d4e81461b4f8974821e59c))
+
+The trailer under a truncated failure list said how many more there were and left the reader to work
+  out where. `~/dev/standards/cli-design.md` settles that one: no remainder counts, the trailer is
+  the command that shows the rest.
+
+
 ## v0.12.0 (2026-08-05)
 
 ### Bug Fixes
