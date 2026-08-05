@@ -1,6 +1,46 @@
 # CHANGELOG
 
 
+## v0.12.4 (2026-08-05)
+
+### Bug Fixes
+
+- **sync**: Give the timer a PATH that finds yt-dlp
+  ([`f819e04`](https://github.com/datapointchris/ypl/commit/f819e048ff5f513ee139f69c3ccb8f5ea11c922c))
+
+Every timer-driven sync on this machine has failed, from the first one:
+
+yt-dlp is not on PATH — install it to read playlists
+
+launchd starts an agent with `/usr/bin:/bin:/usr/sbin:/sbin` and nothing else. Homebrew's yt-dlp is
+  in `/usr/local/bin`, so a scheduled run found no reader and exited 1 every thirty minutes while
+  every run at the prompt worked. `ypl` itself is scheduled by absolute path for precisely this
+  reason, and then the run shells out to `yt-dlp` by name.
+
+The unit carries a PATH now, built from where those binaries actually are rather than by copying the
+  installing shell's whole PATH: what a run needs is its tools, and an inherited PATH also bakes in
+  whatever else was set the day the timer went in. `ensure` asks whether an existing unit can reach
+  them, so the machines already running a broken one repair themselves — the command matches and the
+  interval matches, so nothing else would have noticed. It asks that rather than comparing the PATH
+  string, so an unrelated change to the shell's PATH does not unload and reload the unit on the next
+  sync.
+
+The bug that hid it: `installed()` read the command and the PATH out of the systemd *timer* file,
+  where neither lives. Both came back empty, so every comparison failed and the unit was rewritten
+  on every sync — which also means the command check added a commit ago never worked on Linux. A
+  launch agent holds all of it in one file; the systemd pair splits the interval from the command
+  and the environment.
+
+### Refactoring
+
+- **sync**: Drop an in_sync nothing reads
+  ([`83184e5`](https://github.com/datapointchris/ypl/commit/83184e5fee3af8ddbd6bc5cafc94d7ecc15644dd))
+
+Defined, documented as what makes the run log readable at a glance, and called from nowhere. Putting
+  it in the payload instead would store a derived answer beside the three fields it derives from,
+  which is the objection that keeps the push queue out of storage.
+
+
 ## v0.12.3 (2026-08-05)
 
 ### Bug Fixes
