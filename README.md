@@ -46,7 +46,15 @@ ypl sync                           # and it keeps running itself from here on
 The first sync leaves the machine syncing on its own — at startup and every 30 minutes, through a
 launch agent on macOS or a systemd user timer on Linux. There is no command to install that and
 there should not be one; `background_sync = false` in the config takes it away again on the next
-run. Everything else is reading:
+run. The unit carries the PATH those runs need, because launchd hands an agent almost no
+environment and every read goes through `yt-dlp`; a unit that cannot reach it is rewritten on the
+next sync rather than left firing and failing.
+
+`ypl status` answers whether it is working, and `$XDG_STATE_HOME/ypl/timer.log` is what the
+scheduled runs themselves wrote — worth reading when the status looks healthy and nothing is moving,
+since a run that dies before it can record anything leaves its reason only there.
+
+Everything else is reading:
 
 ```bash
 ypl status                                             # is it working, and how far behind
