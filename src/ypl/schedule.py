@@ -26,6 +26,15 @@ LABEL = 'com.ichrisbirch.ypl'
 UNIT = 'ypl-sync'
 DEFAULT_INTERVAL_MINUTES = 30
 
+# The binaries a run shells out to. yt-dlp is the one that matters on a timer,
+# since every read goes through it; mpv is here so that a unit written today
+# does not need rewriting the day playback grows a scheduled use.
+TOOLS = ('yt-dlp', 'mpv')
+
+# What launchd hands an agent, and roughly what a systemd user unit gets. Note
+# what is missing: `/usr/local/bin`, which is where Homebrew puts yt-dlp.
+SYSTEM_PATH = ('/usr/bin', '/bin', '/usr/sbin', '/sbin')
+
 
 class ScheduleError(RuntimeError):
     """The timer cannot be installed, and the reason is worth reading."""
@@ -40,6 +49,9 @@ class Installed:
     command: list[str]
     interval_minutes: int
     loaded: bool = False
+    # The PATH the unit hands the run, empty when it sets none — which is what
+    # every unit written before this was read back as.
+    search_path: str = ''
 
 
 def is_macos() -> bool:
@@ -82,6 +94,48 @@ def executable() -> str:
     raise ScheduleError('cannot find the ypl executable to schedule — is it installed on this machine?')
 
 
+def tool_directories() -> list[str]:
+    """Where the binaries a run shells out to actually are, in PATH order."""
+    found: list[str] = []
+    for tool in TOOLS:
+        location = shutil.which(tool)
+        if location:
+            directory = str(Path(location).parent)
+            if directory not in found:
+                found.append(directory)
+    return found
+
+
+def unit_path() -> str:
+    """The PATH a scheduled run needs.
+
+    `ypl` is scheduled by absolute path because launchd and systemd run with
+    almost no environment — and then the run shells out to `yt-dlp` by name and
+    dies on exactly the same impoverishment. Every timer-driven sync on this
+    machine failed with `yt-dlp is not on PATH` while every run at the prompt
+    worked, which is the shape of a bug nobody sees: the only place it was
+    written down was the timer's own log, and reading that log is the thing an
+    unattended sync is supposed to make unnecessary.
+
+    Built from where those binaries are rather than by copying the installing
+    shell's PATH. What a run needs is its tools; an inherited PATH also bakes in
+    everything else that happened to be set the day the timer went in.
+    """
+    entries = [*tool_directories(), *SYSTEM_PATH]
+    return os.pathsep.join(dict.fromkeys(entries))
+
+
+def can_find_tools(search_path: str) -> bool:
+    """Whether a written unit's PATH reaches the binaries a run needs.
+
+    Asked instead of comparing the whole PATH string so that an unrelated change
+    to the shell's PATH does not rewrite and reload the unit on the next sync.
+    The only question is whether the run will find its tools.
+    """
+    entries = set(search_path.split(os.pathsep))
+    return all(directory in entries for directory in tool_directories())
+
+
 def agent_path() -> Path:
     return Path.home() / 'Library' / 'LaunchAgents' / f'{LABEL}.plist'
 
@@ -122,6 +176,11 @@ def plist(command: list[str], interval_minutes: int) -> str:
   <array>
 {arguments}
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{unit_path()}</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>StartInterval</key>
@@ -141,6 +200,7 @@ Description=Sync YouTube playlists with ypl
 
 [Service]
 Type=oneshot
+Environment=PATH={unit_path()}
 ExecStart={' '.join(command)}
 """
 
@@ -203,9 +263,11 @@ def ensure(interval_minutes: int = DEFAULT_INTERVAL_MINUTES, wanted: bool = True
         # already there is the answer. Saying "no timer" would be a lie about a
         # unit that is still running.
         return existing
-    # The command as well as the interval, because a unit naming a `ypl` that has
-    # moved is worse than no unit: it fires, fails, and reports as scheduled.
-    if existing and existing.interval_minutes == interval_minutes and existing.command == command:
+    # The command and the PATH as well as the interval, because a unit that
+    # fires and fails is worse than no unit: it still reports as scheduled. Both
+    # of those actually happened here — a unit naming a `ypl` that had moved, and
+    # one that could not find yt-dlp.
+    if existing and existing.interval_minutes == interval_minutes and existing.command == command and can_find_tools(existing.search_path):
         return existing
     try:
         return install(interval_minutes)
@@ -264,18 +326,51 @@ def installed() -> Installed | None:
     still be able to answer "no timer" rather than raise into the run. The
     command reported is the one the unit names, which is what makes a unit
     written by an older install — or by a checkout — recognisable as stale.
+
+    A launch agent holds all of that in one file and the systemd pair splits it:
+    the interval is the timer's and the command and the PATH are the service's.
+    Reading both from the timer answered `[]` and `''` every time, which made
+    every comparison fail and rewrote the unit on every single sync.
     """
-    path = agent_path() if is_macos() else timer_path()
-    if not path.exists():
+    if is_macos():
+        path = agent_path()
+        if not path.exists():
+            return None
+        text = path.read_text()
+        return Installed(
+            path=path,
+            manager='launchd',
+            command=command_from(text),
+            interval_minutes=interval_from(text),
+            loaded=True,
+            search_path=path_from(text),
+        )
+
+    if not timer_path().exists():
         return None
-    text = path.read_text()
+    service = service_path().read_text() if service_path().exists() else ''
     return Installed(
-        path=path,
-        manager='launchd' if is_macos() else 'systemd',
-        command=command_from(text),
-        interval_minutes=interval_from(text),
+        path=timer_path(),
+        manager='systemd',
+        command=command_from(service),
+        interval_minutes=interval_from(timer_path().read_text()),
         loaded=True,
+        search_path=path_from(service),
     )
+
+
+def path_from(text: str) -> str:
+    """The PATH a written unit sets, or '' when it sets none."""
+    lines = [line.strip() for line in text.splitlines()]
+    for line in lines:
+        if line.startswith('Environment=PATH='):
+            return line.removeprefix('Environment=PATH=')
+    for index, line in enumerate(lines):
+        if line == '<key>PATH</key>' and index + 1 < len(lines):
+            following = lines[index + 1]
+            if following.startswith('<string>'):
+                return following.removeprefix('<string>').removesuffix('</string>')
+    return ''
 
 
 def command_from(text: str) -> list[str]:

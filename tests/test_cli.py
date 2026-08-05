@@ -1763,6 +1763,57 @@ def test_a_macos_agent_runs_at_load_as_well_as_on_the_interval(tmp_path, monkeyp
     assert '<integer>1800</integer>' in written
 
 
+@pytest.fixture
+def homebrew_yt_dlp(monkeypatch):
+    """yt-dlp where Homebrew puts it — which is not on the PATH launchd gives."""
+    monkeypatch.setattr(schedule, 'tool_directories', lambda: ['/usr/local/bin'])
+
+
+def test_a_timer_carries_the_path_its_tools_need(account, signed_in, linux_timer, homebrew_yt_dlp):
+    """Every timer-driven sync on the real machine died with `yt-dlp is not on
+    PATH` while every run at the prompt worked. `ypl` is scheduled by absolute
+    path for exactly this reason, and then it shells out to yt-dlp by name."""
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+
+    written = schedule.service_path().read_text()
+    assert f'Environment=PATH=/usr/local/bin{os.pathsep}/usr/bin' in written
+
+
+def test_a_macos_agent_carries_it_too(tmp_path, monkeypatch, homebrew_yt_dlp):
+    monkeypatch.setattr(schedule, 'is_macos', lambda: True)
+    monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
+
+    schedule.ensure(30)
+
+    written = schedule.agent_path().read_text()
+    assert '<key>EnvironmentVariables</key>' in written
+    assert f'<string>/usr/local/bin{os.pathsep}/usr/bin' in written
+
+
+def test_a_timer_that_cannot_reach_yt_dlp_is_rewritten(account, signed_in, linux_timer, monkeypatch):
+    """How the machines already running a broken unit repair themselves: the
+    command matches and the interval matches, so nothing else would notice."""
+    monkeypatch.setattr(schedule, 'tool_directories', lambda: [])
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert 'Environment=PATH=/usr/bin' in schedule.service_path().read_text()
+
+    monkeypatch.setattr(schedule, 'tool_directories', lambda: ['/usr/local/bin'])
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+
+    assert '/usr/local/bin' in schedule.path_from(schedule.service_path().read_text())
+
+
+def test_a_shell_path_change_does_not_rewrite_a_working_timer(account, signed_in, linux_timer, homebrew_yt_dlp):
+    """Reinstalling means unload and load, so the test is whether the run can
+    find its tools — not whether the PATH string is the one it was written with."""
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    before = schedule.service_path().stat().st_mtime_ns
+
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+
+    assert schedule.service_path().stat().st_mtime_ns == before
+
+
 def test_a_timer_naming_a_ypl_that_moved_is_replaced_on_the_next_run(account, signed_in, monkeypatch):
     """A unit that fires and fails still reports as scheduled, which is the worst
     of the three states — this is how a timer pointed into a deleted checkout
