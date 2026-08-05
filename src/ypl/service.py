@@ -36,9 +36,18 @@ from ypl.throttle import Throttle
 REMOTE = 'remote'
 LOCAL = 'local'
 
+# YouTube's own lists rather than the account's. They are not playlists it will
+# hand over — `Liked videos` is the whole listening history and neither is
+# editable the way a playlist is — so a sweep passes over them.
+SYSTEM_PLAYLIST_IDS = frozenset({'LL', 'WL'})
+
 
 class PlaylistNotFoundError(LookupError):
     pass
+
+
+class AdoptionError(RuntimeError):
+    """A mirrored playlist that cannot be bound to a local file."""
 
 
 class AmbiguousPlaylistError(LookupError):
@@ -507,6 +516,87 @@ def merged_entries(connection: sqlite3.Connection, video_ids: list[str], items: 
     return entries
 
 
+def owned_by(account: remote.RemoteAccount, channel: str) -> bool:
+    """Whether a mirrored playlist belongs to the account we are signed in as.
+
+    Compared through the slug, because the two names come from different reads
+    of different services and agree on nothing else: yt-dlp reports the channel
+    as `iChrisBirch` and YouTube Music reports the same account as a name and a
+    `@ichrisbirch` handle. Casing and the `@` are the only differences, and both
+    are exactly what slugifying removes.
+    """
+    known = {local.slugify(account.name), local.slugify(account.handle)} - {''}
+    return local.slugify(channel) in known
+
+
+def adoptable_playlists(connection: sqlite3.Connection, account: remote.RemoteAccount) -> list[ResolvedPlaylist]:
+    """The mirrored playlists a bare `remote adopt` covers.
+
+    The account's own, minus YouTube's system lists. Already-adopted ones are
+    not here to be excluded — `known_playlists` has resolved them to their local
+    files already.
+
+    A playlist mirrored from someone else's channel is deliberately left out of
+    the sweep. It is readable and worth copying from, but binding it to the sync
+    layer would set up pushes against a playlist this account cannot write to,
+    and the failure would arrive at the first edit rather than here. Naming one
+    still adopts it, because a collaborative playlist is a real case and the
+    check cannot tell it apart from someone else's.
+    """
+    return [
+        candidate
+        for candidate in known_playlists(connection, REMOTE)
+        if candidate.identifier not in SYSTEM_PLAYLIST_IDS and owned_by(account, candidate.remote['channel'] if candidate.remote else '')
+    ]
+
+
+def adopt_playlist(connection: sqlite3.Connection, playlist: ResolvedPlaylist, backend: Backend) -> LocalPlaylist:
+    """Bind a local file to a playlist YouTube already holds.
+
+    The other end of the reconcile from `apply_push`'s creation: `pull` only
+    reaches files carrying a remote id, and that id was only ever written by a
+    creation ypl performed — so a playlist made in the web player could be read
+    and copied from, and never edited here and pushed back.
+
+    Written from the write backend's own read rather than from the mirror, which
+    it has to be twice over: the base needs each slot's `setVideoId`, which
+    yt-dlp does not return, and a mirror hours old would record videos YouTube
+    no longer holds — which the first push would then faithfully put back.
+
+    The name is the remote title exactly as YouTube has it, never
+    `local.authored_name`. What separates an adoption from a copy of the same
+    playlist is not the name but the id: both carry `#YPL-SOURCE:remote PL1`,
+    and only the adoption is itself PL1.
+    """
+    if playlist.kind != REMOTE:
+        raise AdoptionError(f'{playlist.title} is already a playlist here')
+    if playlist.identifier in SYSTEM_PLAYLIST_IDS:
+        raise AdoptionError(f"{playlist.title} is one of YouTube's own lists rather than a playlist it hands over")
+    if playlist.identifier in adopted_remote_ids(local.list_playlists().playlists):
+        raise AdoptionError(f'{playlist.title} is already bound to a file here')
+    path = local.path_for(playlist.title)
+    if path.exists():
+        # Checked before the read rather than left to `local.save`, so a sweep
+        # spends no request on a playlist it is about to refuse.
+        raise local.LocalPlaylistExistsError(path)
+
+    items = backend.playlist_items(playlist.identifier)
+    adopted = LocalPlaylist(
+        name=playlist.title,
+        path=path,
+        entries=merged_entries(connection, [item.video_id for item in items], items),
+        created_ts=now_ts(),
+        source=f'{REMOTE} {playlist.identifier}',
+        remote_id=playlist.identifier,
+    )
+    local.save(adopted)
+    # File before base, for the reason `pull_playlist` gives at length: a base
+    # left behind by a file that failed to save is a record of a remote state
+    # nothing was merged against.
+    basestore.save(basestore.Base(slug=adopted.slug, playlist_id=adopted.remote_id, items=items))
+    return adopted
+
+
 def pull_playlist(connection: sqlite3.Connection, playlist: LocalPlaylist, backend: Backend) -> Pull:
     """Reconcile one playlist against YouTube.
 
@@ -910,19 +1000,31 @@ def order_local_playlist(
     return ordered
 
 
+def adopted_remote_ids(playlists: list[LocalPlaylist]) -> set[str]:
+    """The YouTube playlists a local file is already bound to."""
+    return {playlist.remote_id for playlist in playlists if playlist.remote_id}
+
+
 def known_playlists(connection: sqlite3.Connection, kind: str | None = None) -> list[ResolvedPlaylist]:
-    """Every playlist either store holds, mirrored ones first."""
+    """Every playlist either store holds, mirrored ones first.
+
+    A playlist a local file is bound to appears once, as that file. The mirror
+    keeps its row — it is where the videos and their tracklists are read from —
+    but as a *name* it is not a second candidate, because it is not a second
+    playlist. Leaving both in would make every playlist ambiguous the moment it
+    was adopted, and the file is the half that can be edited either way.
+    """
+    playlists = local.list_playlists().playlists
+    adopted = adopted_remote_ids(playlists)
     found = []
     if kind in (None, REMOTE):
         found += [
             ResolvedPlaylist(kind=REMOTE, title=row['title'], identifier=row['playlist_id'], remote=row)
             for row in connection.execute('SELECT * FROM playlists ORDER BY title')
+            if row['playlist_id'] not in adopted
         ]
     if kind in (None, LOCAL):
-        found += [
-            ResolvedPlaylist(kind=LOCAL, title=playlist.name, identifier=playlist.slug, local=playlist)
-            for playlist in local.list_playlists().playlists
-        ]
+        found += [ResolvedPlaylist(kind=LOCAL, title=playlist.name, identifier=playlist.slug, local=playlist) for playlist in playlists]
     return found
 
 

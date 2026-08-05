@@ -337,6 +337,32 @@ treat the file as the password it is. `ypl remote auth` then asks YouTube whose 
 and prints the answer, because a paste that parses is not yet a session that works; one YouTube
 rejects is deleted rather than stored to fail later. `--replace` signs in over a stored session.
 
+### Taking over what YouTube already holds
+
+A reconcile only reaches a local file bound to a YouTube playlist, and until it is adopted, a
+playlist made in the web player is not one. `ypl remote adopt` writes the file, binds it, and
+records what it read as the base — after which it is an ordinary local playlist that happens to
+already exist on YouTube.
+
+```bash
+ypl remote adopt                   # every playlist this account owns
+ypl remote adopt 'DRIVE TIME'      # one of them
+```
+
+Its name is kept exactly as YouTube has it. The file is written from the write backend's own read
+rather than from the mirror, because the base needs each slot's `setVideoId` — which yt-dlp does
+not return — and a mirror read hours old would record videos YouTube no longer holds, which the
+first push would then put back.
+
+The sweep covers what the signed-in account owns. A playlist mirrored from someone else's channel
+is left out, since binding it would set up pushes against a playlist nothing here can write to;
+naming one adopts it anyway, because a collaborative playlist is a real case that the channel
+cannot be told apart from. `Liked videos` and `Watch later` are YouTube's own lists rather than
+playlists it hands over, and are refused either way.
+
+An adopted playlist then resolves to its file rather than to both stores — it is one playlist, and
+the file is the half that can be edited.
+
 ### Reconciling
 
 `ypl remote pull` reads YouTube, merges it into the local file, and records what it read as the

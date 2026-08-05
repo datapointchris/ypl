@@ -1171,6 +1171,135 @@ def test_a_demoted_playlist_is_not_pulled_into(bound):
     assert 'local only' in named.output
 
 
+@pytest.fixture
+def library(monkeypatch, signing_in):
+    """A mirrored account: one playlist of mine, one of someone else's, one of YouTube's.
+
+    Channels are set because ownership is the thing the sweep filters on, and
+    the fake account signs in as `Chris Birch` / `@chrisbirch`.
+    """
+    playlists = {
+        'PLMINE': RemotePlaylist(
+            playlist_id='PLMINE',
+            title='DRIVE TIME',
+            channel='Chris Birch',
+            videos=[RemoteVideo(video_id='vid1', title='A Talk'), RemoteVideo(video_id='vid2', title='Another')],
+        ),
+        'PLTHEIRS': RemotePlaylist(
+            playlist_id='PLTHEIRS', title='Their Mix', channel='Robert Greene', videos=[RemoteVideo(video_id='vid3', title='Theirs')]
+        ),
+        'LL': RemotePlaylist(
+            playlist_id='LL', title='Liked videos', channel='Chris Birch', videos=[RemoteVideo(video_id='vid4', title='Liked')]
+        ),
+    }
+    monkeypatch.setattr(ytdlp, 'fetch_playlist', lambda url, **kwargs: playlists[url.rsplit('/', 1)[-1]])
+    for playlist_id in playlists:
+        runner.invoke(app, ['sync', f'https://example.invalid/{playlist_id}'])
+    signing_in.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
+    return signing_in
+
+
+def test_adopting_binds_a_local_file_to_the_playlist_youtube_holds(library):
+    result = runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME', '--json'])
+    assert result.exit_code == 0
+
+    adopted = local.load(local.path_for('DRIVE TIME'))
+    assert json.loads(result.stdout) == [{'name': 'DRIVE TIME', 'slug': 'drive-time', 'remote_id': 'PLMINE', 'video_count': 2}]
+    assert adopted.remote_id == 'PLMINE'
+    assert adopted.video_ids == ['vid1', 'vid2']
+    assert adopted.synced
+
+
+def test_an_adopted_playlist_keeps_the_name_youtube_gave_it(library):
+    """The other half of the naming rule — what ypl makes is kebab, what it takes over is not."""
+    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    assert local.load(local.path_for('DRIVE TIME')).name == 'DRIVE TIME'
+
+
+def test_adopting_records_what_youtube_held_so_the_first_push_has_nothing_to_do(library):
+    """The base is the point of adopting rather than copying.
+
+    Without it the first plan reads the whole playlist as added here — or, with
+    an unreadable base, refuses — and neither is what taking over a playlist
+    that is already correct should mean.
+    """
+    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+
+    assert [item.set_video_id for item in basestore.load('drive-time').items] == ['h1', 'h2']
+    plan = json.loads(runner.invoke(app, ['remote', 'plan', '--json']).stdout)
+    assert [(push['stale'], push['add'], push['remove'], push['moves']) for push in plan] == [(False, [], 0, 0)]
+
+
+def test_an_adopted_playlist_is_one_playlist_rather_than_two(library):
+    """Both stores hold it now, and a name that matched both would be ambiguous."""
+    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+
+    listed = json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)
+    assert [(row['title'], row['kind']) for row in listed if row['title'] == 'DRIVE TIME'] == [('DRIVE TIME', 'local')]
+    assert runner.invoke(app, ['playlists', 'show', 'DRIVE TIME']).exit_code == 0
+
+
+def test_a_bare_adopt_takes_over_what_the_account_owns_and_nothing_else(library):
+    """Someone else's playlist would queue writes against a playlist we cannot write to,
+    and YouTube's own lists are not playlists it hands over."""
+    result = runner.invoke(app, ['remote', 'adopt', '--json'])
+    assert result.exit_code == 0
+
+    assert [row['remote_id'] for row in json.loads(result.stdout)] == ['PLMINE']
+    assert not local.path_for('Their Mix').exists()
+    assert not local.path_for('Liked videos').exists()
+
+
+def test_a_playlist_someone_else_owns_is_still_adopted_when_it_is_named(library):
+    """A collaborative playlist is a real case, and the channel cannot tell it apart."""
+    library.items = [RemoteItem(video_id='vid3', set_video_id='h3')]
+    assert runner.invoke(app, ['remote', 'adopt', 'Their Mix']).exit_code == 0
+    assert local.load(local.path_for('Their Mix')).remote_id == 'PLTHEIRS'
+
+
+def test_youtubes_own_lists_are_refused_even_by_name(library):
+    result = runner.invoke(app, ['remote', 'adopt', 'Liked videos'])
+    assert result.exit_code == 1
+    assert not local.path_for('Liked videos').exists()
+
+
+def test_adopting_the_same_playlist_twice_changes_nothing_and_says_why(library):
+    """Resolution answers an adopted playlist with its file, so the second run
+    has to say it is already here rather than that no such playlist is mirrored."""
+    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    before = local.path_for('DRIVE TIME').read_text()
+
+    result = runner.invoke(app, ['remote', 'adopt', 'PLMINE'])
+    assert result.exit_code == 1
+    assert 'already a playlist here' in result.output
+    assert local.path_for('DRIVE TIME').read_text() == before
+
+
+def test_a_bare_adopt_with_everything_already_taken_over_succeeds_and_says_so(library):
+    runner.invoke(app, ['remote', 'adopt'])
+    result = runner.invoke(app, ['remote', 'adopt'])
+    assert result.exit_code == 0
+    assert 'Nothing to adopt' in result.output
+
+
+def test_adopting_refuses_to_write_over_a_playlist_made_here(library):
+    """A local playlist of the same name is authored data, not a copy to replace."""
+    runner.invoke(app, ['playlists', 'create', 'drive time', '--from', 'DRIVE TIME'])
+
+    result = runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    assert result.exit_code == 1
+    assert local.load(local.path_for('DRIVE TIME')).remote_id == ''
+
+
+def test_nothing_is_written_when_youtube_cannot_be_read(library):
+    library.error = remote.RemoteError('network went away')
+
+    result = runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    assert result.exit_code == 1
+    assert not local.path_for('DRIVE TIME').exists()
+    assert basestore.load('drive-time') is None
+
+
 def set_order(name: str, video_ids: list[str]) -> None:
     """Rewrite a local playlist's order without going through a command."""
     playlist = local.load(local.path_for(name))

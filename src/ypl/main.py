@@ -1513,6 +1513,119 @@ def backend_or_exit() -> ytmusic.YtMusicBackend:
         raise typer.Exit(1) from error
 
 
+def bound_playlist_named(name: str) -> local.LocalPlaylist | None:
+    """The local playlist bound to a YouTube one this name could mean.
+
+    Wanted only for the error message, and only because resolution now answers
+    an adopted playlist with its file: the mirrored candidate is gone by the
+    time the name fails to match one, and "no mirrored playlist matching
+    DRIVE TIME" would be a lie about the single case where it worked already.
+    """
+    needle = local.slugify(name)
+    for playlist in local.list_playlists().playlists:
+        if playlist.remote_id and needle in {local.slugify(playlist.name), local.slugify(playlist.remote_id)}:
+            return playlist
+    return None
+
+
+def mirrored_or_exit(connection: sqlite3.Connection, name: str) -> service.ResolvedPlaylist:
+    """Resolve a name that has to be a mirrored playlist, because a file is about to bind to it.
+
+    Scoped to the mirror for the mirror image of `local_or_exit`'s reason: a
+    local playlist carrying the same name must not make the YouTube playlist
+    unreachable.
+    """
+    try:
+        return service.resolve_playlist(connection, name, service.REMOTE)
+    except service.PlaylistNotFoundError as error:
+        bound = bound_playlist_named(name)
+        if bound:
+            messages.print(f'[red]{bound.name} is already a playlist here.[/red] Reconcile it with [bold]ypl remote pull[/bold].')
+            raise typer.Exit(1) from error
+        messages.print(f'[red]No mirrored playlist matching {name!r}.[/red] Run [bold]ypl sync[/bold] to mirror the account first.')
+        raise typer.Exit(1) from error
+    except service.AmbiguousPlaylistError as error:
+        print_candidates(name, error)
+        raise typer.Exit(2) from error
+
+
+def account_or_exit(backend: ytmusic.YtMusicBackend) -> remote.RemoteAccount:
+    try:
+        return backend.account()
+    except remote.RemoteError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+
+
+@remote_app.command('adopt')
+def remote_adopt(
+    name: str = typer.Argument(
+        None, help='Mirrored playlist to take over. Every one this account owns when omitted.', autocompletion=complete_playlist
+    ),
+    limit: int = typer.Option(None, '--limit', '-n', help='Adopt at most this many playlists.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Take over a playlist YouTube already holds.
+
+    Writes the local file, binds it to the YouTube playlist and records what it
+    read as the base — so a playlist made in the web player years ago can now be
+    edited here and pushed back. Its name is kept exactly as YouTube has it.
+
+    Bare, this covers every mirrored playlist the signed-in account owns.
+    Playlists mirrored from someone else's channel are left out, since nothing
+    here could write to them, but naming one adopts it anyway.
+    """
+    connection = db.connect()
+    backend = backend_or_exit()
+    if name is None:
+        targets = service.adoptable_playlists(connection, account_or_exit(backend))
+    else:
+        targets = [mirrored_or_exit(connection, name)]
+    if not targets:
+        messages.print('Nothing to adopt — every playlist this account owns is already bound to a file here.')
+        messages.print('Run [bold]ypl sync[/bold] first if YouTube has playlists this mirror has not seen.')
+        return
+    if limit and len(targets) > limit:
+        # Named rather than silent, as in `plan`: a run that covered half of
+        # them and said nothing reads as the whole library being adopted.
+        messages.print(f'Adopting {limit} of {len(targets)} playlists — run again for the rest.')
+        targets = targets[:limit]
+
+    adopted: list[local.LocalPlaylist] = []
+    refused: list[tuple[service.ResolvedPlaylist, str]] = []
+    failure: Exception | None = None
+    for target in targets:
+        try:
+            adopted.append(service.adopt_playlist(connection, target, backend))
+        except (service.AdoptionError, local.LocalPlaylistExistsError) as error:
+            refused.append((target, str(error)))
+        except remote.RemoteError as error:
+            # Including the rate limit: it clears in hours, and everything
+            # adopted so far is already written down.
+            failure = error
+            break
+
+    if as_json:
+        print_json(
+            [
+                {'name': playlist.name, 'slug': playlist.slug, 'remote_id': playlist.remote_id, 'video_count': len(playlist.entries)}
+                for playlist in adopted
+            ]
+        )
+    else:
+        for playlist in adopted:
+            messages.print(f'[bold]{playlist.name}[/bold] — adopted, {len(playlist.entries)} videos')
+        for target, reason in refused:
+            messages.print(f'[bold]{target.title}[/bold] — [yellow]skipped[/yellow]: {reason}')
+
+    if failure:
+        messages.print(f'[red]{failure}[/red]')
+        messages.print(f'Stopped after {len(adopted)} of {len(targets)} — everything adopted is already recorded.')
+        raise typer.Exit(1)
+    if refused:
+        raise typer.Exit(1)
+
+
 def pull_targets_or_exit(connection: sqlite3.Connection, name: str | None) -> list[local.LocalPlaylist]:
     """Which playlists this run reconciles.
 
