@@ -8,6 +8,7 @@ from ypl import ytdlp
 from ypl.models import Chapter
 from ypl.models import RemotePlaylist
 from ypl.models import RemoteVideo
+from ypl.models import Track
 
 
 @pytest.fixture(autouse=True)
@@ -226,6 +227,51 @@ def test_listing_playlists_reports_how_many_videos_are_enriched(connection, stub
     row = service.playlist_summaries(connection)[0]
     assert row['item_count'] == 2
     assert row['enriched_count'] == 1
+
+
+def test_the_track_at_an_offset_is_the_latest_one_to_have_started(connection, stub_remote):
+    """Several tracks can match at once when their ends are unknown.
+
+    A tracklist parsed out of a description leaves `end_seconds` NULL, and every
+    such track from the start of the video onwards satisfies "started before
+    now and has not been said to finish". The latest start is the one playing.
+    """
+    stub_remote(playlist(video('a')))
+    service.sync_playlist(connection, 'https://example.invalid/PL1')
+    service.store_tracks(
+        connection,
+        'a',
+        [
+            Track(position=1, title='First', raw_text='', source='description', start_seconds=0, end_seconds=None),
+            Track(position=2, title='Second', raw_text='', source='description', start_seconds=100, end_seconds=None),
+            Track(position=3, title='Third', raw_text='', source='description', start_seconds=200, end_seconds=None),
+        ],
+    )
+
+    assert service.track_at(connection, 'a', 150)['title'] == 'Second'
+    assert service.track_at(connection, 'a', 0)['title'] == 'First'
+    assert service.track_at(connection, 'a', 9999)['title'] == 'Third'
+
+
+def test_a_track_that_has_finished_does_not_keep_playing(connection, stub_remote):
+    stub_remote(playlist(video('a')))
+    service.sync_playlist(connection, 'https://example.invalid/PL1')
+    service.store_tracks(
+        connection,
+        'a',
+        [Track(position=1, title='Only', raw_text='', source='chapter', start_seconds=0, end_seconds=60)],
+    )
+
+    assert service.track_at(connection, 'a', 30)['title'] == 'Only'
+    assert service.track_at(connection, 'a', 60) is None
+
+
+def test_a_track_with_no_start_time_cannot_be_placed_and_is_skipped(connection, stub_remote):
+    stub_remote(playlist(video('a')))
+    service.sync_playlist(connection, 'https://example.invalid/PL1')
+    service.store_tracks(connection, 'a', [Track(position=1, title='Unplaceable', raw_text='', source='llm')])
+
+    assert service.track_at(connection, 'a', 10) is None
 
 
 @pytest.mark.parametrize(

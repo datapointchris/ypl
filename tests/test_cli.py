@@ -599,6 +599,12 @@ def test_playing_an_empty_playlist_fails_rather_than_starting_mpv(played):
     assert played == []
 
 
+def test_a_failing_mpv_makes_ypl_fail_too(synced, monkeypatch):
+    """Otherwise a playlist that would not play looks like it played."""
+    monkeypatch.setattr(player, 'play', lambda *args, **kwargs: 3)
+    assert runner.invoke(app, ['play', 'Get Insights']).exit_code == 1
+
+
 def test_a_missing_mpv_names_the_fix_and_fails(synced, monkeypatch):
     def unavailable(*args, **kwargs):
         raise player.MpvUnavailableError('mpv is not on PATH — install it to play playlists')
@@ -634,12 +640,38 @@ def test_now_reports_the_track_playing_inside_the_mix(synced, monkeypatch):
     assert payload['position_seconds'] == 150
 
 
-def test_now_falls_back_to_the_video_when_there_is_no_tracklist(synced, monkeypatch):
-    stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 10.0})
+def test_now_prefers_the_mirrors_title_over_the_one_mpv_guessed(synced, monkeypatch):
+    """Both are available here, so this pins which one wins rather than that one exists."""
+    stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 10.0, 'media-title': 'Whatever mpv Saw'})
 
     payload = json.loads(runner.invoke(app, ['now', '--json']).stdout)
     assert payload['track'] is None
     assert payload['title'] == 'A Talk'
+
+
+def test_now_prints_the_track_and_the_position_without_json(synced, monkeypatch):
+    """The human path builds a nested f-string that --json never exercises."""
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_video',
+        lambda video_id, **kwargs: RemoteVideo(
+            video_id=video_id, title='A Talk', duration_seconds=600, chapters=[Chapter(0, 300, 'Bonobo - Kerala')]
+        ),
+    )
+    runner.invoke(app, ['enrich'])
+    stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 65.0, 'duration': 600})
+
+    result = runner.invoke(app, ['now'])
+    assert result.exit_code == 0
+    assert 'Bonobo - Kerala' in result.output
+    assert '1:05 / 10:00' in result.output
+
+
+def test_now_says_why_there_is_no_track_when_the_video_is_unenriched(synced, monkeypatch):
+    stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 10.0})
+
+    result = runner.invoke(app, ['now'])
+    assert 'ypl enrich' in result.output
 
 
 def test_now_falls_back_to_mpvs_own_title_for_a_video_not_in_the_mirror(monkeypatch):
