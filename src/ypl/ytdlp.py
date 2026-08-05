@@ -200,6 +200,7 @@ def fetch_playlist(url: str, cookies_from_browser: str | None = None, timeout_se
         description=payload.get('description') or '',
         channel=payload.get('channel') or payload.get('uploader') or '',
         videos=[flat_entry_to_video(entry) for entry in payload.get('entries') or []],
+        availability=payload.get('availability') or '',
     )
 
 

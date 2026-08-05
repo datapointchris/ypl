@@ -400,6 +400,16 @@ playlists it hands over, and are refused either way.
 An adopted playlist then resolves to its file rather than to both stores — it is one playlist, and
 the file is the half that can be edited.
 
+**A playlist that is not public is out of reach of the write backend entirely.** YouTube Music
+answers a browse for one with a page carrying no `contents` at all — for its owner, with a live
+session, and with `logged_in: 1` in the response it does return — so it cannot be adopted, and an
+adopted playlist made private afterwards can no longer be reconciled or pushed either. `ypl sync`
+leaves them out and says how many, rather than spending a request each to fail the same way every
+half hour. They are still mirrored and still readable here; making one public on YouTube brings it
+back into the sync on the next run, with nothing to re-run by hand. yt-dlp reports the privacy on
+the same free read the mirror already makes, which is why this costs no request and needs nothing
+stored.
+
 ### Reconciling
 
 `ypl remote pull` reads YouTube, merges it into the local file, and records what it read as the

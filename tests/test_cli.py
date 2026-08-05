@@ -1494,6 +1494,9 @@ def account(monkeypatch):
             playlist_id=url,
             title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
+            # Public, because YouTube Music serves nothing else and the whole
+            # remote half of a sync is skipped for a playlist that is not.
+            availability='public',
         ),
     )
     monkeypatch.setattr(
@@ -1523,6 +1526,55 @@ def test_a_bare_sync_with_no_browser_anywhere_says_what_to_do(account):
     result = runner.invoke(app, ['sync'])
     assert result.exit_code == 2
     assert '--browser' in result.output
+
+
+def test_a_playlist_that_is_not_public_is_left_out_of_the_remote_half(account, signed_in, monkeypatch):
+    """Measured against the real account: YouTube Music answers a non-public
+    playlist with a page carrying no `contents`, for its owner, with a live
+    session. Twenty-three of forty-two failed that way every half hour."""
+
+    def fetch(url, **kwargs):
+        title = {'PLa': 'Deep Night', 'PLb': 'Art'}[url]
+        return RemotePlaylist(
+            playlist_id=url,
+            title=title,
+            videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
+            availability='public' if url == 'PLa' else '',
+        )
+
+    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
+
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+
+    assert run['adopted'] == ['Deep Night']
+    assert run['withheld'] == ['Art']
+    # Not a failure: nothing here can change it, so a run that called it one
+    # would report the same playlists on every run for as long as the timer runs.
+    assert run['failures'] == []
+    # Said once, in the glance, rather than as a failure line per playlist.
+    assert '1 playlist YouTube Music will not serve' in runner.invoke(app, ['status']).output
+
+
+def test_an_adopted_playlist_gone_private_stops_being_reconciled(account, signed_in, monkeypatch):
+    """The other direction, and why this filters more than the sweep."""
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['last_run']['adopted']
+
+    def fetch(url, **kwargs):
+        return RemotePlaylist(
+            playlist_id=url,
+            title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
+            videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
+            availability='',
+        )
+
+    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+
+    assert run['reconciled'] == []
+    assert run['pushed'] == []
+    assert sorted(run['withheld']) == ['Art', 'Deep Night']
+    assert run['failures'] == []
 
 
 def test_one_unreadable_playlist_does_not_cost_the_others_their_sync(account, monkeypatch):
