@@ -15,8 +15,10 @@ from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC
 from datetime import datetime
+from functools import partial
 
 from ypl import basestore
+from ypl import declined
 from ypl import history
 from ypl import local
 from ypl import m3u
@@ -31,6 +33,7 @@ from ypl.models import Track
 from ypl.models import watch_url
 from ypl.remote import Backend
 from ypl.remote import RemoteItem
+from ypl.throttle import Budget
 from ypl.throttle import Throttle
 
 REMOTE = 'remote'
@@ -252,6 +255,47 @@ def unenriched_video_ids(connection: sqlite3.Connection, playlist_id: str | None
         query += ' LIMIT ?'
         parameters.append(limit)
     return [row['video_id'] for row in connection.execute(query, parameters)]
+
+
+def mark_unreadable(connection: sqlite3.Connection, video_id: str, reason: str) -> None:
+    """Record that a full extraction says this video will never read.
+
+    Its own table rather than `videos.is_unavailable`, which is what the flat
+    playlist listing said and which `ypl sync` rewrites on every run — anything
+    recorded there would survive until the next mirror read and no longer.
+    """
+    with connection:
+        connection.execute(
+            'INSERT INTO enrich_failures (video_id, attempted_ts, reason) VALUES (?, ?, ?) '
+            'ON CONFLICT (video_id) DO UPDATE SET attempted_ts = excluded.attempted_ts, reason = excluded.reason',
+            (video_id, now_ts(), reason),
+        )
+
+
+def unreadable_video_ids(connection: sqlite3.Connection) -> set[str]:
+    return {row['video_id'] for row in connection.execute('SELECT video_id FROM enrich_failures')}
+
+
+def unenriched_everywhere(connection: sqlite3.Connection) -> list[str]:
+    """Every video still needing a tracklist, the ones you listen to first.
+
+    Ordering matters here in a way it does not anywhere else. `Liked videos` is
+    thousands of entries that nobody curated, and enriching in id order would
+    spend days inside it before touching a playlist that actually gets played.
+    So the videos in playlists that live here come first, in playlist order,
+    and the rest of the mirror follows.
+
+    It also reaches videos the mirror-only query cannot: a local playlist of
+    hand-pasted URLs has no row in `playlist_videos`, and its videos would
+    otherwise never be enriched by anything but a playlist-scoped run.
+    """
+    wanted: list[str] = []
+    for playlist in local.list_playlists().playlists:
+        wanted.extend(playlist.video_ids)
+    unreadable = unreadable_video_ids(connection)
+    ranked = [video_id for video_id in unenriched_among(connection, wanted) if video_id not in unreadable]
+    seen = set(ranked) | unreadable
+    return ranked + [video_id for video_id in unenriched_video_ids(connection) if video_id not in seen]
 
 
 def unenriched_among(connection: sqlite3.Connection, video_ids: list[str]) -> list[str]:
@@ -594,6 +638,10 @@ def adopt_playlist(connection: sqlite3.Connection, playlist: ResolvedPlaylist, b
     # left behind by a file that failed to save is a record of a remote state
     # nothing was merged against.
     basestore.save(basestore.Base(slug=adopted.slug, playlist_id=adopted.remote_id, items=items))
+    # Adopting on purpose is the reversal of having declined it, and leaving the
+    # claim behind would let a later delete-and-restore cycle look like it
+    # worked while the next sync quietly refused to bring it back.
+    declined.remove(playlist.identifier)
     return adopted
 
 
@@ -722,6 +770,317 @@ def apply_push(push: Push, backend: Backend) -> Push:
     return push
 
 
+def mirrored_video_ids(connection: sqlite3.Connection, playlist_id: str) -> list[str]:
+    """What the last mirror read found in a playlist, in order."""
+    rows = connection.execute('SELECT video_id FROM playlist_videos WHERE playlist_id = ? ORDER BY position', (playlist_id,))
+    return [row['video_id'] for row in rows]
+
+
+def needs_reconcile(connection: sqlite3.Connection, playlist: LocalPlaylist) -> bool:
+    """Whether YouTube has moved away from the local file, judged for free.
+
+    This is what makes a sync cheap enough to run on a timer. The mirror read
+    that just happened costs no quota and already says what YouTube holds, so a
+    playlist whose mirror matches its file needs no write-client read at all —
+    and a library where nothing changed overnight costs zero of them.
+
+    It answers a coarser question than the merge does, and deliberately: it
+    cannot tell which side moved, only that they disagree, and disagreement is
+    exactly the condition for spending a real read to find out.
+    """
+    return mirrored_video_ids(connection, playlist.remote_id) != playlist.video_ids
+
+
+def needs_push(playlist: LocalPlaylist) -> bool:
+    """Whether the local file has moved away from the last reconcile.
+
+    Compared against the base rather than against the mirror, because this is
+    the question the push answers: everything the file says that YouTube was
+    not told. Order counts — a pure reorder adds and removes nothing and is
+    still a change to send.
+    """
+    recorded = basestore.load(playlist.slug)
+    return recorded is not None and recorded.video_ids != playlist.video_ids
+
+
+# What each kind of call costs the run's budget. One ceiling with weights rather
+# than a ceiling per endpoint, so the operations that carry risk drain the
+# allowance faster and a single run cannot spend itself entirely on the one
+# endpoint with a measured limit. A read costs no quota and is paced rather than
+# rationed; a write goes through the web client's own endpoints; a creation is
+# the only call anyone has measured a limit on — roughly twenty in a quarter of
+# an hour — so it is priced at what it is worth avoiding a burst of.
+READ_COST = 1
+WRITE_COST = 5
+CREATE_COST = 25
+
+
+@dataclass
+class Work:
+    """One unit of syncing: what it is, what it costs, and how to do it.
+
+    A queue of these rather than three loops in a fixed order, because the
+    order is the point: a run that can be cut short at any moment has to spend
+    what it has on the work that matters most. `kind`, `label` and `cost` are
+    what the log and the tests read; `perform` is the closure over the work.
+    """
+
+    kind: str
+    label: str
+    cost: int
+    perform: Callable[['SyncRun'], None]
+
+
+@dataclass
+class SyncRun:
+    """What one full sync did, in the order it did it.
+
+    Carried as a value rather than printed as it goes, so the same run can be
+    rendered for a person, written to the log a timer leaves behind, and
+    asserted on in a test.
+    """
+
+    mirrored: int = 0
+    videos: int = 0
+    adopted: list[str] = field(default_factory=list)
+    reconciled: list[Pull] = field(default_factory=list)
+    pushed: list[Push] = field(default_factory=list)
+    unchanged: int = 0
+    enriched: int = 0
+    tracks_found: int = 0
+    unenriched: int = 0
+    signed_in: bool = False
+    stopped: str = ''
+    seconds: float = 0.0
+    failures: list[tuple[str, str]] = field(default_factory=list)
+    # Videos that would not extract, kept apart from `failures` because they are
+    # not a problem with the sync: a library this old holds deleted and private
+    # ones, and a run that called that a failure would report one forever.
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.adopted or self.reconciled or self.pushed or self.enriched)
+
+    @property
+    def in_sync(self) -> bool:
+        """Whether anything is still owed after this run.
+
+        What makes the log readable at a glance: a run that changed nothing and
+        left nothing over is the steady state, and one that stopped with work
+        remaining is the next run's job rather than a failure.
+        """
+        return not self.unenriched and not self.stopped and not self.failures
+
+    def payload(self) -> dict:
+        """The line this run leaves in the log."""
+        return {
+            'mirrored': self.mirrored,
+            'videos': self.videos,
+            'adopted': self.adopted,
+            'reconciled': [pull.playlist.name for pull in self.reconciled],
+            'pulled_in': sum(len(pull.result.pulled_in) for pull in self.reconciled),
+            'pulled_out': sum(len(pull.result.pulled_out) for pull in self.reconciled),
+            'pushed': [push.playlist.name for push in self.pushed],
+            'added_there': sum(len(push.diff.add) for push in self.pushed),
+            'removed_there': sum(len(push.diff.remove) for push in self.pushed),
+            'unchanged': self.unchanged,
+            'enriched': self.enriched,
+            'tracks_found': self.tracks_found,
+            'unenriched': self.unenriched,
+            'signed_in': self.signed_in,
+            'stopped': self.stopped,
+            'seconds': round(self.seconds, 1),
+            'failures': [f'{name}: {reason}' for name, reason in self.failures],
+            'skipped': len(self.skipped),
+        }
+
+
+def sync_everything(
+    connection: sqlite3.Connection,
+    cookies_from_browser: str,
+    backend: Backend | None = None,
+    limit: int | None = None,
+    on_playlist: Callable[[PlaylistRef], None] | None = None,
+    on_video: Callable[[int, int, str], None] | None = None,
+    pace: Throttle | None = None,
+    budget: Budget | None = None,
+) -> SyncRun:
+    """Mirror the account, take over what is new, settle both directions, enrich.
+
+    The whole loop, because every part of it was a step someone had to remember
+    in the right order — and a sync you have to drive is one that silently stops
+    happening. Signing in once is the last thing it asks of you.
+
+    The order is forced twice over. Mirroring first is what makes the rest
+    cheap: it costs no quota and it is also the change detector, so comparing it
+    to the local files says which playlists are worth a write-client read.
+    Reconciling comes before pushing because a push against a stale base refuses
+    by design — pull first, push second, always. Enriching comes last because it
+    is the only step whose work is unbounded and the only one where stopping
+    early costs nothing at all.
+
+    Bounded by the budget rather than by a batch size, and it can stop anywhere:
+    every step re-derives what is left from stored state, so a run cut short is
+    a shorter run rather than a lost update. That is the property that lets this
+    be unattended — a library converges over several runs, and no single run has
+    to be the one that finishes.
+
+    Nothing here is fatal on its own. One playlist YouTube will not serve must
+    not cost the other forty their sync, so failures are collected against the
+    playlist that caused them and the run carries on. A rate limit is the
+    exception and ends the run, because continuing into it is what turns a
+    throttle into a pattern worth noticing.
+    """
+    run = SyncRun()
+    budget = budget or Budget()
+    pace = pace or Throttle()
+
+    account = sync_account(connection, cookies_from_browser, limit=limit, on_playlist=on_playlist, pace=pace)
+    run.mirrored = len(account.synced)
+    run.videos = account.video_count
+    run.failures = [(reference.title, reason) for reference, reason in account.failures]
+    budget.charge(READ_COST * (len(account.synced) + 1))
+
+    if backend is not None:
+        run.signed_in = True
+        for item in queued_work(connection, account, backend):
+            if budget.exhausted:
+                run.stopped = 'budget'
+                break
+            budget.charge(item.cost)
+            try:
+                item.perform(run)
+            except remote.RemoteRateLimitedError as error:
+                run.failures.append((item.label, str(error)))
+                run.stopped = 'rate limit'
+                break
+            except (AdoptionError, local.LocalPlaylistExistsError, remote.RemoteError, basestore.BaseStoreError, OSError) as error:
+                run.failures.append((item.label, str(error)))
+
+    if not run.stopped:
+        enrich_pending(connection, run, cookies_from_browser, pace=pace, budget=budget, on_video=on_video)
+    run.unenriched = len(unenriched_everywhere(connection))
+    run.seconds = budget.elapsed_seconds
+    return run
+
+
+def queued_work(connection: sqlite3.Connection, account: AccountSync, backend: Backend) -> list[Work]:
+    """Everything the account is owed, most valuable first.
+
+    Derived on every run rather than stored, for the reason the push queue is:
+    what is owed is a fact about the files, the bases and the mirror, and a
+    written-down queue is a second answer to that question that can disagree
+    with it. Re-deriving cannot double-queue anything and cannot go stale.
+
+    The order is what makes a bounded run useful rather than merely short.
+    Reconciling comes first because a wrong local file is the one failure you
+    would act on — you would play the wrong thing, or edit against something
+    that has moved. Pushing is second: an edit made here is already visible
+    here, so it is late rather than wrong until it lands. Adopting is third,
+    because a playlist that has never been here is not yet part of anything.
+    Enrichment is not in this list at all — it is the tail, it is thousands of
+    requests, and it runs on whatever budget survives the rest.
+    """
+
+    def reconcile_one(run: SyncRun, playlist: LocalPlaylist) -> None:
+        run.reconciled.append(pull_playlist(connection, playlist, backend))
+
+    def push_one(run: SyncRun, playlist: LocalPlaylist) -> None:
+        push = plan_push(playlist, backend)
+        if push.stale:
+            run.failures.append((playlist.name, 'YouTube moved during the run — the next sync reconciles it'))
+        elif not push.empty:
+            run.pushed.append(apply_push(push, backend))
+
+    def adopt_one(run: SyncRun, candidate: ResolvedPlaylist) -> None:
+        run.adopted.append(adopt_playlist(connection, candidate, backend).name)
+
+    work: list[Work] = []
+    for playlist in pullable_playlists():
+        if needs_reconcile(connection, playlist):
+            work.append(
+                Work(
+                    kind='reconcile',
+                    label=playlist.name,
+                    cost=READ_COST,
+                    perform=partial(reconcile_one, playlist=playlist),
+                )
+            )
+
+    for playlist in pushable_playlists():
+        # An unbound playlist is not waiting for a change to be worth pushing:
+        # it does not exist on YouTube yet, and the creation is the push.
+        if not playlist.remote_id or needs_push(playlist):
+            work.append(
+                Work(
+                    kind='push',
+                    label=playlist.name,
+                    cost=WRITE_COST if playlist.remote_id else CREATE_COST,
+                    perform=partial(push_one, playlist=playlist),
+                )
+            )
+
+    # The feed is the authority on ownership: a playlist is in it because this
+    # account has it, which is a stronger answer than comparing channel names
+    # and is only available here, on the read that just listed them.
+    bound = adopted_remote_ids(local.list_playlists().playlists)
+    refused = declined.load()
+    for mirrored in account.synced:
+        if mirrored.playlist_id in bound or mirrored.playlist_id in refused or mirrored.playlist_id in SYSTEM_PLAYLIST_IDS:
+            continue
+        candidate = ResolvedPlaylist(kind=REMOTE, title=mirrored.title, identifier=mirrored.playlist_id)
+        work.append(Work(kind='adopt', label=mirrored.title, cost=READ_COST, perform=partial(adopt_one, candidate=candidate)))
+    return work
+
+
+def enrich_pending(
+    connection: sqlite3.Connection,
+    run: SyncRun,
+    cookies_from_browser: str | None,
+    pace: Throttle,
+    budget: Budget,
+    on_video: Callable[[int, int, str], None] | None = None,
+) -> None:
+    """Spend what is left of the run on tracklists.
+
+    Last and open-ended on purpose. Nothing else here grows with the library —
+    forty playlists reconcile in forty reads — while this is one request per
+    video and six thousand videos is days of them. Putting it after everything
+    else means a run always leaves the playlists correct first and fills in the
+    detail with what remains, which is what makes the tool usable on the first
+    run rather than the last.
+
+    A video already enriched is never asked about again, so this converges: each
+    run's query is shorter than the last, and the work finishes itself without
+    anyone deciding it should.
+    """
+    pending = unenriched_everywhere(connection)
+    for index, video_id in enumerate(pending, start=1):
+        if budget.exhausted:
+            run.stopped = run.stopped or 'budget'
+            return
+        if on_video:
+            on_video(index, len(pending), video_id)
+        budget.charge(READ_COST)
+        pace.wait()
+        try:
+            run.tracks_found += len(enrich_video(connection, video_id, cookies_from_browser=cookies_from_browser))
+            run.enriched += 1
+        except ytdlp.YtdlpRateLimitedError as error:
+            run.failures.append((video_id, str(error).splitlines()[-1] if str(error) else 'rate limited'))
+            run.stopped = 'rate limit'
+            return
+        except ytdlp.YtdlpFailedError as error:
+            # A video failing to extract is ordinary — a library this old holds
+            # deleted, private and region-locked ones — so it is skipped rather
+            # than failing the run, and marked when it will never succeed.
+            message = str(error).splitlines()[-1] if str(error) else 'unreadable'
+            if ytdlp.is_gone(str(error)):
+                mark_unreadable(connection, video_id, message)
+            run.skipped.append((video_id, message))
+
+
 def pushable_playlists() -> list[LocalPlaylist]:
     """The playlists a bare `remote apply` covers.
 
@@ -842,15 +1201,24 @@ def apply_edit(connection: sqlite3.Connection, playlist: LocalPlaylist, video_id
 
 
 def delete_local_playlist(playlist: LocalPlaylist) -> None:
-    """Delete a playlist file and the merge base that described it.
+    """Delete a playlist file, the merge base that described it, and its claim.
 
-    Both, always: a base left behind outlives the playlist it belongs to, and
+    The base always: one left behind outlives the playlist it belongs to, and
     the next playlist to slug the same way would adopt it and read as having
-    had every one of those videos deleted here — which the queue would then
+    had every one of those videos deleted here — which the push would then
     carry out on YouTube.
+
+    The decline for the same reason in the other direction. `sync` adopts every
+    playlist the account owns, so deleting one that is still on YouTube without
+    saying so would last exactly until the next run put it back. Deleting it
+    here is a statement about wanting it *here*, and that is what is recorded —
+    the playlist itself stays on YouTube, which is what `playlists delete`
+    already says it does.
     """
     local.delete(playlist)
     basestore.delete(playlist.slug)
+    if playlist.remote_id:
+        declined.add(playlist.remote_id)
 
 
 def set_synced(playlist: LocalPlaylist, synced: bool) -> LocalPlaylist:

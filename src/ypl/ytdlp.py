@@ -45,6 +45,36 @@ class YtdlpFailedError(RuntimeError):
     pass
 
 
+# What yt-dlp says when the video itself is the problem rather than the request.
+# Matched on text for the same reason the rate limit is: it arrives as a message
+# inside a generic extraction failure rather than as anything a caller could
+# tell apart by type.
+GONE_MARKERS = (
+    'video unavailable',
+    'private video',
+    'this video is private',
+    'has been removed',
+    'removed by the uploader',
+    'members-only',
+    'members only',
+    'account associated with this video has been terminated',
+    'not available in your country',
+    'video is no longer available',
+)
+
+
+def is_gone(message: str) -> bool:
+    """Whether a failed extraction says the video will never succeed.
+
+    Worth telling apart from a failure that might pass next time, because an
+    unattended enrich retries whatever it did not manage — and a handful of
+    permanently dead videos, asked about every run forever, is a background
+    process that spends its whole budget achieving nothing.
+    """
+    lowered = message.lower()
+    return any(marker in lowered for marker in GONE_MARKERS)
+
+
 class YtdlpRateLimitedError(YtdlpFailedError):
     """YouTube is refusing because of how much has been asked, not what.
 

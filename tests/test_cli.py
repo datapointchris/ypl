@@ -22,6 +22,7 @@ from ypl import main
 from ypl import paths
 from ypl import player
 from ypl import remote
+from ypl import schedule
 from ypl import service
 from ypl import session
 from ypl import throttle
@@ -1440,7 +1441,12 @@ def test_a_browser_yt_dlp_cannot_read_names_the_browser(signing_in, monkeypatch)
 
 @pytest.fixture
 def account(monkeypatch):
-    """Two playlists on YouTube, listed the way the account feed lists them."""
+    """Two playlists on YouTube, listed the way the account feed lists them.
+
+    `fetch_video` is stubbed as well, because a bare sync now enriches with
+    whatever budget the rest of the run leaves — an unstubbed one would send the
+    suite to the network.
+    """
     monkeypatch.setattr(
         ytdlp,
         'fetch_account_playlists',
@@ -1455,13 +1461,18 @@ def account(monkeypatch):
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
         ),
     )
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_video',
+        lambda video_id, **kwargs: RemoteVideo(video_id=video_id, title='A Mix', channel='Someone', duration_seconds=3600),
+    )
 
 
 def test_a_bare_sync_mirrors_the_whole_account(account):
     """No hunting for URLs: signing in is enough to say what you have."""
     result = runner.invoke(app, ['sync', '--browser', 'safari', '--json'])
     assert result.exit_code == 0
-    assert [row['title'] for row in json.loads(result.stdout)] == ['Deep Night', 'Art']
+    assert json.loads(result.stdout)['mirrored'] == 2
 
     listed = json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)
     assert {row['title'] for row in listed} == {'Deep Night', 'Art'}
@@ -1490,19 +1501,151 @@ def test_one_unreadable_playlist_does_not_cost_the_others_their_sync(account, mo
     monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
 
     result = runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert result.exit_code == 0
-    assert 'Skipped Deep Night' in result.output
+    assert result.exit_code == 1
+    assert 'Deep Night' in result.output
     assert [row['title'] for row in json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)] == ['Art']
 
 
 def test_a_limited_sync_stops_where_it_was_told(account):
     result = runner.invoke(app, ['sync', '--browser', 'safari', '--limit', '1', '--json'])
-    assert len(json.loads(result.stdout)) == 1
+    assert json.loads(result.stdout)['mirrored'] == 1
 
 
 def test_syncing_one_playlist_by_url_still_works(synced):
     """The account sweep is the new default, not a replacement."""
     assert runner.invoke(app, ['playlists', 'show', 'Get Insights']).exit_code == 0
+
+
+@pytest.fixture
+def signed_in(signing_in):
+    """A machine that has already signed in, without going through the paste.
+
+    The backend is faked either way; what this adds is the session file, which
+    is what `ypl sync` looks at to decide whether this machine can write.
+    """
+    paths.ytmusic_auth_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.ytmusic_auth_file().write_text('{}')
+    return signing_in
+
+
+def test_one_sync_mirrors_adopts_and_enriches_with_nothing_else_typed(account, signed_in):
+    """The whole point: after signing in, one command leaves nothing owed."""
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+
+    assert (run['mirrored'], sorted(run['adopted']), run['enriched'], run['unenriched']) == (2, ['Art', 'Deep Night'], 2, 0)
+    assert local.load(local.path_for('Deep Night')).remote_id == 'PLa'
+    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['unenriched'] == 0
+
+
+def test_a_sync_without_a_session_mirrors_and_says_so_rather_than_failing(account):
+    """Signing in is per-machine setup, and a machine that has not must still sync."""
+    result = runner.invoke(app, ['sync', '--browser', 'safari', '--json'])
+    assert result.exit_code == 0
+
+    run = json.loads(result.stdout)
+    assert (run['signed_in'], run['mirrored'], run['adopted']) == (False, 2, [])
+
+
+def test_a_run_out_of_budget_stops_and_the_next_one_carries_on(account, signed_in):
+    """Bounded rather than open-ended, which is only safe because it resumes.
+
+    The ceiling is what lets this run unattended: a library converges over
+    several runs and no single one has to be the one that finishes. Counted in
+    requests rather than seconds so the ceiling lands in the same place every
+    time — the mirror alone spends more than one.
+    """
+    connection = db.connect()
+    stopped = service.sync_everything(connection, 'safari', backend=signed_in(None), budget=throttle.Budget(requests=1))
+    assert (stopped.adopted, stopped.enriched, stopped.stopped) == ([], 0, 'budget')
+
+    finished = service.sync_everything(connection, 'safari', backend=signed_in(None), budget=throttle.Budget())
+    assert (sorted(finished.adopted), finished.unenriched) == (['Art', 'Deep Night'], 0)
+
+
+def test_a_video_that_will_never_read_is_marked_rather_than_retried_forever(account, signed_in, monkeypatch):
+    """The failure mode of an unattended enrich: spending every run on the dead."""
+    monkeypatch.setattr(
+        ytdlp, 'fetch_video', lambda video_id, **kwargs: (_ for _ in ()).throw(ytdlp.YtdlpFailedError('ERROR: Video unavailable'))
+    )
+    first = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+    assert (first['enriched'], first['skipped'], first['unenriched']) == (0, 2, 0)
+
+    second = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+    assert second['skipped'] == 0
+
+
+def test_a_video_that_might_read_next_time_is_left_in_the_queue(account, signed_in, monkeypatch):
+    """A timeout is not a dead video, and treating it as one loses the tracklist."""
+    monkeypatch.setattr(ytdlp, 'fetch_video', lambda video_id, **kwargs: (_ for _ in ()).throw(ytdlp.YtdlpFailedError('ERROR: timed out')))
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+
+    assert (run['skipped'], run['unenriched']) == (2, 2)
+
+
+def test_a_deleted_playlist_is_not_dragged_back_by_the_next_sync(account, signed_in):
+    """Deleting one is a statement about wanting it here, and sync has to hear it."""
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert runner.invoke(app, ['playlists', 'delete', 'Deep Night', '--yes']).exit_code == 0
+
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+    assert run['adopted'] == []
+    assert not local.path_for('Deep Night').exists()
+
+
+def test_adopting_a_declined_playlist_by_name_undoes_the_refusal(account, signed_in):
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    runner.invoke(app, ['playlists', 'delete', 'Deep Night', '--yes'])
+
+    assert runner.invoke(app, ['remote', 'adopt', 'Deep Night']).exit_code == 0
+    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['declined'] == 0
+
+
+def test_an_edit_here_reaches_youtube_on_the_next_sync_with_nothing_else_typed(account, signed_in):
+    """The other direction, and the reason the loop is worth automating at all."""
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    runner.invoke(app, ['playlists', 'remove', 'Deep Night', 'PLavid'])
+
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert [item.video_id for item in signed_in.items] == []
+
+
+def test_the_run_a_timer_leaves_behind_is_readable_afterwards(account, signed_in):
+    """A sync nobody watches is only as good as what it wrote down."""
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+
+    status = json.loads(runner.invoke(app, ['status', '--json']).stdout)
+    assert status['last_sync']
+    assert sorted(status['last_run']['adopted']) == ['Art', 'Deep Night']
+
+
+def test_a_timer_can_be_installed_and_read_back(tmp_path, monkeypatch):
+    """Written by the tool because it has to name this machine's paths."""
+    monkeypatch.setattr(schedule, 'is_macos', lambda: False)
+    monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
+    monkeypatch.setattr(schedule, 'run_manager', lambda arguments: (True, ''))
+
+    result = runner.invoke(app, ['schedule', 'install', '--every', '20', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['interval_minutes'] == 20
+    assert 'OnUnitActiveSec=20min' in schedule.timer_path().read_text()
+    assert 'ExecStart=/usr/local/bin/ypl sync' in schedule.service_path().read_text()
+
+    assert json.loads(runner.invoke(app, ['schedule', 'status', '--json']).stdout)['interval_minutes'] == 20
+    assert runner.invoke(app, ['schedule', 'uninstall']).exit_code == 0
+    assert not schedule.timer_path().exists()
+
+
+def test_a_macos_agent_runs_at_load_as_well_as_on_the_interval(tmp_path, monkeypatch):
+    """The run that matters most is the first one after the machine was off."""
+    monkeypatch.setattr(schedule, 'is_macos', lambda: True)
+    monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
+    monkeypatch.setattr(schedule, 'run_manager', lambda arguments: (True, ''))
+    monkeypatch.setattr(schedule, 'agent_path', lambda: tmp_path / 'com.ichrisbirch.ypl.plist')
+
+    assert runner.invoke(app, ['schedule', 'install', '--every', '30']).exit_code == 0
+    written = (tmp_path / 'com.ichrisbirch.ypl.plist').read_text()
+    assert '<key>RunAtLoad</key>' in written
+    assert '<integer>1800</integer>' in written
 
 
 def test_editing_a_playlist_applies_the_order_the_buffer_asked_for(two_videos):
@@ -1853,7 +1996,7 @@ def test_a_bare_sync_uses_the_browser_signed_in_with(account, signing_in, monkey
 
     result = runner.invoke(app, ['sync', '--json'])
     assert result.exit_code == 0
-    assert len(json.loads(result.stdout)) == 2
+    assert json.loads(result.stdout)['mirrored'] == 2
 
 
 def test_a_browser_that_worked_for_a_sync_is_remembered_too(account):

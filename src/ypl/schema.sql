@@ -62,6 +62,20 @@ CREATE TABLE IF NOT EXISTS tracks (
     UNIQUE (video_id, position)
 );
 
+-- Videos a full extraction says will never read: deleted, private, members-only,
+-- region-locked. A table rather than a flag on `videos`, for two reasons. A new
+-- table reaches an existing mirror and a new column does not, and `is_unavailable`
+-- is what the flat playlist listing says — `ypl sync` rewrites it on every run and
+-- would undo anything recorded here.
+--
+-- Without this an unattended enrich re-asks about every dead video on every run,
+-- forever, and a library with a few hundred of them never gets past them.
+CREATE TABLE IF NOT EXISTS enrich_failures (
+    video_id     TEXT PRIMARY KEY REFERENCES videos (video_id) ON DELETE CASCADE,
+    attempted_ts TEXT NOT NULL,
+    reason       TEXT NOT NULL DEFAULT ''
+);
+
 -- Listening history is deliberately NOT here. It cannot be rebuilt by re-reading
 -- YouTube, so by the same rule that put local playlists in files it is data
 -- rather than state — see `history.py`. A mirror that can be deleted and

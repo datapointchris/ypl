@@ -24,6 +24,12 @@ enrich_batch_size = 50
 # Lower it if you are impatient and signed out; raise it if YouTube complains.
 request_interval_seconds = 2.0
 
+# How long one `ypl sync` may spend before stopping and leaving the rest for
+# the next run. Everything it does is resumable, so a ceiling costs nothing but
+# patience — a library enriches itself over a day or two of background runs
+# rather than in one sitting that holds the machine. 0 means no ceiling.
+sync_minutes = 15
+
 # Arguments added to every `ypl play`. The escape hatch for anything mpv can do
 # that ypl does not have a flag for — profiles, output devices, cache sizes.
 # `ypl play --audio` already covers the common one.
@@ -36,7 +42,13 @@ class Config:
     cookies_from_browser: str | None = None
     enrich_batch_size: int = 50
     request_interval_seconds: float = 2.0
+    sync_minutes: float = 15.0
     mpv_arguments: list[str] = field(default_factory=list)
+
+    @property
+    def sync_seconds(self) -> float | None:
+        """The ceiling as `Budget` wants it — None rather than zero for no limit."""
+        return self.sync_minutes * 60 if self.sync_minutes else None
 
 
 class ConfigError(ValueError):
@@ -72,6 +84,9 @@ def load() -> Config:
     interval = payload.get('request_interval_seconds', 2.0)
     if not isinstance(interval, int | float) or isinstance(interval, bool) or interval < 0:
         raise ConfigError(path, f'request_interval_seconds must be a number of seconds, got {interval!r}')
+    sync_minutes = payload.get('sync_minutes', 15.0)
+    if not isinstance(sync_minutes, int | float) or isinstance(sync_minutes, bool) or sync_minutes < 0:
+        raise ConfigError(path, f'sync_minutes must be a number of minutes, got {sync_minutes!r}')
     mpv_arguments = payload.get('mpv_arguments', [])
     # Checked rather than trusted: these go straight onto an mpv command line,
     # and a bare string would be spread one character per argument.
@@ -81,6 +96,7 @@ def load() -> Config:
         cookies_from_browser=payload.get('cookies_from_browser'),
         enrich_batch_size=batch_size,
         request_interval_seconds=float(interval),
+        sync_minutes=float(sync_minutes),
         mpv_arguments=mpv_arguments,
     )
 

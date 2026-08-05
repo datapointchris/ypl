@@ -36,20 +36,53 @@ Needs [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and, for playback, [`mpv`](ht
 
 ## Use
 
+Two commands, once:
+
 ```bash
-ypl sync --browser safari                              # mirror every playlist in your account
-ypl sync 'https://www.youtube.com/playlist?list=...'   # or just one, by URL
-ypl enrich --playlist 'Deep Night' --limit 50          # pull tracklists, resumably
+ypl remote auth --browser safari   # sign in, from a browser already signed in
+ypl schedule install               # run the sync at startup and every 30 minutes
+```
+
+After that nothing needs typing to stay in sync. Everything else is reading:
+
+```bash
+ypl status                                             # is it working, and how far behind
 ypl playlists list                                     # everything, mirrored and local
 ypl playlists show 'Deep Night'                        # the videos in one
 ypl videos show <id>                                   # its tracklist with timestamps
 ```
 
-A bare `ypl sync` mirrors the whole account: one request lists the playlists you have, then one
-more mirrors each. Both are yt-dlp reads, so a library of any size costs no quota. Listing an
-account needs a browser session — `--browser`, or `cookies_from_browser` in the config to make it
-the default. Note that this reads YouTube's own playlists feed rather than the YouTube Music
-library, which is a different and usually much shorter list.
+### What the sync does
+
+`ypl sync` is the whole loop, in the order that makes it cheap and safe:
+
+1. **Mirrors** the account through yt-dlp — one request to list your playlists, one per playlist.
+   No API quota, and it doubles as the change detector for everything below.
+2. **Adopts** playlists the account owns that have no file here yet, so a playlist made in the web
+   player becomes one this tool can edit.
+3. **Reconciles** the playlists whose mirror no longer matches their file, letting YouTube win.
+4. **Pushes** the files that have moved away from what YouTube was last told.
+5. **Enriches** with whatever budget is left — one request per video, most-listened playlists first.
+
+Steps 2–4 are skipped for every playlist that has not changed, which is what makes a routine run
+cost nothing: the free mirror read already said which ones moved, so a library where nothing
+happened overnight spends no write-client requests at all.
+
+The run is bounded (`sync_minutes`, 15 by default) and every step re-derives what is left from
+stored state, so stopping is always safe — a run cut short is a shorter run, never a lost update.
+A library of six thousand videos enriches itself over a couple of days of background runs, and
+`ypl status` says how far it has got.
+
+A machine that has not signed in mirrors and stops rather than failing, because signing in is
+per-machine and a sync that refuses to run without it is a sync that stops happening.
+
+Listing an account needs a browser session — `--browser`, or `cookies_from_browser` in the config
+to make it the default. Note that this reads YouTube's own playlists feed rather than the YouTube
+Music library, which is a different and usually much shorter list.
+
+`ypl sync 'https://www.youtube.com/playlist?list=...'` still mirrors one playlist by URL, and
+`enrich`, `remote pull`, `remote plan` and `remote apply` remain as the forcing versions of the
+steps above — for doing one now rather than waiting for the timer.
 
 A playlist is named by its title — a partial title works when it is unambiguous.
 

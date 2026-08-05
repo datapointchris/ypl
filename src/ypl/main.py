@@ -16,6 +16,7 @@ from rich.table import Table
 from ypl import basestore
 from ypl import config
 from ypl import db
+from ypl import declined
 from ypl import editbuffer
 from ypl import history
 from ypl import local
@@ -24,8 +25,10 @@ from ypl import merge
 from ypl import paths
 from ypl import player
 from ypl import remote
+from ypl import schedule
 from ypl import service
 from ypl import session
+from ypl import synclog
 from ypl import throttle
 from ypl import ytdlp
 from ypl import ytmusic
@@ -37,10 +40,15 @@ Organize YouTube playlists.
 The noun comes first and the verb last, so a list -> show -> urls loop on one
 playlist changes only the final word.
 
-Organizing happens locally and instantly. `sync` and `enrich` pull down through
-yt-dlp, which costs no API quota; playlists you build are written as M3U files
-on this machine and playable straight away. Going back up to YouTube is a
-separate, queued, deliberately slow act — `ypl remote`.
+`ypl sync` does all of it: mirrors your account, takes over playlists made in
+the web player, brings down changes made on your phone, sends up changes made
+here, and fills in tracklists with whatever time is left. Sign in once with
+`ypl remote auth`, install the timer with `ypl schedule install`, and it keeps
+itself in sync — `ypl status` says whether it is working.
+
+Organizing happens locally and instantly: playlists you build are M3U files on
+this machine, playable straight away. The `ypl remote` verbs are the same work
+done deliberately, for when a piece of it needs forcing.
 
 A playlist is named by its title, so `ypl playlists show 'Get Insights'` works
 without an id; a partial title matches when it is unambiguous. Run any partial
@@ -128,6 +136,20 @@ POST, and copy its whole Request Headers block.
 Paste it below, then press Enter and Ctrl-D.
 """
 
+SCHEDULE_HELP = """\
+The timer that runs `ypl sync` so you do not have to.
+
+A launch agent on macOS, a systemd user timer on Linux. Both fire shortly after
+the machine starts and then on an interval, because the run that matters most
+is the first one after it has been off — that is when your phone has been the
+only thing touching the playlists.
+
+  ypl schedule install            every 30 minutes, and at startup
+  ypl schedule install --every 15
+  ypl schedule status             what is installed, and what the last run did
+  ypl schedule uninstall
+"""
+
 READING = 'Reading (the local mirror)'
 SYNCING = 'Syncing (pulls from YouTube, no API quota)'
 BUILDING = 'Building (writes M3U files here; YouTube only via ypl remote)'
@@ -141,11 +163,13 @@ videos_app = typer.Typer(name='videos', no_args_is_help=True, help=VIDEOS_HELP)
 config_app = typer.Typer(name='config', no_args_is_help=True, help=CONFIG_HELP)
 plays_app = typer.Typer(name='plays', no_args_is_help=True, help=PLAYS_HELP)
 remote_app = typer.Typer(name='remote', no_args_is_help=True, help=REMOTE_HELP)
+schedule_app = typer.Typer(name='schedule', no_args_is_help=True, help=SCHEDULE_HELP)
 
 app.add_typer(playlists_app, name='playlists', rich_help_panel=READING)
 app.add_typer(videos_app, name='videos', rich_help_panel=READING)
 app.add_typer(plays_app, name='plays', rich_help_panel=PLAYING)
 app.add_typer(remote_app, name='remote', rich_help_panel=WRITING)
+app.add_typer(schedule_app, name='schedule', rich_help_panel=SYNCING)
 app.add_typer(config_app, name='config', rich_help_panel=ADMIN)
 
 # Data goes to stdout and nothing else does, so a caller parsing --json never
@@ -365,20 +389,86 @@ def video_ids_from_stdin_or_exit() -> list[str]:
     return video_ids_or_exit([line for line in sys.stdin.read().splitlines() if line.strip()])
 
 
-def sync_account_or_exit(connection: sqlite3.Connection, browser: str, limit: int | None, quiet: bool) -> service.AccountSync:
+def signed_in_backend(quiet: bool) -> ytmusic.YtMusicBackend | None:
+    """The write backend when this machine has signed in, and None when it has not.
+
+    None rather than an exit: mirroring needs no session, and a machine that has
+    never run `remote auth` must still get a working `ypl sync`. Signing in is
+    per-machine setup, and holding the whole sync hostage to it would make the
+    automatic case fail on exactly the machine nobody is watching.
+    """
+    if not paths.ytmusic_auth_file().exists():
+        if not quiet:
+            messages.print('Not signed in — mirroring only. [bold]ypl remote auth --browser safari[/bold] syncs both ways.')
+        return None
+    try:
+        return ytmusic.YtMusicBackend(paths.ytmusic_auth_file())
+    except remote.RemoteError as error:
+        if not quiet:
+            messages.print(f'[yellow]Signed-in session unusable, mirroring only:[/yellow] {error}')
+        return None
+
+
+def sync_everything_or_exit(connection: sqlite3.Connection, browser: str, limit: int | None, quiet: bool) -> service.SyncRun:
+    settings = load_config_or_exit()
+
     def announce(reference) -> None:
         if not quiet:
             messages.print(f'  {reference.title}')
 
+    def announce_video(index: int, total: int, video_id: str) -> None:
+        if not quiet:
+            messages.print(f'  [{index}/{total}] enriching {video_id}')
+
     try:
-        return service.sync_account(connection, browser, limit=limit, on_playlist=announce)
+        return service.sync_everything(
+            connection,
+            browser,
+            backend=signed_in_backend(quiet),
+            limit=limit,
+            on_playlist=announce,
+            on_video=announce_video,
+            pace=throttle.Throttle(settings.request_interval_seconds),
+            budget=throttle.Budget(seconds=settings.sync_seconds),
+        )
     except ytdlp.YtdlpUnavailableError as error:
         messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+    except ytdlp.YtdlpRateLimitedError as error:
+        messages.print(f'[red]YouTube is pushing back:[/red] {error}')
+        messages.print('Nothing is lost — the next run picks up where this stopped.')
         raise typer.Exit(1) from error
     except ytdlp.YtdlpFailedError as error:
         messages.print('[red]Could not list your playlists.[/red] Is that browser signed in to YouTube?')
         messages.print(str(error))
         raise typer.Exit(1) from error
+
+
+def report_sync(run: service.SyncRun) -> None:
+    """What a run did, in one line per thing that actually happened."""
+    messages.print(f'Mirrored [bold]{run.mirrored}[/bold] playlists, {run.videos} videos')
+    for pull in run.reconciled:
+        report_pull(pull)
+    for push in run.pushed:
+        messages.print(f'[bold]{push.playlist.name}[/bold] — pushed: {describe_push(push)}')
+    for name in run.adopted:
+        messages.print(f'[bold]{name}[/bold] — adopted from YouTube')
+    if run.enriched:
+        messages.print(f'Enriched [bold]{run.enriched}[/bold] videos, found {run.tracks_found} tracks')
+    if run.skipped:
+        messages.print(f'{len(run.skipped)} videos could not be read — deleted, private or region-locked')
+    for name, reason in run.failures:
+        messages.print(f'[yellow]{name}[/yellow]: {reason}')
+    if run.stopped == 'budget':
+        messages.print(
+            f'Stopped at the {round(run.seconds / 60)} minute budget — {run.unenriched} videos still to enrich, next run continues.'
+        )
+    elif run.stopped == 'rate limit':
+        messages.print('[red]Stopped — YouTube asked us to slow down.[/red] Everything done so far is stored.')
+    elif run.unenriched:
+        messages.print(f'{run.unenriched} videos still to enrich — next run continues.')
+    elif not run.changed:
+        messages.print('Everything already in sync.')
 
 
 @app.command('sync', rich_help_panel=SYNCING)
@@ -388,15 +478,20 @@ def sync(
     limit: int = typer.Option(None, '--limit', '-n', help='Mirror at most this many playlists.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
-    """Mirror your playlists locally.
+    """Sync everything, in both directions.
 
-    With no URL this is your whole account: one request lists the playlists you
-    have, then one more mirrors each of them. Both are yt-dlp reads, so a
-    library of any size costs no API quota — which is why syncing everything is
-    the default rather than something to ration.
+    One command and no order to remember: your playlists are mirrored, any that
+    are new here are taken over, changes made on a phone arrive, and changes
+    made here go up. Signing in once with [bold]ypl remote auth[/bold] is the
+    last thing it asks of you — before that, and on a machine that has never
+    signed in, this mirrors and stops.
 
-    Listing an account needs a browser session, the same one private playlists
-    already need. A single playlist by URL needs nothing if it is public.
+    Cheap enough to run on a timer, because the mirror read costs no API quota
+    and is also what says which playlists changed: one whose mirror still
+    matches its file is never read again through the write client. A library
+    where nothing moved overnight spends nothing.
+
+    A single playlist by URL only mirrors it, and needs nothing if it is public.
     """
     settings = load_config_or_exit()
     connection = db.connect()
@@ -411,20 +506,15 @@ def sync(
 
         if not as_json:
             messages.print('Reading your playlists...')
-        result = sync_account_or_exit(connection, source, limit, quiet=as_json)
+        run = sync_everything_or_exit(connection, source, limit, quiet=as_json)
         session.remember_browser(source)
+        synclog.record(run.payload())
         if as_json:
-            print_json(
-                [
-                    {'playlist_id': playlist.playlist_id, 'title': playlist.title, 'video_count': len(playlist.videos)}
-                    for playlist in result.synced
-                ]
-            )
-            return
-        messages.print(f'Synced [bold]{len(result.synced)}[/bold] playlists, {result.video_count} videos')
-        for reference, reason in result.failures:
-            messages.print(f'[yellow]Skipped {reference.title}[/yellow] ({reference.playlist_id}): {reason}')
-        messages.print('Next: [bold]ypl enrich[/bold] to pull tracklists')
+            print_json(run.payload())
+        else:
+            report_sync(run)
+        if run.failures:
+            raise typer.Exit(1)
         return
 
     try:
@@ -463,13 +553,14 @@ def enrich(
 ) -> None:
     """Fetch each video in full and parse its tracklist.
 
+    `ypl sync` already does this with whatever time its budget leaves, so this
+    is the forcing version: one playlist now, or a long run in the foreground
+    rather than waiting for the timer to work through it.
+
     Chapters where a video has them, timestamped description lines where it does
     not. One request per video, so this is the slow half — it is resumable, and
-    a video already enriched is skipped.
-
-    --all is what a whole library needs before anything can be curated from it,
-    and it is measured in hours rather than minutes. Stopping it costs nothing:
-    every video enriched is already stored.
+    a video already enriched is skipped. Stopping it costs nothing: every video
+    enriched is already stored.
     """
     settings = load_config_or_exit()
     connection = db.connect()
@@ -1870,6 +1961,105 @@ def remote_apply(
         raise typer.Exit(1)
     if any(push.stale for push in done):
         raise typer.Exit(1)
+
+
+@app.command('status', rich_help_panel=SYNCING)
+def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.')) -> None:
+    """Whether everything is in sync, and what the last run did.
+
+    The window onto a sync nobody watches. What it answers is the question a
+    background process makes hard: is this working, and if it is behind, by how
+    much and since when.
+    """
+    connection = db.connect()
+    playlists = local.list_playlists().playlists
+    pending = [playlist.name for playlist in playlists if playlist.synced and (not playlist.remote_id or service.needs_push(playlist))]
+    last = synclog.last()
+    timer = schedule.installed()
+    payload = {
+        'signed_in': paths.ytmusic_auth_file().exists(),
+        'scheduled': bool(timer),
+        'interval_minutes': timer.interval_minutes if timer else None,
+        'last_sync': last.get('ts') if last else None,
+        'last_run': last,
+        'playlists': len(playlists),
+        'unenriched': len(service.unenriched_everywhere(connection)),
+        'unreadable': len(service.unreadable_video_ids(connection)),
+        'pending_push': pending,
+        'declined': len(declined.load()),
+    }
+    if as_json:
+        print_json(payload)
+        return
+
+    messages.print(f'Signed in       {"yes" if payload["signed_in"] else "no — ypl remote auth"}')
+    messages.print(f'Scheduled       {f"every {timer.interval_minutes} min ({timer.manager})" if timer else "no — ypl schedule install"}')
+    messages.print(f'Last sync       {payload["last_sync"] or "never"}')
+    if last:
+        done = [f'{last[key]} {key}' for key in ('adopted', 'reconciled', 'pushed') if last.get(key)]
+        messages.print(f'                {", ".join(done) if done else "nothing to do"}')
+        if last.get('failures'):
+            for failure in last['failures']:
+                messages.print(f'                [yellow]{failure}[/yellow]')
+    messages.print(f'Playlists       {payload["playlists"]} here, {payload["declined"]} declined')
+    messages.print(f'Unenriched      {payload["unenriched"]} videos, {payload["unreadable"]} unreadable')
+    if pending:
+        messages.print(f'Waiting to push {", ".join(pending)}')
+
+
+@schedule_app.command('install')
+def schedule_install(
+    every: int = typer.Option(schedule.DEFAULT_INTERVAL_MINUTES, '--every', help='Minutes between runs.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Run `ypl sync` at startup and on an interval, from now on."""
+    if every < 1:
+        raise typer.BadParameter('must be at least 1 minute', param_hint='--every')
+    try:
+        result = schedule.install(every)
+    except schedule.ScheduleError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+
+    if as_json:
+        print_json(
+            {'path': str(result.path), 'manager': result.manager, 'interval_minutes': result.interval_minutes, 'loaded': result.loaded}
+        )
+        return
+    messages.print(f'Installed [bold]{result.path}[/bold] — every {result.interval_minutes} minutes, and at startup')
+    if not result.loaded:
+        messages.print(f'[yellow]Written but not started[/yellow] — {result.manager} refused. It will start at the next login.')
+
+
+@schedule_app.command('status')
+def schedule_status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.')) -> None:
+    """Whether this machine runs ypl on a timer."""
+    timer = schedule.installed()
+    if as_json:
+        print_json(
+            {
+                'installed': bool(timer),
+                'path': str(timer.path) if timer else None,
+                'interval_minutes': timer.interval_minutes if timer else None,
+            }
+        )
+        return
+    if not timer:
+        messages.print('No timer on this machine. [bold]ypl schedule install[/bold] adds one.')
+        return
+    messages.print(f'[bold]{timer.path}[/bold] — every {timer.interval_minutes} minutes, and at startup ({timer.manager})')
+    messages.print(f'Log             {schedule.log_path()}')
+
+
+@schedule_app.command('uninstall')
+def schedule_uninstall() -> None:
+    """Stop running ypl on a timer. Playlists and the mirror are untouched."""
+    removed = schedule.uninstall()
+    if not removed:
+        messages.print('No timer on this machine.')
+        return
+    for path in removed:
+        messages.print(f'Removed {path}')
 
 
 @app.command('update', rich_help_panel=ADMIN)
