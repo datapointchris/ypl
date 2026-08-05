@@ -22,12 +22,9 @@ The backend is a Protocol so the Data API remains a one-module swap if that
 trade ever stops being worth it.
 """
 
-import time
 from collections.abc import Hashable
 from dataclasses import dataclass
 from typing import Protocol
-
-DEFAULT_INTERVAL_SECONDS = 2.0
 
 # Playlist creation gets its own, far slower floor. It is the one endpoint with
 # a limit anyone has actually measured — roughly twenty in fifteen minutes
@@ -109,34 +106,6 @@ class Backend(Protocol):
     def remove_items(self, playlist_id: str, items: list[RemoteItem]) -> None: ...
 
     def move_item(self, playlist_id: str, item: RemoteItem, before: RemoteItem | None) -> None: ...
-
-
-class Throttle:
-    """A floor on the gap between calls.
-
-    Deliberately a floor rather than a token bucket: a bucket permits a burst,
-    and a burst is the shape that gets noticed. Sleeping is fine here because
-    the queue drains in the background and nothing waits on it.
-    """
-
-    def __init__(self, interval_seconds: float = DEFAULT_INTERVAL_SECONDS, sleep=time.sleep, clock=time.monotonic):
-        self.interval_seconds = interval_seconds
-        self.sleep = sleep
-        self.clock = clock
-        self.last_call: float | None = None
-
-    def wait(self) -> float:
-        """Block until the next call is allowed, returning how long that took."""
-        if self.last_call is None:
-            self.last_call = self.clock()
-            return 0.0
-        due = self.last_call + self.interval_seconds
-        now = self.clock()
-        waited = max(0.0, due - now)
-        if waited:
-            self.sleep(waited)
-        self.last_call = self.clock()
-        return waited
 
 
 def batched(items: list, size: int = MAX_BATCH) -> list[list]:

@@ -31,6 +31,7 @@ from ypl.models import Track
 from ypl.models import watch_url
 from ypl.remote import Backend
 from ypl.remote import RemoteItem
+from ypl.throttle import Throttle
 
 REMOTE = 'remote'
 LOCAL = 'local'
@@ -144,6 +145,7 @@ def sync_account(
     cookies_from_browser: str,
     limit: int | None = None,
     on_playlist: Callable[[PlaylistRef], None] | None = None,
+    pace: Throttle | None = None,
 ) -> AccountSync:
     """Mirror every playlist the account has.
 
@@ -151,14 +153,22 @@ def sync_account(
     playlist for its contents. Both are yt-dlp reads, so a whole library costs
     no quota — which is what makes syncing everything the sane default rather
     than an indulgence.
+
+    Paced anyway. Quota is not the only thing that gets spent by forty
+    back-to-back requests carrying your cookies, and a rate limit stops the run
+    rather than being retried into, exactly as on the write side.
     """
     result = AccountSync()
+    pace = pace or Throttle()
     references = ytdlp.fetch_account_playlists(cookies_from_browser)
     for reference in references[:limit] if limit else references:
         if on_playlist:
             on_playlist(reference)
+        pace.wait()
         try:
             result.synced.append(sync_playlist(connection, reference.playlist_id, cookies_from_browser))
+        except ytdlp.YtdlpRateLimitedError:
+            raise
         except ytdlp.YtdlpFailedError as error:
             result.failures.append((reference, str(error).splitlines()[-1] if str(error) else 'unreadable'))
     return result

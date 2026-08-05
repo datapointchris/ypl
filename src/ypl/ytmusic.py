@@ -22,8 +22,8 @@ from ypl.remote import RemoteAuthError
 from ypl.remote import RemoteError
 from ypl.remote import RemoteItem
 from ypl.remote import RemoteRateLimitedError
-from ypl.remote import Throttle
 from ypl.remote import batched
+from ypl.throttle import Throttle
 
 # Owner read/write only. The file holds a Google account session cookie, which
 # is the whole credential — anything that can read it is signed in as you.

@@ -45,6 +45,30 @@ class YtdlpFailedError(RuntimeError):
     pass
 
 
+class YtdlpRateLimitedError(YtdlpFailedError):
+    """YouTube is refusing because of how much has been asked, not what.
+
+    Its own class because the response has to be different: one video that
+    cannot be read is skipped and reported, while this means stop. Reads cost
+    no quota, but a bulk enrich is thousands of sequential extractions carrying
+    your cookies, and continuing to send them after being told to slow down is
+    what turns pacing into a pattern worth noticing.
+    """
+
+
+# What yt-dlp prints when YouTube is pushing back rather than saying no. The
+# bot check is the one that matters most: it appears when a signed-in session
+# has asked for too much too fast, and answering it with more requests is the
+# worst available move.
+RATE_LIMIT_MARKERS = (
+    'sign in to confirm you',
+    'http error 429',
+    'too many requests',
+    'rate limit',
+    'temporarily blocked',
+)
+
+
 def binary_path() -> str:
     found = shutil.which(BINARY)
     if not found:
@@ -56,7 +80,11 @@ def run(arguments: list[str], timeout_seconds: int) -> str:
     command = [binary_path(), *arguments]
     result = subprocess.run(command, capture_output=True, text=True, timeout=timeout_seconds)  # noqa: S603
     if result.returncode != 0:
-        raise YtdlpFailedError(result.stderr.strip() or f'{BINARY} exited {result.returncode}')
+        message = result.stderr.strip() or f'{BINARY} exited {result.returncode}'
+        lowered = message.lower()
+        if any(marker in lowered for marker in RATE_LIMIT_MARKERS):
+            raise YtdlpRateLimitedError(message)
+        raise YtdlpFailedError(message)
     return result.stdout
 
 

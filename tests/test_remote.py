@@ -9,6 +9,7 @@ two hundred.
 import pytest
 
 from ypl import remote
+from ypl import throttle as throttle_module
 
 
 def apply_moves(current: list[str], moves: list[tuple[str, str | None]]) -> list[str]:
@@ -94,7 +95,7 @@ def test_the_throttle_puts_a_floor_under_the_gap_between_calls():
     # (half a second later), then the stamp taken after sleeping.
     slept = []
     clock = iter([0.0, 0.5, 2.0])
-    throttle = remote.Throttle(interval_seconds=2.0, sleep=slept.append, clock=lambda: next(clock))
+    throttle = throttle_module.Throttle(interval_seconds=2.0, sleep=slept.append, clock=lambda: next(clock))
 
     assert throttle.wait() == 0.0
     assert throttle.wait() == pytest.approx(1.5)
@@ -104,7 +105,7 @@ def test_the_throttle_puts_a_floor_under_the_gap_between_calls():
 def test_a_call_that_is_already_late_does_not_sleep():
     slept = []
     clock = iter([0.0, 99.0, 99.0])
-    throttle = remote.Throttle(interval_seconds=2.0, sleep=slept.append, clock=lambda: next(clock))
+    throttle = throttle_module.Throttle(interval_seconds=2.0, sleep=slept.append, clock=lambda: next(clock))
 
     throttle.wait()
     assert throttle.wait() == 0.0
