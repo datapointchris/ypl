@@ -1,6 +1,38 @@
 # CHANGELOG
 
 
+## v0.11.0 (2026-08-05)
+
+### Bug Fixes
+
+- **sync**: One sync at a time, so the timer cannot double a run
+  ([`6e6718f`](https://github.com/datapointchris/ypl/commit/6e6718f533c87a44d0318b227a8b7df192f3e1bb))
+
+Nothing stopped two syncs running together, and the timer makes that reachable: it fires at startup
+  and every half hour, onto whatever is already going. Two runs would adopt the same playlists twice
+  and write the same M3U files and bases from both processes. The mirror survives it — that is WAL —
+  but the files and the request budget do not.
+
+An advisory flock, released by the kernel when the process dies, rather than a pid file that a crash
+  leaves behind and that then stops every later run until someone notices. For something unattended,
+  that is never.
+
+A second run exits 0 saying so: the timer landing on a run in progress is the system working, and
+  failing would fill the agent log with errors about a sync that is happening.
+
+### Features
+
+- **status**: Say whether a sync is going on right now
+  ([`d39e18f`](https://github.com/datapointchris/ypl/commit/d39e18f8665acaaf99f7e590db07a11b13293079))
+
+`ypl status` could only describe runs that had already finished, which leaves the one question a
+  background process actually raises unanswered: is it working at this moment, or stuck. A run in
+  flight and a run that died look identical from the last log line.
+
+The lock already knows. Taking it and dropping it again is the check, and it needs no pid file to go
+  stale.
+
+
 ## v0.10.1 (2026-08-05)
 
 ### Bug Fixes
