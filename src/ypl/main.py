@@ -17,6 +17,7 @@ from ypl import db
 from ypl import local
 from ypl import m3u
 from ypl import paths
+from ypl import player
 from ypl import service
 from ypl import ytdlp
 from ypl.models import watch_url
@@ -77,6 +78,7 @@ Examples:
 READING = 'Reading (the local mirror)'
 SYNCING = 'Syncing (pulls from YouTube, no API quota)'
 BUILDING = 'Building (writes M3U files here, never to YouTube)'
+PLAYING = 'Playing (through mpv)'
 ADMIN = 'Admin'
 
 app = typer.Typer(name='ypl', no_args_is_help=True, help=ROOT_HELP)
@@ -678,6 +680,96 @@ def config_show(
         return
     messages.print(f'cookies_from_browser  {settings.cookies_from_browser or "(unset)"}')
     messages.print(f'enrich_batch_size     {settings.enrich_batch_size}')
+
+
+@app.command('play', rich_help_panel=PLAYING)
+def play(
+    name: str = typer.Argument(..., help='Playlist to play, mirrored or local.'),
+    sort: str = typer.Option('position', '--sort', help=f'One of: {", ".join(service.SORT_CLAUSES)}.'),
+    limit: int = typer.Option(None, '--limit', '-n', help='Play at most this many videos.'),
+    audio: bool = typer.Option(False, '--audio', '-a', help='Audio only, no video window.'),
+) -> None:
+    """Play a playlist through mpv.
+
+    Runs in the foreground and exits when mpv does. The URLs are handed to mpv
+    as arguments rather than as a playlist file, so --sort and --limit mean the
+    same thing here as everywhere else and a mirrored playlist plays without
+    writing a file first.
+
+      ypl play 'Sunday' --audio --sort random
+    """
+    check_sort(sort)
+    settings = load_config_or_exit()
+    connection = db.connect()
+    playlist = resolve_or_exit(connection, name)
+    rows = service.playlist_selection(connection, playlist, sort, limit)
+    if not rows:
+        messages.print(f'[red]{playlist.title} has nothing playable in it.[/red]')
+        raise typer.Exit(1)
+
+    arguments = [*settings.mpv_arguments, *(['--no-video'] if audio else [])]
+    socket_path: paths.Path | None = paths.mpv_socket()
+    if socket_path is not None and not player.socket_is_addressable(socket_path):
+        # mpv would log this and play on regardless, leaving `ypl now` quietly
+        # reporting nothing with no way to tell why.
+        messages.print(f'[red]{socket_path} is too long for a unix socket[/red] — playing without [bold]ypl now[/bold] support.')
+        socket_path = None
+
+    messages.print(f'Playing [bold]{playlist.title}[/bold] — {len(rows)} videos')
+    try:
+        exit_code = player.play([watch_url(row['video_id']) for row in rows], socket_path, arguments)
+    except player.MpvUnavailableError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+    if exit_code:
+        raise typer.Exit(1)
+
+
+@app.command('now', rich_help_panel=PLAYING)
+def now(
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """What is playing right now, down to the track.
+
+    Reads the socket `ypl play` opened. Because the mirror holds a tracklist
+    with real timestamps, this reports the track inside a two-hour mix rather
+    than the name of the mix.
+
+    Exits 1 when nothing is playing, so a status bar can run it unguarded.
+    """
+    connection = db.connect()
+    try:
+        state = player.properties(paths.mpv_socket(), ['path', 'time-pos', 'media-title', 'duration'])
+    except player.NotPlayingError as error:
+        messages.print(f'[red]Nothing playing:[/red] {error}')
+        raise typer.Exit(1) from error
+
+    video_id = m3u.video_id_from(str(state['path'] or ''))
+    position = int(state['time-pos']) if isinstance(state['time-pos'], int | float) else None
+    video = service.get_video(connection, video_id) if video_id else None
+    track = service.track_at(connection, video_id, position) if video_id and position is not None else None
+    title = video['title'] if video else str(state['media-title'] or state['path'] or '')
+    duration = video['duration_seconds'] if video else state['duration']
+
+    if as_json:
+        print_json(
+            {
+                'video_id': video_id,
+                'title': title,
+                'channel': video['channel'] if video else '',
+                'position_seconds': position,
+                'duration_seconds': int(duration) if isinstance(duration, int | float) else None,
+                'track': dict(track) if track else None,
+            }
+        )
+        return
+    if track:
+        messages.print(f'[bold]{f"{track['artist']} - " if track["artist"] else ""}{track["title"]}[/bold]')
+    messages.print(
+        f'{title}  {timestamp_words(position)} / {timestamp_words(int(duration) if isinstance(duration, int | float) else None)}'
+    )
+    if not track and video and not video['enriched_ts']:
+        messages.print('Not enriched — run [bold]ypl enrich[/bold] to get the track instead of the video.')
 
 
 @app.command('update', rich_help_panel=ADMIN)

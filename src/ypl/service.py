@@ -648,5 +648,31 @@ def video_tracks(connection: sqlite3.Connection, video_id: str) -> list[sqlite3.
     )
 
 
+def track_at(connection: sqlite3.Connection, video_id: str, position_seconds: int) -> sqlite3.Row | None:
+    """The track playing at this offset into a video.
+
+    This is the whole point of storing chapter timestamps: a two-hour mix can
+    report the track rather than the video title. Tracks with no start time —
+    a tracklist parsed out of prose — cannot be placed and are skipped.
+
+    `end_seconds` is NULL on the last track of a description-derived tracklist,
+    which runs to the end of the video, so a missing end matches rather than
+    excludes.
+    """
+    return connection.execute(
+        """
+        SELECT position, start_seconds, end_seconds, artist, title, source
+        FROM tracks
+        WHERE video_id = ?
+          AND start_seconds IS NOT NULL
+          AND start_seconds <= ?
+          AND (end_seconds IS NULL OR end_seconds > ?)
+        ORDER BY start_seconds DESC
+        LIMIT 1
+        """,
+        (video_id, position_seconds, position_seconds),
+    ).fetchone()
+
+
 def get_video(connection: sqlite3.Connection, video_id: str) -> sqlite3.Row | None:
     return connection.execute('SELECT * FROM videos WHERE video_id = ?', (video_id,)).fetchone()

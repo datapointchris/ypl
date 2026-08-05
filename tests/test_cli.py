@@ -5,15 +5,20 @@ the API rather than a nicety.
 """
 
 import json
+import shutil
+import tempfile
 import tomllib
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from ypl import paths
+from ypl import player
 from ypl import service
 from ypl import ytdlp
 from ypl.main import app
+from ypl.models import Chapter
 from ypl.models import RemotePlaylist
 from ypl.models import RemoteVideo
 
@@ -496,6 +501,150 @@ def test_ordering_a_mirrored_playlist_is_refused(synced):
 def test_an_unknown_sort_is_a_usage_error_for_every_command_that_takes_one(built):
     for command in [['playlists', 'urls', 'Sunday'], ['playlists', 'split', 'Sunday', '--parts', '2'], ['playlists', 'order', 'Sunday']]:
         assert runner.invoke(app, [*command, '--sort', 'sideways']).exit_code == 2
+
+
+@pytest.fixture
+def short_state_home(monkeypatch):
+    """A state directory a unix socket address can actually fit in.
+
+    pytest's tmp_path sits deep under macOS's private temp directory and is
+    already past the ~104-byte limit before `ypl/mpv.sock` is appended.
+    """
+    directory = tempfile.mkdtemp(dir='/tmp')  # noqa: S108
+    monkeypatch.setenv('XDG_STATE_HOME', directory)
+    yield Path(directory)
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.fixture
+def played(monkeypatch):
+    """Capture what would have been handed to mpv."""
+    calls = []
+
+    def record(urls, socket_path, extra_arguments=None):
+        calls.append({'urls': urls, 'socket': socket_path, 'arguments': extra_arguments or []})
+        return 0
+
+    monkeypatch.setattr(player, 'play', record)
+    return calls
+
+
+def test_playing_hands_the_playlist_urls_to_mpv(synced, played):
+    assert runner.invoke(app, ['play', 'Get Insights']).exit_code == 0
+    assert played[0]['urls'] == ['https://www.youtube.com/watch?v=vid1']
+
+
+def test_playing_opens_the_ipc_socket_so_now_can_read_it(short_state_home, synced, played):
+    """short_state_home comes first: it redirects the mirror the sync then writes."""
+    runner.invoke(app, ['play', 'Get Insights'])
+    assert played[0]['socket'] == paths.mpv_socket()
+
+
+def test_a_socket_path_too_long_for_the_kernel_plays_on_and_says_so(synced, played):
+    """pytest's own tmp_path is over the limit, which is the condition itself.
+
+    mpv would log `Could not create IPC socket` and play regardless, leaving
+    `ypl now` reporting nothing with no way to tell why.
+    """
+    result = runner.invoke(app, ['play', 'Get Insights'])
+    assert result.exit_code == 0
+    assert played[0]['socket'] is None
+    assert 'too long' in result.output
+
+
+def test_audio_only_drops_the_video_window(synced, played):
+    runner.invoke(app, ['play', 'Get Insights', '--audio'])
+    assert '--no-video' in played[0]['arguments']
+
+
+def test_configured_mpv_arguments_are_passed_through(synced, played):
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text('mpv_arguments = ["--volume=70"]\n')
+
+    runner.invoke(app, ['play', 'Get Insights'])
+    assert played[0]['arguments'] == ['--volume=70']
+
+
+def test_mpv_arguments_that_are_not_a_list_of_strings_are_rejected():
+    """A bare string would be spread one character per mpv argument."""
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text('mpv_arguments = "--volume=70"\n')
+
+    assert runner.invoke(app, ['config', 'show']).exit_code == 2
+
+
+def test_playing_a_local_playlist_applies_the_limit(built, played):
+    runner.invoke(app, ['playlists', 'add', 'Sunday', '-4FPIL6e4SQ'])
+    runner.invoke(app, ['play', 'Sunday', '--limit', '1'])
+    assert played[0]['urls'] == ['https://www.youtube.com/watch?v=vid1']
+
+
+def test_playing_an_empty_playlist_fails_rather_than_starting_mpv(played):
+    runner.invoke(app, ['playlists', 'create', 'Empty'], input='')
+    assert runner.invoke(app, ['play', 'Empty']).exit_code == 1
+    assert played == []
+
+
+def test_a_missing_mpv_names_the_fix_and_fails(synced, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise player.MpvUnavailableError('mpv is not on PATH — install it to play playlists')
+
+    monkeypatch.setattr(player, 'play', unavailable)
+    result = runner.invoke(app, ['play', 'Get Insights'])
+    assert result.exit_code == 1
+    assert 'mpv' in result.output
+
+
+def stub_now(monkeypatch, **state):
+    monkeypatch.setattr(player, 'properties', lambda socket_path, names: {name: state.get(name) for name in names})
+
+
+def test_now_reports_the_track_playing_inside_the_mix(synced, monkeypatch):
+    """The whole reason chapter timestamps are stored: the track, not the mix."""
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_video',
+        lambda video_id, **kwargs: RemoteVideo(
+            video_id=video_id,
+            title='A Talk',
+            duration_seconds=600,
+            chapters=[Chapter(0, 120, 'Bonobo - Kerala'), Chapter(120, 300, 'Four Tet - Baby')],
+        ),
+    )
+    runner.invoke(app, ['enrich'])
+    stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 150.9})
+
+    payload = json.loads(runner.invoke(app, ['now', '--json']).stdout)
+    assert payload['track']['artist'] == 'Four Tet'
+    assert payload['track']['title'] == 'Baby'
+    assert payload['position_seconds'] == 150
+
+
+def test_now_falls_back_to_the_video_when_there_is_no_tracklist(synced, monkeypatch):
+    stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 10.0})
+
+    payload = json.loads(runner.invoke(app, ['now', '--json']).stdout)
+    assert payload['track'] is None
+    assert payload['title'] == 'A Talk'
+
+
+def test_now_falls_back_to_mpvs_own_title_for_a_video_not_in_the_mirror(monkeypatch):
+    stub_now(monkeypatch, path='https://youtu.be/unknown123', **{'time-pos': 5.0, 'media-title': 'Something Else'})
+
+    payload = json.loads(runner.invoke(app, ['now', '--json']).stdout)
+    assert payload['title'] == 'Something Else'
+
+
+def test_now_exits_1_when_nothing_is_playing(monkeypatch):
+    """A status bar runs this unguarded, so it must not print a payload."""
+
+    def not_playing(*args, **kwargs):
+        raise player.NotPlayingError('nothing is listening')
+
+    monkeypatch.setattr(player, 'properties', not_playing)
+    result = runner.invoke(app, ['now', '--json'])
+    assert result.exit_code == 1
+    assert result.stdout == ''
 
 
 def test_a_video_reachable_only_through_a_local_playlist_can_still_be_enriched(monkeypatch):

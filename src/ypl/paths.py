@@ -45,3 +45,12 @@ def database_file() -> Path:
 
 def playlists_dir() -> Path:
     return data_dir() / 'playlists'
+
+
+def mpv_socket() -> Path:
+    """Where `ypl play` opens mpv's IPC socket, and `ypl now` looks for it.
+
+    State rather than runtime: `$XDG_RUNTIME_DIR` is the more correct home for
+    a socket, but macOS does not define one and this tool has to work on both.
+    """
+    return state_dir() / 'mpv.sock'

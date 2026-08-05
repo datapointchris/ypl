@@ -93,12 +93,39 @@ Private and unlisted playlists need a logged-in session — set `cookies_from_br
 | `$XDG_STATE_HOME/ypl/ypl.db` | The mirror. Rebuildable from `ypl sync`, so not worth syncing between machines. |
 | `$XDG_DATA_HOME/ypl/playlists/` | Local playlists as M3U. Authored, so these are the ones worth keeping. |
 | `$XDG_CONFIG_HOME/ypl/config.toml` | Settings. `ypl config init` writes a starter. |
+| `$XDG_STATE_HOME/ypl/mpv.sock` | mpv's IPC socket while `ypl play` is running. Read by `ypl now`. |
 
-`ypl config path` prints all three.
+`ypl config path` prints the first three.
+
+## Playing
+
+```bash
+ypl play 'Sunday' --audio --sort random    # runs mpv in the foreground
+ypl now                                    # what is playing, down to the track
+```
+
+`play` hands the URLs to mpv as arguments rather than as a playlist file, so `--sort` and
+`--limit` mean the same thing here as everywhere else and a mirrored playlist plays without
+writing a file first. `mpv_arguments` in the config is the escape hatch for anything else mpv can
+do.
+
+Every playback opens mpv's JSON IPC socket, which is what `ypl now` reads. Because the mirror
+holds a tracklist with real timestamps, it reports the track inside a two-hour mix rather than the
+name of the mix:
+
+```console
+$ ypl now
+Four Tet - Baby
+Shimza for Cercle at Citadelle de Sisteron  0:42:13 / 2:05:33
+```
+
+It exits 1 when nothing is playing, with nothing on stdout, so a status bar can run it unguarded.
+On Arch, waybar's built-in `mpris` module already shows mpv without any of this — install
+`mpv-mpris` and `ypl play` appears there on its own.
 
 ## Not done yet
 
-`ypl play`, and the `remote` write queue.
+The `remote` write queue.
 `youtube_playlists/main.py` is the previous argparse splitter, kept until the write path replaces
 it — it still runs as a script but is no longer part of the installed package.
 
