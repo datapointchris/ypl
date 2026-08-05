@@ -1,12 +1,48 @@
 # CHANGELOG
 
 
+## v0.1.1 (2026-08-05)
+
+### Bug Fixes
+
+- **remote**: Tell the truth about finding the request headers
+  ([`ca33ba5`](https://github.com/datapointchris/ypl/commit/ca33ba576b30fd5d46c0aeda77cf44b424d1a3f6))
+
+The sign-in instructions sent you to DevTools to filter for `browse`, and the panel stays empty: the
+  Network tab records only while it is open, and Music is a single-page app that makes no requests
+  once it has loaded. An empty panel then reads as the instructions being wrong rather than as the
+  page having nothing to say.
+
+So: open the panel, then click something to make the page talk. And filter for `/youtubei/` rather
+  than one endpoint — every authenticated request carries the same credentials, and ytmusicapi only
+  needs `cookie` and `x-goog-authuser` to be somewhere in the paste.
+
+### Documentation
+
+- **readme**: Stop pinning a release tag that does not exist
+  ([`86ac480`](https://github.com/datapointchris/ypl/commit/86ac4805eaaa505d33f46680572530cc5a5b220d))
+
+The install example named v0.2.0, which was a guess at what the first release would be called. It is
+  v0.1.0, and naming any version there rots it on the next release — dotfiles resolves the newest
+  tag from the releases API rather than carrying a number.
+
+- **repo**: Follow the rename to ypl
+  ([`fe79634`](https://github.com/datapointchris/ypl/commit/fe79634cb506622ee998bdb1e154e16b743a8f0d))
+
+The repository is `ypl` now, at `~/tools/ypl` with the other personal CLIs, so the tool, the
+  command, the module, the distribution and the repo all finally spell the same thing.
+
+`repo` comes back off the update config, since the default — the tool name — is now correct.
+  CHANGELOG entries keep their old commit URLs; they are generated history and GitHub redirects
+  them.
+
+
 ## v0.1.0 (2026-08-05)
 
 ### Bug Fixes
 
 - Clear the lint findings CI caught on the legacy splitter
-  ([`0a354cd`](https://github.com/datapointchris/youtube-playlists/commit/0a354cd10dcc7fe82ba75e64e59495077fbaa5eb))
+  ([`0a354cd`](https://github.com/datapointchris/ypl/commit/0a354cd10dcc7fe82ba75e64e59495077fbaa5eb))
 
 The toolchain commit carried no Python files, so the pre-commit ruff hooks had nothing to check and
   CI was the first thing to run them.
@@ -19,7 +55,7 @@ B019 replaced @lru_cache on a method with an instance dict, and the stale top-le
   ignore key is gone — ruff has been reading it from lint.ignore for some time.
 
 - **config**: Report a broken config file instead of a traceback
-  ([`2529361`](https://github.com/datapointchris/youtube-playlists/commit/2529361054bd6d6c419cefa5c0d6961a89fe72c0))
+  ([`2529361`](https://github.com/datapointchris/ypl/commit/2529361054bd6d6c419cefa5c0d6961a89fe72c0))
 
 A hand-edited config.toml with a syntax error crashed every command that loads settings, with a
   tomllib traceback and exit 1. It is a usage error - the file only got that way by hand - so it
@@ -29,7 +65,7 @@ enrich_batch_size is validated rather than trusted. A 0 or a string would have r
   clause, where 0 silently means "enrich nothing" and looks like the library is already done.
 
 - **output**: Stop Rich breaking paths and ids across lines
-  ([`f756b1d`](https://github.com/datapointchris/youtube-playlists/commit/f756b1d84ce7f18aa0173e08ff6f4ba8c1a8b378))
+  ([`f756b1d`](https://github.com/datapointchris/ypl/commit/f756b1d84ce7f18aa0173e08ff6f4ba8c1a8b378))
 
 CI caught this on an 80-column runner: the config error printed the file as `.../ypl/config\n.toml`,
   because Rich hard-wraps at the terminal width and will break mid-token to do it. Every message on
@@ -45,7 +81,7 @@ The regression test pins a width narrower than any real path. Verified it fails 
   rather than trusting that it would.
 
 - **tests**: Build the long socket path instead of inheriting it
-  ([`881e515`](https://github.com/datapointchris/youtube-playlists/commit/881e5150723ba3f1f3ec31b730cb6d1780b74a8e))
+  ([`881e515`](https://github.com/datapointchris/ypl/commit/881e5150723ba3f1f3ec31b730cb6d1780b74a8e))
 
 The socket-length test leaned on pytest's tmp_path already being over the 104-byte limit. That is
   true under macOS's private temp directory and false on Linux, so it passed locally and failed in
@@ -57,29 +93,29 @@ The fixture now nests the state directory deep enough to overflow on either plat
 ### Chores
 
 - Add .planning to gitignore
-  ([`6aeb28b`](https://github.com/datapointchris/youtube-playlists/commit/6aeb28b8a27946ecbdd30392df1beea363575c21))
+  ([`6aeb28b`](https://github.com/datapointchris/ypl/commit/6aeb28b8a27946ecbdd30392df1beea363575c21))
 
 - Add .planning to gitignore
-  ([`ca2f6bd`](https://github.com/datapointchris/youtube-playlists/commit/ca2f6bdd20da2de92345ba3e02c87ab2b79703ba))
+  ([`ca2f6bd`](https://github.com/datapointchris/ypl/commit/ca2f6bdd20da2de92345ba3e02c87ab2b79703ba))
 
 - Add TODO and ignore service account credentials
-  ([`bb10841`](https://github.com/datapointchris/youtube-playlists/commit/bb10841d6b21469e1d000e7e64d6ff67a74ed4ba))
+  ([`bb10841`](https://github.com/datapointchris/ypl/commit/bb10841d6b21469e1d000e7e64d6ff67a74ed4ba))
 
 - Clean up generated gitignore
-  ([`01343a9`](https://github.com/datapointchris/youtube-playlists/commit/01343a9201e5eec12195f5e10525c4c1381380c8))
+  ([`01343a9`](https://github.com/datapointchris/ypl/commit/01343a9201e5eec12195f5e10525c4c1381380c8))
 
 - Stop tracking runtime progress state
-  ([`52e2057`](https://github.com/datapointchris/youtube-playlists/commit/52e20578d396d6fe9cce512c9096ff606472e26b))
+  ([`52e2057`](https://github.com/datapointchris/ypl/commit/52e20578d396d6fe9cce512c9096ff606472e26b))
 
 The split checkpoint file is state the tool writes, not source, so every run dirtied the working
   tree. Ignore the pattern rather than the one filename, since the rework moves this under
   $XDG_STATE_HOME.
 
 - Update readme
-  ([`6edaafc`](https://github.com/datapointchris/youtube-playlists/commit/6edaafce21406885ce2f5a18aa71b25d9480fddd))
+  ([`6edaafc`](https://github.com/datapointchris/ypl/commit/6edaafce21406885ce2f5a18aa71b25d9480fddd))
 
 - **toolchain**: Adopt the generated configs and CI
-  ([`8d95cb8`](https://github.com/datapointchris/youtube-playlists/commit/8d95cb8bc5a67bde28497ee4e795305a5e56fbc2))
+  ([`8d95cb8`](https://github.com/datapointchris/ypl/commit/8d95cb8bc5a67bde28497ee4e795305a5e56fbc2))
 
 Deploys forge toolchain 11: pre-commit hooks, .editorconfig, .markdownlint.json, .shellcheckrc, the
   ruff/pytest/pyright pyproject merge, and the generated validate.yml.
@@ -94,7 +130,7 @@ Registers the repo as active in ~/dev/repos.json with python and actions compone
 ### Documentation
 
 - Describe ypl, and retire the stale TODO list
-  ([`08ab878`](https://github.com/datapointchris/youtube-playlists/commit/08ab8788bb0e28e423b704d3e301c2aa4552ac6b))
+  ([`08ab878`](https://github.com/datapointchris/ypl/commit/08ab8788bb0e28e423b704d3e301c2aa4552ac6b))
 
 The README still described the argparse splitter. It now states the quota arithmetic that drives the
   whole design, since that is the thing nobody would guess from the code.
@@ -105,7 +141,7 @@ TODO.md held two entries: switching to the dataset library, which the rework dec
   belong in icb, not a markdown file that rots.
 
 - **cli**: Stop promising ypl never writes to YouTube
-  ([`7cdd2b5`](https://github.com/datapointchris/youtube-playlists/commit/7cdd2b573541288559dd601b70149db2d65413a0))
+  ([`7cdd2b5`](https://github.com/datapointchris/ypl/commit/7cdd2b573541288559dd601b70149db2d65413a0))
 
 The root help stated it as a rule and the Building panel repeated it. Playlists are now marked for
   syncing on creation, and `ypl remote` is being built to push them, so the honest framing is that
@@ -114,7 +150,7 @@ The root help stated it as a rule and the Building panel repeated it. Playlists 
 ### Features
 
 - **next**: Suggest what to put on, from listening history
-  ([`87eae45`](https://github.com/datapointchris/youtube-playlists/commit/87eae45a19ae3dbef6c1907a8ef375cb753e3937))
+  ([`87eae45`](https://github.com/datapointchris/ypl/commit/87eae45a19ae3dbef6c1907a8ef375cb753e3937))
 
 ypl next answers "and specifically, what now?" — least recently listened to, never-played first. It
   is the resolver `menu next` delegates to, so a listen pursuit names a mix rather than the word
@@ -141,7 +177,7 @@ next draws afresh among everything tied at the same rank, since on an untouched 
   where within-session stability comes from.
 
 - **play**: Play a playlist and report the current track
-  ([`dd95dfa`](https://github.com/datapointchris/youtube-playlists/commit/dd95dfa0bac3046673a392753fba3f67b0b3974d))
+  ([`dd95dfa`](https://github.com/datapointchris/ypl/commit/dd95dfa0bac3046673a392753fba3f67b0b3974d))
 
 ypl play runs mpv in the foreground over either kind of playlist, and ypl now reads mpv's IPC socket
   to say what is playing. Because the mirror holds a tracklist with real timestamps, now reports the
@@ -169,7 +205,7 @@ The IPC layer is tested against a fake mpv socket rather than a mocked one, beca
   properties mpv declines to answer.
 
 - **playlists**: Build and edit local playlists
-  ([`9a519f2`](https://github.com/datapointchris/youtube-playlists/commit/9a519f2b62223f007c48da0fd861d68704ff7738))
+  ([`9a519f2`](https://github.com/datapointchris/ypl/commit/9a519f2b62223f007c48da0fd861d68704ff7738))
 
 Playlists you make are M3U files under $XDG_DATA_HOME/ypl/playlists, written by playlists
   create/add/remove/delete. Nothing here reaches YouTube, so curation is instant and unlimited while
@@ -190,7 +226,7 @@ One resolver now serves both stores: a name is searched across the mirror and th
   enrichment is a fact about a video rather than about its membership of a mirrored playlist.
 
 - **playlists**: Split and reorder local playlists
-  ([`a797241`](https://github.com/datapointchris/youtube-playlists/commit/a797241aebf3359abbcdf0736554321fa85729a6))
+  ([`a797241`](https://github.com/datapointchris/ypl/commit/a797241aebf3359abbcdf0736554321fa85729a6))
 
 playlists split cuts a long playlist into several local ones by --size or --parts, and playlists
   order rearranges one you built, in place or --into a new name. Both write M3U files only.
@@ -214,7 +250,7 @@ Selections that drop deleted and private videos now say so. A split of 100 that 
   reads as a bug in the split.
 
 - **playlists**: Sync new playlists to YouTube by default
-  ([`be8ac94`](https://github.com/datapointchris/youtube-playlists/commit/be8ac94eae7571531f30d04cfeb6b8b08f48bc2c))
+  ([`be8ac94`](https://github.com/datapointchris/ypl/commit/be8ac94eae7571531f30d04cfeb6b8b08f48bc2c))
 
 A playlist made here is meant to end up on the phone, so it is marked for syncing on creation and
   goes up on the next drain. --local keeps one on this machine, and promote/demote change it later.
@@ -238,7 +274,7 @@ Playlist creation gets its own far slower throttle. It is the one endpoint with 
   where it sits on the way to YouTube is its own field.
 
 - **release**: Publish releases, and name the distribution ypl
-  ([`08d9a9c`](https://github.com/datapointchris/youtube-playlists/commit/08d9a9ccd3de6f88bd44112be953c4083f784f9e))
+  ([`08d9a9c`](https://github.com/datapointchris/ypl/commit/08d9a9ccd3de6f88bd44112be953c4083f784f9e))
 
 The fleet installs the personal Python CLIs from a release tag over git, not from PyPI, so there has
   to be a release to install. python-semantic -release on push to main, gated on validate, same
@@ -251,7 +287,7 @@ The distribution is renamed from youtube-playlists to ypl, because uv keys a too
   defaults to the tool name, and there is no repo called ypl.
 
 - **remote**: Add the write backend, and drop the Data API
-  ([`38fa038`](https://github.com/datapointchris/youtube-playlists/commit/38fa038c0ea4db09800e02aa01f74504ca14b478))
+  ([`38fa038`](https://github.com/datapointchris/ypl/commit/38fa038c0ea4db09800e02aa01f74504ca14b478))
 
 Settles the deferred backend decision in favour of ytmusicapi, and removes the machinery built for
   the other answer: the legacy argparse splitter with its 24-hour quota loop and checkpointing, and
@@ -278,7 +314,7 @@ The backend is a Protocol and the ytmusicapi implementation is its own module, s
   a one-module swap.
 
 - **remote**: Push local playlists up to YouTube
-  ([`56754ac`](https://github.com/datapointchris/youtube-playlists/commit/56754ac15a228711ba6eaeaa625710917aa812be))
+  ([`56754ac`](https://github.com/datapointchris/ypl/commit/56754ac15a228711ba6eaeaa625710917aa812be))
 
 `ypl remote plan` says what would change there; `ypl remote apply` does it. Two verbs and no
   `--apply` flag, and no `push` either — a third verb that also writes would be a second word for
@@ -304,7 +340,7 @@ The fake backend the tests run against now holds a playlist and mutates it on ev
   called.
 
 - **remote**: Reconcile playlists with YouTube
-  ([`b39b0bd`](https://github.com/datapointchris/youtube-playlists/commit/b39b0bd01f1570599e43ac93e894baac538da2f8))
+  ([`b39b0bd`](https://github.com/datapointchris/ypl/commit/b39b0bd01f1570599e43ac93e894baac538da2f8))
 
 `ypl remote pull` reads YouTube, merges it into the local file against the base, and records the
   read as the new base. Videos deleted there leave the file, videos added there arrive in it, and
@@ -329,7 +365,7 @@ Nothing is queued at pull time. What has to go up is whatever the file and the b
   and goes back up to YouTube.
 
 - **remote**: Record what YouTube held at the last reconcile
-  ([`dec9505`](https://github.com/datapointchris/youtube-playlists/commit/dec9505727dd781121306317373cb41ace806cb0))
+  ([`dec9505`](https://github.com/datapointchris/ypl/commit/dec9505727dd781121306317373cb41ace806cb0))
 
 The third state a remote-wins merge needs. Local [A, B, C] against remote [A, C] has two possible
   histories — B was deleted on the phone, or B was added here and never pushed — and they are the
@@ -354,7 +390,7 @@ Deleting a playlist now deletes its base. Otherwise it outlives the file it desc
   here.
 
 - **remote**: Store the YouTube session, once per machine
-  ([`657e022`](https://github.com/datapointchris/youtube-playlists/commit/657e0226169fcfa7e5dcee9060d922207ad856a1))
+  ([`657e022`](https://github.com/datapointchris/ypl/commit/657e0226169fcfa7e5dcee9060d922207ad856a1))
 
 `ypl remote auth` takes the request headers from a signed-in music.youtube.com tab, pasted or piped,
   and writes them to $XDG_CONFIG_HOME/ypl/ytmusic.json. Nothing else in the write path can be run
@@ -373,7 +409,7 @@ Browser headers rather than OAuth: ytmusicapi's OAuth flow now needs a TV-type G
   own, which is the Data API project setup this backend exists to avoid.
 
 - **ypl**: Add the sync and read layer over a local mirror
-  ([`45cb7e9`](https://github.com/datapointchris/youtube-playlists/commit/45cb7e9b7c97743e7d556448c3cbb0ae49334f1d))
+  ([`45cb7e9`](https://github.com/datapointchris/ypl/commit/45cb7e9b7c97743e7d556448c3cbb0ae49334f1d))
 
 First slice of the rework: a Typer CLI that mirrors playlists locally and reads them back, with no
   path to writing YouTube at all.
@@ -407,10 +443,10 @@ videos show takes ignore_unknown_options: video ids are base64url, so about one 
 ### Refactoring
 
 - Move main script into project
-  ([`f0ceb03`](https://github.com/datapointchris/youtube-playlists/commit/f0ceb03128935244febe3169ea1551da3675da3e))
+  ([`f0ceb03`](https://github.com/datapointchris/ypl/commit/f0ceb03128935244febe3169ea1551da3675da3e))
 
 - **models**: Define the watch URL in one place
-  ([`9c1c129`](https://github.com/datapointchris/youtube-playlists/commit/9c1c1294a17cc14e849438bab095c9e6a859b269))
+  ([`9c1c129`](https://github.com/datapointchris/ypl/commit/9c1c1294a17cc14e849438bab095c9e6a859b269))
 
 The video watch URL was spelled out as an f-string in three modules. It is what local playlist files
   contain, what gets piped to other tools, and what yt-dlp is handed, so the three have to agree on
@@ -419,7 +455,7 @@ The video watch URL was spelled out as an f-string in three modules. It is what 
 ### Testing
 
 - Pin the behaviour the stubs were hiding
-  ([`a72d2ad`](https://github.com/datapointchris/youtube-playlists/commit/a72d2adee4b74552e6abf9a0558d3014f3c4b160))
+  ([`a72d2ad`](https://github.com/datapointchris/ypl/commit/a72d2adee4b74552e6abf9a0558d3014f3c4b160))
 
 A mutation pass over the suite — break the code, check the tests notice — found three assertions
   that a stub could satisfy on its own.
