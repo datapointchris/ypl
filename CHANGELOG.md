@@ -1,6 +1,48 @@
 # CHANGELOG
 
 
+## v0.12.0 (2026-08-05)
+
+### Bug Fixes
+
+- **sync**: Replace a timer naming a ypl that moved
+  ([`7790ec0`](https://github.com/datapointchris/ypl/commit/7790ec05d24506fe9bf3593e3720cb5d78744df1))
+
+`ensure` compared only the interval, so a unit naming a `ypl` that has since moved was left alone —
+  firing, failing, and reported by `ypl status` as scheduled every 30 minutes, which is worse than
+  no timer at all. It compares the command now and reinstalls when it disagrees, so a machine
+  repairs its own timer on the next sync.
+
+Which matters because the suite installed one here. `isolated_home` redirected the three XDG
+  variables, and a launch agent's path comes from HOME, so every test that invoked `sync` on a mac
+  wrote ~/Library/LaunchAgents/com.ichrisbirch.ypl.plist and had launchctl load it: this machine has
+  been running a ypl timer against a checkout's venv, logging into a pytest temporary directory that
+  no longer exists. HOME is redirected too now, and `run_manager` is stubbed for the whole suite
+  rather than by the timer tests that opted in — the tests that installed it were about adoption and
+  had never heard of the scheduler.
+
+A virtualenv's `ypl` is also passed over when an installed one is on PATH. Developing means `uv run
+  ypl sync`, which puts the checkout first, and a unit bound to it dies with the next rebuild of
+  that directory.
+
+### Features
+
+- **cli**: Answer --version, like the rest of the fleet
+  ([`6c4aa3f`](https://github.com/datapointchris/ypl/commit/6c4aa3fc476e1f7b11b0ab6e05d84f342d54d132))
+
+Every other CLI here says which build is running; ypl was the one that could not, which matters most
+  for the tool with a timer — a background sync and a prompt can be two different versions and
+  nothing said so. One line, `ypl <version>`, with the commit appended when uv installed from a git
+  ref rather than a release, because a version alone does not identify a build that tracks a branch.
+
+`status` also stops reprinting the run it is summarising. The three things a run did were rendered
+  with the lists themselves rather than their lengths, so a sweep that took over seventeen playlists
+  printed seventeen names where it meant "17 adopted", and a run where every playlist failed printed
+  one line each — pushing the playlist and enrichment counts, which is what the command is for, off
+  the screen. Five failures now, then how many more. `--json` still carries all of them, and so does
+  the log.
+
+
 ## v0.11.2 (2026-08-05)
 
 ### Bug Fixes
