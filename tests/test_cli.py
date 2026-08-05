@@ -1740,6 +1740,20 @@ def test_the_timer_prefers_an_installed_ypl_to_the_one_in_a_virtualenv(tmp_path,
     assert schedule.executable() == str(installed / 'ypl')
 
 
+def test_the_timer_schedules_the_symlink_rather_than_what_it_points_at(tmp_path, monkeypatch):
+    """`~/.local/bin/ypl` is a link into uv's tool directory, and that layout is
+    uv's to change. The link is the path uv promises to keep."""
+    real = tmp_path / 'share' / 'uv' / 'tools' / 'ypl' / 'bin'
+    real.mkdir(parents=True)
+    (real / 'ypl').touch(mode=0o755)
+    binaries = tmp_path / 'bin'
+    binaries.mkdir()
+    (binaries / 'ypl').symlink_to(real / 'ypl')
+    monkeypatch.setenv('PATH', str(binaries))
+
+    assert schedule.executable() == str(binaries / 'ypl')
+
+
 def test_the_checkouts_ypl_is_still_used_when_it_is_the_only_one(tmp_path, monkeypatch):
     """The fallback the docstring promises: a machine with nothing installed."""
     checkout = tmp_path / 'checkout' / '.venv' / 'bin'

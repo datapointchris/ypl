@@ -68,12 +68,17 @@ def executable() -> str:
     pointed into a checkout stops working the moment that directory is rebuilt
     or moved — silently, and for as long as nobody reads the log, because
     `ypl status` goes on reporting a timer that is installed and dead.
+
+    Absolute but not resolved through symlinks. `~/.local/bin/ypl` is a link
+    into uv's tool directory, and that directory's layout is uv's business:
+    naming what the link points at today swaps a path uv promises to keep for
+    one it does not.
     """
     found = outside_virtualenv() or shutil.which('ypl')
     if found:
-        return str(Path(found).resolve())
+        return os.path.abspath(found)
     if sys.argv and sys.argv[0] and Path(sys.argv[0]).exists():
-        return str(Path(sys.argv[0]).resolve())
+        return os.path.abspath(sys.argv[0])
     raise ScheduleError('cannot find the ypl executable to schedule — is it installed on this machine?')
 
 
