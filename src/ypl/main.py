@@ -25,6 +25,7 @@ from ypl import merge
 from ypl import paths
 from ypl import player
 from ypl import remote
+from ypl import runlock
 from ypl import schedule
 from ypl import service
 from ypl import session
@@ -507,12 +508,23 @@ def sync(
             messages.print('  [bold]ypl remote auth --browser safari[/bold]  — signs in for writing too')
             raise typer.Exit(2)
 
-        if not as_json:
-            messages.print('Reading your playlists...')
-        run = sync_everything_or_exit(connection, source, limit, quiet=as_json)
-        session.remember_browser(source)
-        synclog.record(run.payload())
-        keep_running(settings, quiet=as_json)
+        with runlock.held() as mine:
+            # Exit 0: a timer firing onto a run already going is the system
+            # working. Failing here would fill the agent's log with errors
+            # describing a sync that is, at that moment, happening.
+            if not mine:
+                if as_json:
+                    print_json({'skipped': 'a sync is already running'})
+                else:
+                    messages.print('A sync is already running — leaving it to finish.')
+                return
+
+            if not as_json:
+                messages.print('Reading your playlists...')
+            run = sync_everything_or_exit(connection, source, limit, quiet=as_json)
+            session.remember_browser(source)
+            synclog.record(run.payload())
+            keep_running(settings, quiet=as_json)
         if as_json:
             print_json(run.payload())
         else:

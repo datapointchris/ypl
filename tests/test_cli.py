@@ -22,6 +22,7 @@ from ypl import main
 from ypl import paths
 from ypl import player
 from ypl import remote
+from ypl import runlock
 from ypl import schedule
 from ypl import service
 from ypl import session
@@ -2038,3 +2039,27 @@ def test_the_config_still_wins_over_what_was_remembered(monkeypatch):
     """It is the setting a person wrote down; nothing inferred should override it."""
     monkeypatch.setattr(session, 'browser', lambda: 'safari')
     assert main.reading_browser(config.Config(cookies_from_browser='firefox')) == 'firefox'
+
+
+def test_a_second_sync_leaves_the_first_one_alone(account, signed_in, linux_timer):
+    """A timer firing onto a run already going must not double it.
+
+    Two syncs at once would adopt the same playlists twice and write the same
+    files from both, and the timer exists precisely to start runs nobody is
+    watching for.
+    """
+    with runlock.held() as mine:
+        assert mine
+        result = runner.invoke(app, ['sync', '--browser', 'safari'])
+
+    assert result.exit_code == 0
+    assert 'already running' in result.output
+    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['last_sync'] is None
+
+
+def test_the_lock_is_released_when_the_run_ends(account, signed_in, linux_timer):
+    """Held by the kernel rather than by a pid file, so a crash cannot wedge it."""
+    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
+
+    with runlock.held() as mine:
+        assert mine
