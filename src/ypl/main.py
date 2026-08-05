@@ -1993,6 +1993,7 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
     last = synclog.last()
     timer = schedule.installed()
     payload = {
+        'running': runlock.running(),
         'signed_in': paths.ytmusic_auth_file().exists(),
         'scheduled': bool(timer),
         'interval_minutes': timer.interval_minutes if timer else None,
@@ -2008,6 +2009,7 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
         print_json(payload)
         return
 
+    messages.print(f'Syncing now     {"yes" if payload["running"] else "no"}')
     messages.print(f'Signed in       {"yes" if payload["signed_in"] else "no — ypl remote auth"}')
     messages.print(f'Scheduled       {f"every {timer.interval_minutes} min ({timer.manager})" if timer else "no — run ypl sync once"}')
     messages.print(f'Last sync       {payload["last_sync"] or "never"}')

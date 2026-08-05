@@ -2063,3 +2063,11 @@ def test_the_lock_is_released_when_the_run_ends(account, signed_in, linux_timer)
 
     with runlock.held() as mine:
         assert mine
+
+
+def test_status_says_when_a_sync_is_going_on_right_now(account, signed_in):
+    """A background run you cannot see mid-flight looks the same as a broken one."""
+    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['running'] is False
+
+    with runlock.held():
+        assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['running'] is True

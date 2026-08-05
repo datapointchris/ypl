@@ -24,6 +24,26 @@ def lock_file() -> Path:
     return paths.state_dir() / 'sync.lock'
 
 
+def running() -> bool:
+    """Whether a sync is going on right now.
+
+    Asked by `ypl status`, which is otherwise only able to describe runs that
+    have already finished — and a background process you cannot see mid-run is
+    one you cannot tell apart from a broken one. Taking the lock and dropping it
+    again is the check; nothing else can answer it without a pid file.
+    """
+    path = lock_file()
+    if not path.exists():
+        return False
+    with path.open('w') as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    return False
+
+
 @contextmanager
 def held() -> Iterator[bool]:
     """Hold the sync lock for the block, yielding whether this run got it.
