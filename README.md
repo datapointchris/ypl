@@ -107,7 +107,9 @@ Private and unlisted playlists need a logged-in session — set `cookies_from_br
 | `$XDG_STATE_HOME/ypl/ypl.db` | The mirror. Rebuildable from `ypl sync`, so not worth syncing between machines. |
 | `$XDG_DATA_HOME/ypl/playlists/` | Local playlists as M3U. Authored, so these are the ones worth keeping. |
 | `$XDG_DATA_HOME/ypl/plays.jsonl` | Listening history, appended one line per listen. Not rebuildable from anything, so it sits with the playlists rather than in the mirror. |
+| `$XDG_DATA_HOME/ypl/remote/` | What YouTube held for each playlist at the last reconcile, one JSON file per playlist. The base of the three-way merge, and the only copy of each slot's `setVideoId`. Not rebuildable — re-reading YouTube answers what is there now, not what was there then. |
 | `$XDG_CONFIG_HOME/ypl/config.toml` | Settings. `ypl config init` writes a starter. |
+| `$XDG_CONFIG_HOME/ypl/ytmusic.json` | The YouTube session, mode 0600. Written by `ypl remote auth`; it is a Google account cookie, so treat it as the password it is. |
 | `$XDG_STATE_HOME/ypl/mpv.sock` | mpv's IPC socket while `ypl play` is running. Read by `ypl now`. |
 
 `ypl config path` prints the first three.

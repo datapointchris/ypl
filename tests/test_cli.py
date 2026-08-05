@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from ypl import basestore
 from ypl import paths
 from ypl import player
 from ypl import remote
@@ -24,6 +25,7 @@ from ypl.main import app
 from ypl.models import Chapter
 from ypl.models import RemotePlaylist
 from ypl.models import RemoteVideo
+from ypl.remote import RemoteItem
 
 runner = CliRunner()
 
@@ -927,3 +929,16 @@ def test_a_session_that_could_not_be_checked_is_kept(signing_in):
         signing_in.error = None
     assert result.exit_code == 1
     assert paths.ytmusic_auth_file().exists()
+
+
+def test_deleting_a_playlist_takes_its_merge_base_with_it(synced):
+    """A base that outlives its playlist reads as a pile of local deletions.
+
+    The next playlist to slug the same way would adopt it, and the queue would
+    carry those deletions out on YouTube.
+    """
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'Get Insights'])
+    basestore.save(basestore.Base(slug='sunday', playlist_id='PL9', items=[RemoteItem(video_id='vid1', set_video_id='h1')]))
+
+    assert runner.invoke(app, ['playlists', 'delete', 'Sunday', '--yes']).exit_code == 0
+    assert basestore.load('sunday') is None

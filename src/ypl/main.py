@@ -688,7 +688,7 @@ def playlists_delete(
     playlist = local_or_exit(connection, name)
     if not yes:
         typer.confirm(f'Delete {playlist.name} ({len(playlist.entries)} videos) at {playlist.path}?', abort=True)
-    local.delete(playlist)
+    service.delete_local_playlist(playlist)
     messages.print(f'Deleted {playlist.path}')
 
 

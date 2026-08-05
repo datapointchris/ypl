@@ -58,6 +58,18 @@ def playlists_dir() -> Path:
     return data_dir() / 'playlists'
 
 
+def remote_dir() -> Path:
+    """The base of every three-way merge: remote state as of the last reconcile.
+
+    Data rather than state, by the same rule as the playlists beside it. The
+    mirror rebuilds from a free `ypl sync`, but nothing rebuilds a snapshot of
+    what YouTube held at a past moment — once that moment passes it is gone,
+    and losing it makes the next merge unable to tell a remote deletion from a
+    local addition.
+    """
+    return data_dir() / 'remote'
+
+
 def plays_file() -> Path:
     """Listening history — data, not state.
 

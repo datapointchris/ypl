@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 
+from ypl import basestore
 from ypl import history
 from ypl import local
 from ypl import m3u
@@ -421,6 +422,18 @@ def create_local_playlist(
     )
     local.save(playlist, overwrite=overwrite)
     return playlist
+
+
+def delete_local_playlist(playlist: LocalPlaylist) -> None:
+    """Delete a playlist file and the merge base that described it.
+
+    Both, always: a base left behind outlives the playlist it belongs to, and
+    the next playlist to slug the same way would adopt it and read as having
+    had every one of those videos deleted here — which the queue would then
+    carry out on YouTube.
+    """
+    local.delete(playlist)
+    basestore.delete(playlist.slug)
 
 
 def set_synced(playlist: LocalPlaylist, synced: bool) -> LocalPlaylist:
