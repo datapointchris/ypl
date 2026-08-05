@@ -1,6 +1,34 @@
 # CHANGELOG
 
 
+## v0.4.0 (2026-08-05)
+
+### Features
+
+- **playlists**: Rearrange a playlist in your editor
+  ([`7e6860d`](https://github.com/datapointchris/ypl/commit/7e6860dc501bb178c9c193f6445e86cdd4273ee8))
+
+`ypl playlists edit NAME` opens one line per video in $EDITOR — the id first, then the title and
+  duration. Move lines to reorder, delete a line to remove, paste a URL to add, save to apply. `git
+  rebase -i`'s shape, for the same reason: rearranging a list is something an editor is already
+  better at than any command could be, and the id sits on the line without ever being typed.
+
+Typing eleven characters to identify a mix is what made editing a playlist while it played
+  intolerable, and no number of extra commands fixes that. This does, for bulk work; the
+  current-playlist verbs will do it for tweaks.
+
+An empty buffer aborts rather than emptying the playlist, since deleting every line by accident must
+  not be how an authored playlist is lost, and a non-zero exit from the editor — `:cq` — aborts for
+  the same reason. A line that is not a video is refused with its line number and nothing is
+  written.
+
+The buffer takes the playlist's own ids as known, so whatever the file holds parses back even if it
+  does not match the eleven-character rule. A tool has to accept its own output.
+
+Reads the buffer from stdin when something is piped in, which is both how this is tested without an
+  editor and how Claude rewrites an order in one shot.
+
+
 ## v0.3.0 (2026-08-05)
 
 ### Features

@@ -4,7 +4,7 @@
 # reads the running version from it, so a distribution named anything else
 # installs a `ypl` whose own `update` cannot find itself.
 name = "ypl"
-version = "0.3.0"
+version = "0.4.0"
 description = "Organize YouTube music playlists of long DJ mixes."
 authors = [{ name = "Chris Birch", email = "datapointchris@gmail.com" }]
 license = "MIT"
