@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v0.10.1 (2026-08-05)
+
+### Bug Fixes
+
+- **sync**: The sync installs its own timer, so there is no schedule verb
+  ([`6b3143c`](https://github.com/datapointchris/ypl/commit/6b3143cb8889ee76af4db94f05e47cae48701264))
+
+`ypl schedule install` was one more thing to remember, which is the exact problem the timer exists
+  to remove. The first `ypl sync` on a machine now sets it up as a side effect and every run after
+  that finds it already there, unmentioned.
+
+Turning it off is a setting rather than a verb — `background_sync = false` removes the timer on the
+  next run — because nothing installed it and so nothing should have to uninstall it.
+
+A machine where launchd or systemd will not co-operate still syncs: the run happening now matters
+  more than the ones that would have followed it, so a failed install is silence rather than an
+  error.
+
+
 ## v0.10.0 (2026-08-05)
 
 ### Bug Fixes
