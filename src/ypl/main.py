@@ -29,10 +29,10 @@ Organize YouTube playlists.
 The noun comes first and the verb last, so a list -> show -> urls loop on one
 playlist changes only the final word.
 
-One rule: nothing here writes to your YouTube account. `sync` and `enrich` pull
-down through yt-dlp, which costs no API quota; playlists you build are written
-as M3U files on this machine, and every other command reads what is already
-here.
+Organizing happens locally and instantly. `sync` and `enrich` pull down through
+yt-dlp, which costs no API quota; playlists you build are written as M3U files
+on this machine and playable straight away. Going back up to YouTube is a
+separate, queued, deliberately slow act — `ypl remote`.
 
 A playlist is named by its title, so `ypl playlists show 'Get Insights'` works
 without an id; a partial title matches when it is unambiguous. Run any partial
@@ -90,7 +90,7 @@ Examples:
 
 READING = 'Reading (the local mirror)'
 SYNCING = 'Syncing (pulls from YouTube, no API quota)'
-BUILDING = 'Building (writes M3U files here, never to YouTube)'
+BUILDING = 'Building (writes M3U files here; YouTube only via ypl remote)'
 PLAYING = 'Playing (through mpv)'
 ADMIN = 'Admin'
 
@@ -208,7 +208,7 @@ def local_or_exit(connection: sqlite3.Connection, name: str) -> local.LocalPlayl
         resolved = service.resolve_playlist(connection, name, service.LOCAL)
     except service.PlaylistNotFoundError as error:
         if any(candidate.title.lower() == name.lower() for candidate in service.known_playlists(connection, service.REMOTE)):
-            messages.print(f'[red]{name!r} is mirrored from YouTube, and nothing here writes to your account.[/red]')
+            messages.print(f'[red]{name!r} is mirrored from YouTube, and a mirrored playlist is read-only here.[/red]')
             messages.print(f'Make a local copy first: [bold]ypl playlists create {name!r} --from {name!r}[/bold]')
             raise typer.Exit(1) from error
         messages.print(f'[red]No local playlist matching {name!r}.[/red] Run [bold]ypl playlists list --source local[/bold] to see them.')
