@@ -27,6 +27,7 @@ from ypl import runlock
 from ypl import schedule
 from ypl import service
 from ypl import session
+from ypl import synclog
 from ypl import throttle
 from ypl import ytdlp
 from ypl import ytmusic
@@ -114,6 +115,14 @@ def test_bare_invocation_shows_help_rather_than_doing_anything():
     result = runner.invoke(app, [])
     assert result.exit_code == 2
     assert 'Usage:' in result.output
+
+
+def test_version_is_one_line_naming_the_tool_and_exits_clean():
+    """The question every CLI here answers the same way, so a script can ask it."""
+    result = runner.invoke(app, ['--version'])
+    assert result.exit_code == 0
+    assert result.stdout.startswith('ypl ')
+    assert len(result.stdout.strip().splitlines()) == 1
 
 
 @pytest.mark.parametrize('command', [['playlists'], ['videos'], ['config'], ['remote'], ['plays']])
@@ -2151,6 +2160,26 @@ def test_status_says_when_a_sync_is_going_on_right_now(account, signed_in):
 
     with runlock.held():
         assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['running'] is True
+
+
+def test_status_counts_what_a_run_did_rather_than_listing_it():
+    """Seventeen playlist names in a status line is a Python list on your screen."""
+    synclog.record({'adopted': ['BEST', 'Art', 'Trip'], 'reconciled': [], 'pushed': ['Deep Night']})
+
+    output = runner.invoke(app, ['status']).output
+    assert '3 adopted, 1 pushed' in output
+
+
+def test_status_stops_short_of_reprinting_a_whole_failed_run():
+    """A run where every playlist failed pushed the answer off the screen."""
+    synclog.record({'failures': [f'playlist {index}: unreadable' for index in range(9)]})
+
+    output = runner.invoke(app, ['status']).output
+    assert 'playlist 0: unreadable' in output
+    assert 'and 4 more' in output
+    assert 'playlist 8' not in output
+    # The lines the whole command exists to answer still have to be below it.
+    assert 'Unenriched' in output
 
 
 def test_a_signed_out_session_stops_the_remote_half_with_one_message(account, signed_in):

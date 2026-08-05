@@ -1,6 +1,7 @@
 """The ypl command tree."""
 
 import contextlib
+import importlib.metadata
 import json
 import sqlite3
 import sys
@@ -144,6 +145,11 @@ PLAYING = 'Listening (playing, and changing what is on while it plays)'
 WRITING = 'Writing (the only commands that reach YouTube)'
 ADMIN = 'Admin'
 
+# `status` is a glance, and a run where every playlist failed printed one line
+# each — which pushed the lines answering "is this working" off the screen. The
+# whole list is still in the log, and `--json` still carries all of them.
+STATUS_FAILURES_SHOWN = 5
+
 app = typer.Typer(name='ypl', no_args_is_help=True, help=ROOT_HELP)
 playlists_app = typer.Typer(name='playlists', no_args_is_help=True, help=PLAYLISTS_HELP)
 videos_app = typer.Typer(name='videos', no_args_is_help=True, help=VIDEOS_HELP)
@@ -172,8 +178,44 @@ messages = Console(stderr=True, highlight=False, soft_wrap=True)
 UPDATE_CONFIG = UpdateConfig(tool='ypl', owner='datapointchris')
 
 
+def installed_version() -> str:
+    try:
+        return importlib.metadata.version('ypl')
+    except importlib.metadata.PackageNotFoundError:
+        return 'unknown'
+
+
+def installed_commit() -> str:
+    """The commit this build came from, when uv installed it from a git ref.
+
+    An install from a release does not need one — the version identifies it
+    exactly. One installed from a branch reports the same version for as long as
+    the branch moves, and that is the case this answers.
+    """
+    with contextlib.suppress(importlib.metadata.PackageNotFoundError, OSError, json.JSONDecodeError):
+        direct_url = importlib.metadata.distribution('ypl').read_text('direct_url.json')
+        if direct_url:
+            return json.loads(direct_url).get('vcs_info', {}).get('commit_id') or ''
+    return ''
+
+
+def show_version(asked: bool) -> None:
+    """`ypl --version`, in the one line every CLI here answers it with."""
+    if not asked:
+        return
+    commit = installed_commit()
+    console.print(f'ypl {installed_version()}{f" @ {commit[:8]}" if commit else ""}')
+    raise typer.Exit()
+
+
 @app.callback()
-def root(ctx: typer.Context) -> None:
+def root(
+    ctx: typer.Context,
+    version: Annotated[
+        bool | None,
+        typer.Option('--version', callback=show_version, is_eager=True, help='Show the installed version and exit.'),
+    ] = None,
+) -> None:
     if ctx.invoked_subcommand != 'update':
         notify(UPDATE_CONFIG)
 
@@ -2018,11 +2060,13 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
     messages.print(f'Scheduled       {f"every {timer.interval_minutes} min ({timer.manager})" if timer else "no — run ypl sync once"}')
     messages.print(f'Last sync       {payload["last_sync"] or "never"}')
     if last:
-        done = [f'{last[key]} {key}' for key in ('adopted', 'reconciled', 'pushed') if last.get(key)]
+        done = [f'{len(last[key])} {key}' for key in ('adopted', 'reconciled', 'pushed') if last.get(key)]
         messages.print(f'                {", ".join(done) if done else "nothing to do"}')
-        if last.get('failures'):
-            for failure in last['failures']:
-                messages.print(f'                [yellow]{failure}[/yellow]')
+        failures = last.get('failures') or []
+        for failure in failures[:STATUS_FAILURES_SHOWN]:
+            messages.print(f'                [yellow]{failure}[/yellow]')
+        if len(failures) > STATUS_FAILURES_SHOWN:
+            messages.print(f'                [yellow]and {len(failures) - STATUS_FAILURES_SHOWN} more — --json for all[/yellow]')
     messages.print(f'Playlists       {payload["playlists"]} here, {payload["declined"]} declined')
     messages.print(f'Unenriched      {payload["unenriched"]} videos, {payload["unreadable"]} unreadable')
     if pending:
