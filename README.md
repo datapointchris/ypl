@@ -208,10 +208,36 @@ treat the file as the password it is. `ypl remote auth` then asks YouTube whose 
 and prints the answer, because a paste that parses is not yet a session that works; one YouTube
 rejects is deleted rather than stored to fail later. `--replace` signs in over a stored session.
 
+### Reconciling
+
+`ypl remote pull` reads YouTube, merges it into the local file, and records what it read as the
+new base. Bare, it covers every synced playlist that is on YouTube; named, just the one.
+
+```bash
+ypl remote pull                    # every synced playlist
+ypl remote pull 'Sunday'           # one of them
+```
+
+Merging needs three states, not two. Local `[A, B, C]` against remote `[A, C]` has two possible
+histories — B was deleted on the phone, or B was added here and never pushed — and they are the
+same two lists with opposite correct actions. YouTube exposes no per-item modification time and a
+removal leaves nothing behind, so ypl records what was there at the last reconcile and compares
+each side against that: gone from a side that had it means deleted by that side, present on a side
+the base never saw means added by it. Videos deleted on YouTube leave the local file, videos added
+there arrive in it, and changes made here stay made and go up on the next drain.
+
+Order is settled once for the whole playlist rather than merged per item. Local order wins unless
+YouTube's own order changed since the base, in which case YouTube's wins outright — and adding or
+removing a video does not count as reordering, or a track added on a phone would discard the
+ordering you built here.
+
+This is why deleting a base file is not free. Without it, everything in the playlist reads as
+newly added here, and the next push sends it all back up — including whatever you deleted
+elsewhere.
+
 ## Not done yet
 
-The reconcile and the background queue that drains it — `ypl remote pull`, `plan`, `push`,
-`apply`. Nothing has written to YouTube yet.
+The queue and its drain — `ypl remote plan`, `push`, `apply`. Nothing has written to YouTube yet.
 
 ## License
 

@@ -18,11 +18,14 @@ from ypl import basestore
 from ypl import history
 from ypl import local
 from ypl import m3u
+from ypl import merge
 from ypl import tracklist
 from ypl import ytdlp
 from ypl.local import LocalPlaylist
 from ypl.models import RemotePlaylist
 from ypl.models import Track
+from ypl.remote import Backend
+from ypl.remote import RemoteItem
 
 REMOTE = 'remote'
 LOCAL = 'local'
@@ -422,6 +425,64 @@ def create_local_playlist(
     )
     local.save(playlist, overwrite=overwrite)
     return playlist
+
+
+@dataclass
+class Pull:
+    playlist: LocalPlaylist
+    result: merge.Merge
+
+
+def merged_entries(connection: sqlite3.Connection, video_ids: list[str], items: list[RemoteItem]) -> list[m3u.Entry]:
+    """Label the merged order, falling back to what YouTube called each video.
+
+    The mirror is the better label — it holds channel and title separately —
+    but a video added on a phone has never been synced here, and an entry with
+    no title is one a player shows as a bare URL.
+    """
+    titles = {item.video_id: item.title for item in items if item.title}
+    entries = entries_for(connection, video_ids)
+    for entry in entries:
+        if not entry.title:
+            entry.title = titles.get(entry.video_id, '')
+    return entries
+
+
+def pull_playlist(connection: sqlite3.Connection, playlist: LocalPlaylist, backend: Backend) -> Pull:
+    """Reconcile one playlist against YouTube.
+
+    Reads, merges, rewrites the file, and records the read as the new base.
+    What has to go up is not written down anywhere: it is whatever the file
+    and the base disagree about, which `remote plan` re-derives on demand.
+
+    The file is saved before the base, and that order is load-bearing. A base
+    written first, followed by a failed save, describes a remote state the file
+    was never merged against — and every video the merge was about to drop then
+    reads as a local addition on the next pull and goes straight back up to
+    YouTube. The reverse failure is harmless: an old base merged against again
+    reaches the same answer.
+    """
+    items = backend.playlist_items(playlist.remote_id)
+    recorded = basestore.load(playlist.slug)
+    result = merge.merge(
+        base=recorded.video_ids if recorded else [],
+        remote=[item.video_id for item in items],
+        local=playlist.video_ids,
+    )
+    playlist.entries = merged_entries(connection, result.order, items)
+    local.save(playlist, overwrite=True)
+    basestore.save(basestore.Base(slug=playlist.slug, playlist_id=playlist.remote_id, items=items))
+    return Pull(playlist=playlist, result=result)
+
+
+def pullable_playlists() -> list[LocalPlaylist]:
+    """The playlists a bare `remote pull` covers.
+
+    Bound to a remote and still meant to sync. A demoted playlist keeps its
+    remote id so that promoting it again finds the same YouTube playlist, but
+    pulling into it would undo the demotion one video at a time.
+    """
+    return [playlist for playlist in local.list_playlists().playlists if playlist.synced and playlist.remote_id]
 
 
 def delete_local_playlist(playlist: LocalPlaylist) -> None:

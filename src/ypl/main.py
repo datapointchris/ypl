@@ -12,11 +12,13 @@ from pyselfupdate.typercmd import run_update
 from rich.console import Console
 from rich.table import Table
 
+from ypl import basestore
 from ypl import config
 from ypl import db
 from ypl import history
 from ypl import local
 from ypl import m3u
+from ypl import merge
 from ypl import paths
 from ypl import player
 from ypl import remote
@@ -101,6 +103,8 @@ into.
 Examples:
 
   ypl remote auth                                 sign in, once per machine
+  ypl remote pull                                 reconcile with YouTube
+  ypl remote pull 'Sunday'                        just the one playlist
 """
 
 AUTH_INSTRUCTIONS = """\
@@ -997,6 +1001,115 @@ def remote_auth(
         return
     messages.print(f'Signed in as [bold]{account.name or "an account YouTube did not name"}[/bold] {account.handle}'.strip())
     messages.print(str(auth_file))
+
+
+def backend_or_exit() -> ytmusic.YtMusicBackend:
+    try:
+        return ytmusic.YtMusicBackend(paths.ytmusic_auth_file())
+    except remote.RemoteAuthError as error:
+        messages.print(f'[red]{error}[/red]')
+        messages.print('Run [bold]ypl remote auth[/bold] to sign in.')
+        raise typer.Exit(1) from error
+    except remote.RemoteError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+
+
+def pull_targets_or_exit(connection: sqlite3.Connection, name: str | None) -> list[local.LocalPlaylist]:
+    """Which playlists this run reconciles.
+
+    A named one that cannot be pulled is an error rather than a silent skip —
+    the caller asked for that playlist by name — while a sweep passes over the
+    same playlists without comment, because "not on YouTube yet" is the normal
+    state of one made a minute ago.
+    """
+    if name is None:
+        return service.pullable_playlists()
+    playlist = local_or_exit(connection, name)
+    if not playlist.remote_id:
+        messages.print(f'[red]{playlist.name} is not on YouTube yet.[/red] It goes up on the next [bold]ypl remote apply[/bold].')
+        raise typer.Exit(1)
+    if not playlist.synced:
+        messages.print(f'[red]{playlist.name} is local only.[/red] Run [bold]ypl playlists promote {playlist.name!r}[/bold] first.')
+        raise typer.Exit(1)
+    return [playlist]
+
+
+def report_pull(pull: service.Pull) -> None:
+    result = pull.result
+    if not result.changed_here and not result.to_push:
+        messages.print(f'[bold]{pull.playlist.name}[/bold] — up to date')
+        return
+    changes = []
+    if result.pulled_in:
+        changes.append(f'{len(result.pulled_in)} added here')
+    if result.pulled_out:
+        changes.append(f'{len(result.pulled_out)} removed here')
+    if result.order_source == merge.REMOTE:
+        changes.append('order taken from YouTube')
+    if result.to_push:
+        changes.append(f'{len(result.pending_add) + len(result.pending_remove)} to push')
+    messages.print(f'[bold]{pull.playlist.name}[/bold] — {", ".join(changes)}')
+
+
+@remote_app.command('pull')
+def remote_pull(
+    name: str = typer.Argument(None, help='Playlist to reconcile. Every synced playlist when omitted.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Reconcile playlists with YouTube, letting YouTube win.
+
+    Reads what is on YouTube, merges it into the local file against what was
+    there at the last reconcile, and records the read as the new base. Changes
+    made on a phone arrive here; changes made here stay made and go up on the
+    next [bold]ypl remote apply[/bold].
+    """
+    connection = db.connect()
+    targets = pull_targets_or_exit(connection, name)
+    if not targets:
+        messages.print('Nothing to pull — no playlist here is on YouTube yet.')
+        return
+
+    backend = backend_or_exit()
+    pulls = []
+    try:
+        for playlist in targets:
+            pulls.append(service.pull_playlist(connection, playlist, backend))
+    except remote.RemoteRateLimitedError as error:
+        # Stopped rather than retried: the limit clears on its own in hours,
+        # and everything reconciled so far is already saved.
+        messages.print(f'[red]YouTube asked us to slow down.[/red] {error}')
+        messages.print(f'Reconciled {len(pulls)} of {len(targets)} — run this again later.')
+        raise typer.Exit(1) from error
+    except remote.RemoteError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+    except basestore.BaseStoreError as error:
+        messages.print(f'[red]{error}[/red]')
+        messages.print('That file is the record of what YouTube last held. Delete it only if you accept that')
+        messages.print('everything in the playlist will then look newly added here, and go back up to YouTube.')
+        raise typer.Exit(1) from error
+
+    if as_json:
+        print_json(
+            [
+                {
+                    'name': pull.playlist.name,
+                    'slug': pull.playlist.slug,
+                    'remote_id': pull.playlist.remote_id,
+                    'video_count': len(pull.playlist.entries),
+                    'order_source': pull.result.order_source,
+                    'pulled_in': pull.result.pulled_in,
+                    'pulled_out': pull.result.pulled_out,
+                    'pending_add': pull.result.pending_add,
+                    'pending_remove': pull.result.pending_remove,
+                }
+                for pull in pulls
+            ]
+        )
+        return
+    for pull in pulls:
+        report_pull(pull)
 
 
 @app.command('update', rich_help_panel=ADMIN)

@@ -15,6 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ypl import basestore
+from ypl import local
 from ypl import paths
 from ypl import player
 from ypl import remote
@@ -72,7 +73,7 @@ def test_bare_invocation_shows_help_rather_than_doing_anything():
     assert 'Usage:' in result.output
 
 
-@pytest.mark.parametrize('command', [['playlists'], ['videos'], ['config']])
+@pytest.mark.parametrize('command', [['playlists'], ['videos'], ['config'], ['remote'], ['plays']])
 def test_every_namespace_shows_help_when_given_no_verb(command):
     """The tree is walkable one token at a time — no hangs, no cryptic errors."""
     result = runner.invoke(app, command)
@@ -848,9 +849,14 @@ HEADERS = 'cookie: __Secure-3PAPISID=aaa; SID=bbb\nx-goog-authuser: 0\n'
 
 
 class FakeBackend:
-    """A stored session, and what YouTube says about it."""
+    """A stored session, and what YouTube says about it.
+
+    Class attributes rather than a constructor argument because the command
+    builds its own backend — the test sets what YouTube holds, then invokes.
+    """
 
     error: Exception | None = None
+    items: list[RemoteItem] = []
 
     def __init__(self, auth_file):
         self.auth_file = auth_file
@@ -859,6 +865,11 @@ class FakeBackend:
         if self.error:
             raise self.error
         return remote.RemoteAccount(name='Chris Birch', handle='@chrisbirch')
+
+    def playlist_items(self, playlist_id):
+        if self.error:
+            raise self.error
+        return list(self.items)
 
 
 @pytest.fixture
@@ -942,3 +953,133 @@ def test_deleting_a_playlist_takes_its_merge_base_with_it(synced):
 
     assert runner.invoke(app, ['playlists', 'delete', 'Sunday', '--yes']).exit_code == 0
     assert basestore.load('sunday') is None
+
+
+def bind(name: str, remote_id: str = 'PLR') -> local.LocalPlaylist:
+    """Put a local playlist in the state a push would leave it in."""
+    playlist = local.load(local.path_for(name))
+    playlist.remote_id = remote_id
+    local.save(playlist, overwrite=True)
+    return playlist
+
+
+@pytest.fixture
+def bound(two_videos, signing_in):
+    """A synced playlist on YouTube, with a base recorded for it."""
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+    bind('Sunday')
+    basestore.save(
+        basestore.Base(
+            slug='sunday',
+            playlist_id='PLR',
+            items=[RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')],
+        )
+    )
+    return signing_in
+
+
+def test_a_pull_applies_what_changed_on_youtube_and_keeps_what_changed_here(bound, monkeypatch):
+    """The whole reconcile: a video deleted there, one added there, one deleted here."""
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid9', set_video_id='h9', title='On A Phone')]
+    monkeypatch.setattr(
+        ytdlp, 'fetch_video', lambda video_id, **kwargs: RemoteVideo(video_id=video_id, title='Whatever', channel='Someone')
+    )
+    assert runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1']).exit_code == 0
+
+    result = runner.invoke(app, ['remote', 'pull', '--json'])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)[0]
+    assert payload['pulled_in'] == ['vid9']
+    assert payload['pulled_out'] == ['vid2']
+    assert payload['pending_remove'] == ['vid1']
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid9']
+
+
+def test_a_video_added_on_a_phone_keeps_the_title_youtube_gave_it(bound):
+    """The mirror has never seen it, and an unlabelled entry plays as a bare URL."""
+    bound.items = [
+        RemoteItem(video_id='vid1', set_video_id='h1'),
+        RemoteItem(video_id='vid2', set_video_id='h2'),
+        RemoteItem(video_id='vid9', set_video_id='h9', title='On A Phone'),
+    ]
+    assert runner.invoke(app, ['remote', 'pull']).exit_code == 0
+    entries = {entry.video_id: entry.title for entry in local.load(local.path_for('Sunday')).entries}
+    assert entries['vid9'] == 'On A Phone'
+
+
+def test_a_pull_records_the_read_as_the_new_base(bound):
+    """Including the handles, which are the only copy of them anywhere."""
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='fresh1')]
+    assert runner.invoke(app, ['remote', 'pull']).exit_code == 0
+
+    recorded = basestore.load('sunday')
+    assert recorded.video_ids == ['vid1']
+    assert recorded.items[0].set_video_id == 'fresh1'
+    assert recorded.playlist_id == 'PLR'
+
+
+def test_pulling_twice_changes_nothing_the_second_time(bound):
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1')]
+    runner.invoke(app, ['remote', 'pull'])
+    first = local.load(local.path_for('Sunday')).video_ids
+
+    result = runner.invoke(app, ['remote', 'pull', '--json'])
+    assert json.loads(result.stdout)[0]['pulled_out'] == []
+    assert local.load(local.path_for('Sunday')).video_ids == first
+
+
+def test_a_pull_leaves_the_file_alone_when_the_base_cannot_be_read(bound):
+    """Refusing is the point: read as absent, every video looks newly added here."""
+    basestore.path_for('sunday').write_text('{not json')
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1')]
+
+    result = runner.invoke(app, ['remote', 'pull'])
+    assert result.exit_code == 1
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2']
+
+
+def test_a_rate_limit_stops_the_run_rather_than_retrying(bound):
+    bound.error = remote.RemoteRateLimitedError('slow down')
+    try:
+        result = runner.invoke(app, ['remote', 'pull'])
+    finally:
+        bound.error = None
+    assert result.exit_code == 1
+    assert 'slow down' in result.output
+
+
+def test_pulling_without_a_session_names_the_command_that_fixes_it(two_videos):
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+    bind('Sunday')
+
+    result = runner.invoke(app, ['remote', 'pull'])
+    assert result.exit_code == 1
+    assert 'ypl remote auth' in result.output
+
+
+def test_pulling_with_nothing_on_youtube_yet_succeeds_and_says_so(two_videos, signing_in):
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+    result = runner.invoke(app, ['remote', 'pull'])
+    assert result.exit_code == 0
+    assert 'Nothing to pull' in result.output
+
+
+def test_naming_a_playlist_that_is_not_on_youtube_yet_is_an_error(two_videos, signing_in):
+    """A sweep passes over it silently; asking for it by name has to answer."""
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+    result = runner.invoke(app, ['remote', 'pull', 'Sunday'])
+    assert result.exit_code == 1
+    assert 'not on YouTube yet' in result.output
+
+
+def test_a_demoted_playlist_is_not_pulled_into(bound):
+    """Pulling would undo the demotion one video at a time."""
+    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1')]
+    runner.invoke(app, ['playlists', 'demote', 'Sunday'])
+
+    assert runner.invoke(app, ['remote', 'pull']).exit_code == 0
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2']
+
+    named = runner.invoke(app, ['remote', 'pull', 'Sunday'])
+    assert named.exit_code == 1
+    assert 'local only' in named.output
