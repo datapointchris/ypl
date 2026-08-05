@@ -19,8 +19,10 @@ from ypl import local
 from ypl import m3u
 from ypl import paths
 from ypl import player
+from ypl import remote
 from ypl import service
 from ypl import ytdlp
+from ypl import ytmusic
 from ypl.models import watch_url
 
 ROOT_HELP = """\
@@ -88,10 +90,30 @@ Examples:
   ypl config path                                 where it would be read from
 """
 
+REMOTE_HELP = """\
+Going back up to YouTube.
+
+Everything else in ypl reads or writes locally. These commands are the only
+ones that change anything on YouTube, and they are deliberately slow: every
+call is throttled, and a rate limit stops the run rather than being retried
+into.
+
+Examples:
+
+  ypl remote auth                                 sign in, once per machine
+"""
+
+AUTH_INSTRUCTIONS = """\
+Sign in at [bold]music.youtube.com[/bold], then in DevTools open the Network tab
+and filter for [bold]browse[/bold]. Click a POST request, copy the whole Request
+Headers block, paste it below, and press Ctrl-D.
+"""
+
 READING = 'Reading (the local mirror)'
 SYNCING = 'Syncing (pulls from YouTube, no API quota)'
 BUILDING = 'Building (writes M3U files here; YouTube only via ypl remote)'
 PLAYING = 'Playing (through mpv)'
+WRITING = 'Writing (the only commands that reach YouTube)'
 ADMIN = 'Admin'
 
 app = typer.Typer(name='ypl', no_args_is_help=True, help=ROOT_HELP)
@@ -99,10 +121,12 @@ playlists_app = typer.Typer(name='playlists', no_args_is_help=True, help=PLAYLIS
 videos_app = typer.Typer(name='videos', no_args_is_help=True, help=VIDEOS_HELP)
 config_app = typer.Typer(name='config', no_args_is_help=True, help=CONFIG_HELP)
 plays_app = typer.Typer(name='plays', no_args_is_help=True, help=PLAYS_HELP)
+remote_app = typer.Typer(name='remote', no_args_is_help=True, help=REMOTE_HELP)
 
 app.add_typer(playlists_app, name='playlists', rich_help_panel=READING)
 app.add_typer(videos_app, name='videos', rich_help_panel=READING)
 app.add_typer(plays_app, name='plays', rich_help_panel=PLAYING)
+app.add_typer(remote_app, name='remote', rich_help_panel=WRITING)
 app.add_typer(config_app, name='config', rich_help_panel=ADMIN)
 
 # Data goes to stdout and nothing else does, so a caller parsing --json never
@@ -921,6 +945,58 @@ def plays_list(
     for row in rows:
         table.add_row(row['played_ts'], row['title'], row['channel'], row['video_id'])
     console.print(table)
+
+
+@remote_app.command('auth')
+def remote_auth(
+    replace: bool = typer.Option(False, '--replace', help='Overwrite a session that is already stored.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Store the YouTube session the write path signs in with.
+
+    Paste the request headers from a signed-in music.youtube.com tab, or pipe
+    them in. They are parsed here, written at 0600, and then used once to ask
+    YouTube whose account they reach — a paste that parses is not yet a session
+    that works.
+    """
+    auth_file = paths.ytmusic_auth_file()
+    if auth_file.exists() and not replace:
+        messages.print(f'[red]{auth_file} already exists.[/red] Pass --replace to sign in again.')
+        raise typer.Exit(1)
+
+    if sys.stdin.isatty():
+        messages.print(AUTH_INSTRUCTIONS)
+    headers_raw = sys.stdin.read()
+
+    try:
+        ytmusic.write_session(headers_raw, auth_file)
+    except remote.RemoteAuthError as error:
+        messages.print(f'[red]Those headers cannot be used.[/red] {error}')
+        raise typer.Exit(2) from error
+    except remote.RemoteError as error:
+        messages.print(f'[red]{error}[/red]')
+        raise typer.Exit(1) from error
+
+    try:
+        account = ytmusic.YtMusicBackend(auth_file).account()
+    except remote.RemoteAuthError as error:
+        # The headers parsed and the cookie does not work, so what was just
+        # written is a credential that can only fail later, further from here.
+        auth_file.unlink(missing_ok=True)
+        messages.print(f'[red]YouTube rejected that session.[/red] {error}')
+        messages.print('Nothing was stored. Copy the headers again from a tab that is signed in.')
+        raise typer.Exit(1) from error
+    except remote.RemoteError as error:
+        # Kept: this is a throttle or a network failure, which says nothing
+        # about the session, and re-copying the headers would not help.
+        messages.print(f'[yellow]Stored, but could not be checked:[/yellow] {error}')
+        raise typer.Exit(1) from error
+
+    if as_json:
+        print_json({'path': str(auth_file), 'account': account.name, 'handle': account.handle})
+        return
+    messages.print(f'Signed in as [bold]{account.name or "an account YouTube did not name"}[/bold] {account.handle}'.strip())
+    messages.print(str(auth_file))
 
 
 @app.command('update', rich_help_panel=ADMIN)

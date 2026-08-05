@@ -43,6 +43,17 @@ def database_file() -> Path:
     return state_dir() / 'ypl.db'
 
 
+def ytmusic_auth_file() -> Path:
+    """The YouTube session `ypl remote` writes through.
+
+    Config rather than state, despite being written by the tool: it is account
+    setup, it survives every re-sync, and deleting it costs a trip to a browser
+    rather than a command. It holds a Google session cookie, so it is written
+    at 0600 and never at the umask's mode.
+    """
+    return config_dir() / 'ytmusic.json'
+
+
 def playlists_dir() -> Path:
     return data_dir() / 'playlists'
 

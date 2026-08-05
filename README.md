@@ -191,9 +191,25 @@ front of a 200-track playlist is one request, not 200.
 
 The backend sits behind an interface, so the Data API remains a one-module swap.
 
+Signing in is a paste, once per machine. There is no OAuth: ytmusicapi's OAuth flow now needs a
+TV-type Google client of your own, which is the Data API project setup this route exists to avoid.
+
+```bash
+ypl remote auth                    # paste the headers, Ctrl-D
+pbpaste | ypl remote auth          # or pipe them in
+```
+
+Sign in at [music.youtube.com](https://music.youtube.com), open DevTools → Network, filter for
+`browse`, click a POST request and copy the whole Request Headers block. They are stored at
+`$XDG_CONFIG_HOME/ypl/ytmusic.json`, mode 0600 — the cookie in there is the entire credential, so
+treat the file as the password it is. `ypl remote auth` then asks YouTube whose account it reaches
+and prints the answer, because a paste that parses is not yet a session that works; one YouTube
+rejects is deleted rather than stored to fail later. `--replace` signs in over a stored session.
+
 ## Not done yet
 
-The `remote` sync commands themselves — the reconcile and the background queue that drains it.
+The reconcile and the background queue that drains it — `ypl remote pull`, `plan`, `push`,
+`apply`. Nothing has written to YouTube yet.
 
 ## License
 

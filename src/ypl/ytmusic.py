@@ -9,17 +9,23 @@ of ypl — every read command, every local playlist operation — keeps working 
 machine where the write path has never been set up.
 """
 
+import os
 from pathlib import Path
 
 from ypl.remote import CREATE_INTERVAL_SECONDS
 from ypl.remote import DEFAULT_PRIVACY
 from ypl.remote import MAX_BATCH
+from ypl.remote import RemoteAccount
 from ypl.remote import RemoteAuthError
 from ypl.remote import RemoteError
 from ypl.remote import RemoteItem
 from ypl.remote import RemoteRateLimitedError
 from ypl.remote import Throttle
 from ypl.remote import batched
+
+# Owner read/write only. The file holds a Google account session cookie, which
+# is the whole credential — anything that can read it is signed in as you.
+SESSION_MODE = 0o600
 
 # What YouTube says when it wants us to slow down. Matched on text because it
 # arrives as a message inside a generic server error rather than as a status.
@@ -31,6 +37,41 @@ AUTH_MARKERS = ('unauthorized', 'not authorized', 'authentication', 'cookie', '4
 def looks_like(message: str, markers: tuple[str, ...]) -> bool:
     lowered = message.lower()
     return any(marker in lowered for marker in markers)
+
+
+def write_session(headers_raw: str, auth_file: Path) -> Path:
+    """Turn request headers pasted out of a browser into a session file.
+
+    ytmusicapi's own `setup` writes the file itself, and it writes it at
+    whatever the umask allows — a session cookie sitting world-readable, even
+    for the moment before a chmod, is not something to hand off. So it is
+    called for its parsing only and the write happens here, with the mode
+    supplied at creation.
+
+    Browser headers rather than OAuth because ytmusicapi's OAuth flow now needs
+    a TV-type Google client of your own, which is the Data API project setup
+    this backend exists to avoid.
+    """
+    try:
+        from ytmusicapi import setup
+    except ImportError as error:  # pragma: no cover - dependency is declared
+        raise RemoteError('ytmusicapi is not installed') from error
+
+    if not headers_raw.strip():
+        raise RemoteAuthError('no request headers were given')
+    try:
+        session = setup(headers_raw=headers_raw)
+    except Exception as error:
+        raise RemoteAuthError(str(error)) from error
+
+    auth_file.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(auth_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SESSION_MODE)
+    with os.fdopen(descriptor, 'w') as handle:
+        # The creation mode above does nothing when the file already exists, and
+        # replacing a session is the common case.
+        os.fchmod(handle.fileno(), SESSION_MODE)
+        handle.write(session)
+    return auth_file
 
 
 class YtMusicBackend:
@@ -80,6 +121,16 @@ class YtMusicBackend:
             return method(*args, **kwargs)
         except Exception as error:
             raise self.translate(error) from error
+
+    def account(self) -> RemoteAccount:
+        """Who the stored session signs in as.
+
+        The one call that distinguishes a headers file that parsed from a
+        session that works: the paste is validated locally, the cookie is only
+        ever tested by YouTube answering.
+        """
+        payload = self.call(self.client.get_account_info)
+        return RemoteAccount(name=payload.get('accountName') or '', handle=payload.get('channelHandle') or '')
 
     def playlist_items(self, playlist_id: str) -> list[RemoteItem]:
         """Read the playlist the way the write path needs it.

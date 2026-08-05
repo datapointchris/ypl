@@ -78,8 +78,26 @@ class RemoteItem:
     title: str = ''
 
 
+@dataclass
+class RemoteAccount:
+    """Who a stored session belongs to."""
+
+    name: str = ''
+    handle: str = ''
+
+
 class Backend(Protocol):
     """What the write path needs from YouTube, and nothing more."""
+
+    def account(self) -> RemoteAccount:
+        """Whose account this session reaches.
+
+        Part of the interface rather than a setup detail: a session file that
+        parses says nothing about whether the cookie still works, so every
+        backend needs one call that answers that, and it may as well be one
+        whose answer is worth printing.
+        """
+        ...
 
     def playlist_items(self, playlist_id: str) -> list[RemoteItem]: ...
 

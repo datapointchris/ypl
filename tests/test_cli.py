@@ -6,6 +6,7 @@ the API rather than a nicety.
 
 import json
 import shutil
+import stat
 import tempfile
 import tomllib
 from pathlib import Path
@@ -15,8 +16,10 @@ from typer.testing import CliRunner
 
 from ypl import paths
 from ypl import player
+from ypl import remote
 from ypl import service
 from ypl import ytdlp
+from ypl import ytmusic
 from ypl.main import app
 from ypl.models import Chapter
 from ypl.models import RemotePlaylist
@@ -837,3 +840,90 @@ def test_a_video_reachable_only_through_a_local_playlist_can_still_be_enriched(m
 
     shown = json.loads(runner.invoke(app, ['videos', 'show', 'vid9', '--json']).stdout)
     assert shown['video']['title'] == 'A Set'
+
+
+HEADERS = 'cookie: __Secure-3PAPISID=aaa; SID=bbb\nx-goog-authuser: 0\n'
+
+
+class FakeBackend:
+    """A stored session, and what YouTube says about it."""
+
+    error: Exception | None = None
+
+    def __init__(self, auth_file):
+        self.auth_file = auth_file
+
+    def account(self):
+        if self.error:
+            raise self.error
+        return remote.RemoteAccount(name='Chris Birch', handle='@chrisbirch')
+
+
+@pytest.fixture
+def signing_in(monkeypatch):
+    """Stand in for the one call `remote auth` makes to YouTube."""
+    monkeypatch.setattr(ytmusic, 'YtMusicBackend', FakeBackend)
+    return FakeBackend
+
+
+def test_signing_in_stores_the_session_and_names_the_account(signing_in):
+    result = runner.invoke(app, ['remote', 'auth', '--json'], input=HEADERS)
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        'path': str(paths.ytmusic_auth_file()),
+        'account': 'Chris Birch',
+        'handle': '@chrisbirch',
+    }
+
+
+def test_the_stored_session_is_not_readable_by_anyone_else(signing_in):
+    """The end-to-end half of the mode test — the command must not widen it."""
+    runner.invoke(app, ['remote', 'auth'], input=HEADERS)
+    assert stat.S_IMODE(paths.ytmusic_auth_file().stat().st_mode) == 0o600
+
+
+def test_signing_in_again_refuses_rather_than_replacing_a_working_session(signing_in):
+    """Re-copying headers is a browser round trip, so the overwrite is asked for."""
+    runner.invoke(app, ['remote', 'auth'], input=HEADERS)
+    stored = paths.ytmusic_auth_file().read_text()
+
+    result = runner.invoke(app, ['remote', 'auth'], input='cookie: other\nx-goog-authuser: 0\n')
+    assert result.exit_code == 1
+    assert '--replace' in result.output
+    assert paths.ytmusic_auth_file().read_text() == stored
+
+
+def test_replace_signs_in_over_the_old_session(signing_in):
+    runner.invoke(app, ['remote', 'auth'], input=HEADERS)
+    result = runner.invoke(app, ['remote', 'auth', '--replace'], input='cookie: newer\nx-goog-authuser: 0\n')
+    assert result.exit_code == 0
+    assert json.loads(paths.ytmusic_auth_file().read_text())['cookie'] == 'newer'
+
+
+def test_headers_that_do_not_parse_are_a_usage_error(signing_in):
+    """Exit 2: the paste was wrong, which is the caller's input rather than a failure."""
+    result = runner.invoke(app, ['remote', 'auth'], input='accept: */*\n')
+    assert result.exit_code == 2
+    assert not paths.ytmusic_auth_file().exists()
+
+
+def test_a_session_youtube_rejects_is_not_left_behind(signing_in):
+    """A stored credential that cannot work would only fail later, further from here."""
+    signing_in.error = remote.RemoteAuthError('cookie expired')
+    try:
+        result = runner.invoke(app, ['remote', 'auth'], input=HEADERS)
+    finally:
+        signing_in.error = None
+    assert result.exit_code == 1
+    assert not paths.ytmusic_auth_file().exists()
+
+
+def test_a_session_that_could_not_be_checked_is_kept(signing_in):
+    """A throttle or a dead network says nothing about the headers."""
+    signing_in.error = remote.RemoteRateLimitedError('slow down')
+    try:
+        result = runner.invoke(app, ['remote', 'auth'], input=HEADERS)
+    finally:
+        signing_in.error = None
+    assert result.exit_code == 1
+    assert paths.ytmusic_auth_file().exists()
