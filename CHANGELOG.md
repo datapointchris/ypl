@@ -1,6 +1,34 @@
 # CHANGELOG
 
 
+## v0.9.0 (2026-08-05)
+
+### Features
+
+- **remote**: Take over the playlists YouTube already holds
+  ([`e2bac6a`](https://github.com/datapointchris/ypl/commit/e2bac6a190f386638416d579ba67df6f71ebce84))
+
+A reconcile only reaches a local file carrying a remote id, and that id was only ever written by a
+  creation ypl performed — so the whole merge layer served the playlists this tool made and none of
+  the ones the account actually has. `ypl remote adopt` writes the file, binds it, and records the
+  read as the base, after which a playlist made in the web player is an ordinary local playlist that
+  happens to already exist.
+
+Written from the write backend's own read rather than from the mirror, which it has to be twice
+  over: the base needs each slot's setVideoId, and a mirror hours old would record videos YouTube no
+  longer holds, which the first push would faithfully put back.
+
+Adopting also makes both stores hold one playlist, and a name matching both was an ambiguity error —
+  so adopting the account would have made every playlist unreachable by name. `known_playlists` now
+  drops a mirrored row whose id a local file is bound to. That retires an existing bug too: a
+  playlist created here, pushed, then re-mirrored by `ypl sync` used to go ambiguous with itself.
+
+The sweep covers what the signed-in account owns, matched through the slug because yt-dlp's channel
+  and YouTube Music's account name agree on nothing else. Someone else's playlist is left out of it
+  — nothing here can write to that — but is still adopted when named, since a collaborative playlist
+  cannot be told apart from it. Liked videos and Watch later are refused either way.
+
+
 ## v0.8.0 (2026-08-05)
 
 ### Features
