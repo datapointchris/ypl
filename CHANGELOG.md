@@ -1,6 +1,32 @@
 # CHANGELOG
 
 
+## v0.5.0 (2026-08-05)
+
+### Features
+
+- **playing**: Change the playlist without naming anything
+  ([`895eb9e`](https://github.com/datapointchris/ypl/commit/895eb9ec24a9086af5c21452ad0a88f5924ae568))
+
+`ypl drop`, `ypl later`, `ypl sooner` act on the playlist you are listening to, on the video that is
+  playing, and take no arguments at all in the ordinary case. The other half of the id problem: the
+  editor buffer handles rearranging eighty videos, and this handles the one you just heard and do
+  not want.
+
+Two facts make that work, and only one of them is stored. Which playlist is on goes in
+  $XDG_STATE_HOME, set by `ypl play` or by `ypl use` for playback ypl has no part in. Where you are
+  in it is read live from mpv's socket, and is simply unavailable when the player is a browser tab
+  or a phone, because YouTube exposes nothing that would answer it.
+
+That asymmetry is why every verb also takes a fragment of a title — `ypl drop wagram`. It is the
+  answer for the case the socket cannot cover, and it is still not an id. A fragment matching two
+  videos lists them and changes nothing.
+
+`drop` sends mpv to the next video as well, since continuing to play what you just deleted is not
+  what dropping it meant, and `--keep-playing` says otherwise. Moving past either end clamps rather
+  than refusing: `ypl later` on the last video is a reasonable thing to type without checking first.
+
+
 ## v0.4.0 (2026-08-05)
 
 ### Features
