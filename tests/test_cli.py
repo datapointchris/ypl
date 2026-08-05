@@ -2176,7 +2176,7 @@ def test_status_stops_short_of_reprinting_a_whole_failed_run():
 
     output = runner.invoke(app, ['status']).output
     assert 'playlist 0: unreadable' in output
-    assert 'and 4 more' in output
+    assert 'and 4 more — ypl status --json' in output
     assert 'playlist 8' not in output
     # The lines the whole command exists to answer still have to be below it.
     assert 'Unenriched' in output
