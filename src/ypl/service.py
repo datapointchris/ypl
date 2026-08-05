@@ -640,6 +640,68 @@ def pullable_playlists() -> list[LocalPlaylist]:
     return [playlist for playlist in local.list_playlists().playlists if playlist.synced and playlist.remote_id]
 
 
+class EntryNotFoundError(LookupError):
+    pass
+
+
+class AmbiguousEntryError(LookupError):
+    def __init__(self, needle: str, candidates: list[dict]):
+        self.needle = needle
+        self.candidates = candidates
+        super().__init__(f'{needle!r} matches {len(candidates)} videos')
+
+
+def find_entry(rows: list[dict], needle: str) -> int:
+    """The position of the one entry a fragment of a title names.
+
+    A fragment rather than an id, because this is what you can type about the
+    thing you are listening to. Exact-ish first: a match on the whole title
+    wins outright, so a playlist holding both a set and its encore does not
+    become unaddressable.
+    """
+    lowered = needle.lower().strip()
+    exact = [row for row in rows if (row.get('title') or '').lower() == lowered]
+    matches = exact or [row for row in rows if lowered in f'{row.get("channel") or ""} {row.get("title") or ""}'.lower()]
+    if not matches:
+        raise EntryNotFoundError(f'nothing in this playlist matches {needle!r}')
+    if len(matches) > 1:
+        raise AmbiguousEntryError(needle, matches)
+    return int(matches[0]['position']) - 1
+
+
+def entry_position(playlist: LocalPlaylist, video_id: str) -> int:
+    """Where a video sits in the playlist, by id.
+
+    The first copy when it appears twice: mpv reports which video is playing
+    and not which slot, so there is nothing better to go on, and the two copies
+    are the same mix either way.
+    """
+    try:
+        return playlist.video_ids.index(video_id)
+    except ValueError as error:
+        raise EntryNotFoundError(f'{video_id} is not in this playlist') from error
+
+
+def drop_entry(playlist: LocalPlaylist, index: int) -> m3u.Entry:
+    dropped = playlist.entries.pop(index)
+    local.save(playlist, overwrite=True)
+    return dropped
+
+
+def move_entry(playlist: LocalPlaylist, index: int, offset: int) -> int:
+    """Shift one entry along the playlist, returning where it ended up.
+
+    Clamped rather than refused at the ends: `ypl later` on the last video is a
+    reasonable thing to type without checking, and moving it as far as it goes
+    is what was meant.
+    """
+    entry = playlist.entries.pop(index)
+    destination = max(0, min(len(playlist.entries), index + offset))
+    playlist.entries.insert(destination, entry)
+    local.save(playlist, overwrite=True)
+    return destination
+
+
 @dataclass
 class Edit:
     """What an edited buffer did to a playlist."""

@@ -185,6 +185,31 @@ It exits 1 when nothing is playing, with nothing on stdout, so a status bar can 
 On Arch, waybar's built-in `mpris` module already shows mpv without any of this — install
 `mpv-mpris` and `ypl play` appears there on its own.
 
+## Changing a playlist while it plays
+
+```bash
+ypl play 'six-hour-work-uptempo-house'   # sets the current playlist
+ypl drop                                  # take the playing video out of it
+ypl later -n 5                            # push it five places back
+ypl sooner                                # or bring it up one
+```
+
+None of those name a video. `drop` acts on whatever mpv has open, and skips to the next video as
+well — continuing to play what you just deleted is not what dropping it meant. `--keep-playing`
+if you would rather it did not.
+
+When playback is somewhere ypl cannot see — a browser tab, the phone — there is no socket to ask,
+so say which one with a fragment of its title instead. Still not an id:
+
+```bash
+ypl use 'six-hour-work-uptempo-house'    # what play would have set
+ypl drop wagram
+ypl later 'salle wagram' -n 10
+```
+
+A fragment matching two videos lists them and changes nothing. Every one of these edits the local
+file, so it goes up to YouTube on the next `ypl remote apply`.
+
 ## What to put on next
 
 ```bash

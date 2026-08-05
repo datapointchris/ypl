@@ -129,6 +129,31 @@ def properties(socket_path: Path, names: list[str]) -> dict[str, object]:
     raise NotPlayingError(f'{socket_path} closed without answering')
 
 
+def command(socket_path: Path, arguments: list[str]) -> None:
+    """Tell mpv to do something, and wait long enough to know it did.
+
+    The reply is read rather than fired and forgotten, because the caller acts
+    on whether it worked: dropping the playing track sends `playlist-next`, and
+    a drop that silently failed to skip leaves you listening to a video you just
+    deleted.
+    """
+    connection = connect(socket_path)
+    try:
+        connection.sendall((json.dumps({'command': arguments, 'request_id': 1}) + '\n').encode())
+        for line in read_lines(connection):
+            payload = json.loads(line)
+            if payload.get('request_id') != 1:
+                continue
+            if payload.get('error') != 'success':
+                raise NotPlayingError(f'mpv refused {arguments[0]}: {payload.get("error")}')
+            return
+    except (OSError, json.JSONDecodeError) as error:
+        raise NotPlayingError(f'lost the connection to {socket_path}') from error
+    finally:
+        connection.close()
+    raise NotPlayingError(f'{socket_path} closed without answering')
+
+
 def connect(socket_path: Path) -> socket.socket:
     if not socket_path.exists():
         raise NotPlayingError(f'nothing is listening on {socket_path}')

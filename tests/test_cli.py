@@ -1376,3 +1376,124 @@ def test_a_mirrored_playlist_cannot_be_edited(synced):
     result = runner.invoke(app, ['playlists', 'edit', 'Get Insights'], input='vid1 A Talk\n')
     assert result.exit_code == 1
     assert 'read-only' in result.output
+
+
+@pytest.fixture
+def current(two_videos):
+    """A local playlist, and ypl told it is the one being listened to."""
+    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
+    runner.invoke(app, ['use', 'Sunday'])
+
+
+def playing(monkeypatch, video_id: str | None) -> None:
+    """Stand in for mpv having a video open, or for mpv not being there."""
+    if video_id is None:
+        monkeypatch.setattr(player, 'properties', lambda *args, **kwargs: (_ for _ in ()).throw(player.NotPlayingError('no socket')))
+        return
+    monkeypatch.setattr(player, 'properties', lambda *args, **kwargs: {'path': f'https://youtu.be/{video_id}'})
+    monkeypatch.setattr(player, 'command', lambda *args, **kwargs: None)
+
+
+def test_the_current_playlist_is_remembered_between_commands(current):
+    result = runner.invoke(app, ['use', '--json'])
+    assert json.loads(result.stdout)['playlist'] == 'Sunday'
+
+
+def test_dropping_takes_out_what_is_playing_with_no_id_typed(current, monkeypatch):
+    playing(monkeypatch, 'vid1')
+
+    result = runner.invoke(app, ['drop', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['video_id'] == 'vid1'
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid2']
+
+
+def test_dropping_skips_it_in_mpv_too(current, monkeypatch):
+    """Continuing to play what you just deleted is not what dropping it meant."""
+    playing(monkeypatch, 'vid1')
+    sent = []
+    monkeypatch.setattr(player, 'command', lambda socket_path, arguments: sent.append(arguments))
+
+    runner.invoke(app, ['drop'])
+    assert sent == [['playlist-next']]
+
+
+def test_keep_playing_leaves_mpv_alone(current, monkeypatch):
+    playing(monkeypatch, 'vid1')
+    sent = []
+    monkeypatch.setattr(player, 'command', lambda socket_path, arguments: sent.append(arguments))
+
+    runner.invoke(app, ['drop', '--keep-playing'])
+    assert sent == []
+
+
+def test_a_fragment_of_a_title_is_enough_when_nothing_is_playing_here(current, monkeypatch):
+    """The answer for playback in a browser, where no socket can say what is on."""
+    playing(monkeypatch, None)
+
+    result = runner.invoke(app, ['drop', 'another', '--json'])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['video_id'] == 'vid2'
+
+
+def test_a_fragment_matching_two_videos_lists_them_rather_than_guessing(current, monkeypatch):
+    playing(monkeypatch, None)
+    runner.invoke(app, ['playlists', 'add', 'Sunday', 'https://youtu.be/vid9'])
+
+    result = runner.invoke(app, ['drop', 'a'])
+    assert result.exit_code == 2
+    assert 'A Talk' in result.output
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2', 'vid9']
+
+
+def test_dropping_with_nothing_playing_and_no_fragment_says_what_to_type(current, monkeypatch):
+    playing(monkeypatch, None)
+
+    result = runner.invoke(app, ['drop'])
+    assert result.exit_code == 2
+    assert 'name part of a title' in result.output
+
+
+def test_later_moves_what_is_playing_down_the_playlist(current, monkeypatch):
+    playing(monkeypatch, 'vid1')
+
+    result = runner.invoke(app, ['later', '--json'])
+    assert json.loads(result.stdout)['position'] == 2
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid2', 'vid1']
+
+
+def test_sooner_is_later_in_reverse(current, monkeypatch):
+    playing(monkeypatch, 'vid2')
+
+    runner.invoke(app, ['sooner'])
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid2', 'vid1']
+
+
+def test_moving_past_the_end_stops_at_the_end(current, monkeypatch):
+    """`ypl later` on the last video is a reasonable thing to type without checking."""
+    playing(monkeypatch, 'vid2')
+
+    result = runner.invoke(app, ['later', '-n', '99', '--json'])
+    assert json.loads(result.stdout)['position'] == 2
+    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2']
+
+
+def test_the_verbs_refuse_when_no_playlist_has_been_chosen(two_videos, monkeypatch):
+    playing(monkeypatch, 'vid1')
+    result = runner.invoke(app, ['drop'])
+    assert result.exit_code == 2
+    assert 'ypl use' in result.output
+
+
+def test_a_video_playing_from_a_different_playlist_says_so(current, monkeypatch):
+    playing(monkeypatch, 'vid9')
+
+    result = runner.invoke(app, ['drop'])
+    assert result.exit_code == 1
+    assert 'Sunday' in result.output
+
+
+def test_editing_with_no_name_edits_the_current_playlist(current):
+    result = runner.invoke(app, ['playlists', 'edit', '--json'], input='https://youtu.be/vid2\n')
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['name'] == 'Sunday'

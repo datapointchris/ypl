@@ -1,5 +1,6 @@
 """The ypl command tree."""
 
+import contextlib
 import json
 import sqlite3
 import sys
@@ -24,6 +25,7 @@ from ypl import paths
 from ypl import player
 from ypl import remote
 from ypl import service
+from ypl import session
 from ypl import ytdlp
 from ypl import ytmusic
 from ypl.models import watch_url
@@ -128,7 +130,7 @@ Paste it below, then press Enter and Ctrl-D.
 READING = 'Reading (the local mirror)'
 SYNCING = 'Syncing (pulls from YouTube, no API quota)'
 BUILDING = 'Building (writes M3U files here; YouTube only via ypl remote)'
-PLAYING = 'Playing (through mpv)'
+PLAYING = 'Listening (playing, and changing what is on while it plays)'
 WRITING = 'Writing (the only commands that reach YouTube)'
 ADMIN = 'Admin'
 
@@ -702,7 +704,7 @@ def playlists_order(
 
 @playlists_app.command('edit', rich_help_panel=BUILDING)
 def playlists_edit(
-    name: str = typer.Argument(..., help='Local playlist to rearrange.'),
+    name: str = typer.Argument(None, help='Local playlist to rearrange. The current one when omitted.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Rearrange a playlist in your editor.
@@ -716,7 +718,7 @@ def playlists_edit(
     stdin instead when something is piped in.
     """
     connection = db.connect()
-    playlist = local_or_exit(connection, name)
+    playlist = current_playlist_or_exit(connection, name)
     rows = service.local_playlist_videos(connection, playlist)
 
     if sys.stdin.isatty():
@@ -952,6 +954,12 @@ def play(
         messages.print(f'[red]{socket_path} is too long for a unix socket[/red] — playing without [bold]ypl now[/bold] support.')
         socket_path = None
 
+    # Playing a local playlist is the clearest possible statement of which one
+    # `drop` and `later` mean. A mirrored one is read-only, so it is not one
+    # those verbs could act on and is deliberately not remembered.
+    if playlist.local:
+        session.remember(playlist.local.name)
+
     messages.print(f'Playing [bold]{playlist.title}[/bold] — {len(rows)} videos')
     try:
         exit_code = player.play([watch_url(row['video_id']) for row in rows], socket_path, arguments)
@@ -1007,6 +1015,151 @@ def now(
     )
     if not track and video and not video['enriched_ts']:
         messages.print('Not enriched — run [bold]ypl enrich[/bold] to get the track instead of the video.')
+
+
+@app.command('use', rich_help_panel=PLAYING)
+def use(
+    name: str = typer.Argument(None, help='Playlist to work on. Prints the current one when omitted.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Set the playlist that `drop`, `later` and `sooner` act on.
+
+    `ypl play` sets this on its own; this is for when playback is happening
+    somewhere ypl cannot see — the YouTube app, or a browser tab.
+    """
+    connection = db.connect()
+    if name is None:
+        chosen = session.current()
+        if not chosen:
+            messages.print('No current playlist. Run [bold]ypl use <name>[/bold] or [bold]ypl play <name>[/bold].')
+            raise typer.Exit(1)
+        if as_json:
+            print_json({'playlist': chosen})
+            return
+        messages.print(f'[bold]{chosen}[/bold]')
+        return
+
+    playlist = local_or_exit(connection, name)
+    session.remember(playlist.name)
+    if as_json:
+        print_json({'playlist': playlist.name, 'video_count': len(playlist.entries)})
+        return
+    messages.print(f'Working on [bold]{playlist.name}[/bold] — {len(playlist.entries)} videos')
+
+
+def current_playlist_or_exit(connection: sqlite3.Connection, name: str | None) -> local.LocalPlaylist:
+    chosen = name or session.current()
+    if not chosen:
+        messages.print('[red]No current playlist.[/red] Run [bold]ypl use <name>[/bold], or pass --playlist.')
+        raise typer.Exit(2)
+    return local_or_exit(connection, chosen)
+
+
+def playing_video_id() -> str:
+    """What mpv has open, or '' when it is not the thing playing."""
+    try:
+        state = player.properties(paths.mpv_socket(), ['path'])
+    except player.NotPlayingError:
+        return ''
+    return m3u.video_id_from(str(state['path'] or '')) or ''
+
+
+def target_entry_or_exit(connection: sqlite3.Connection, playlist: local.LocalPlaylist, match: str | None) -> int:
+    """Which entry a verb means: the one named, or the one playing."""
+    rows = service.local_playlist_videos(connection, playlist)
+    if match:
+        try:
+            return service.find_entry(rows, match)
+        except service.AmbiguousEntryError as error:
+            messages.print(f'[red]{error}:[/red]')
+            for candidate in error.candidates:
+                messages.print(f'  {candidate["title"]}')
+            raise typer.Exit(2) from error
+        except service.EntryNotFoundError as error:
+            messages.print(f'[red]{error}[/red]')
+            raise typer.Exit(1) from error
+
+    video_id = playing_video_id()
+    if not video_id:
+        messages.print('[red]Nothing is playing through ypl,[/red] so name part of a title: [bold]ypl drop wagram[/bold]')
+        raise typer.Exit(2)
+    try:
+        return service.entry_position(playlist, video_id)
+    except service.EntryNotFoundError as error:
+        messages.print(f'[red]{error}[/red] — is [bold]{playlist.name}[/bold] the playlist you are listening to?')
+        raise typer.Exit(1) from error
+
+
+def report_after_change(playlist: local.LocalPlaylist) -> None:
+    if playlist.synced:
+        messages.print('Run [bold]ypl remote plan[/bold] to see what that means for YouTube')
+
+
+@app.command('drop', rich_help_panel=PLAYING)
+def drop(
+    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.'),
+    playlist_name: str = typer.Option(None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.'),
+    keep_playing: bool = typer.Option(False, '--keep-playing', help='Do not skip it in mpv.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Take the playing video out of the playlist.
+
+    Names no id: it is whatever mpv has open, or whatever fragment of a title
+    you can type. mpv skips to the next video as well, since continuing to play
+    what you just deleted is not what dropping it meant.
+    """
+    connection = db.connect()
+    playlist = current_playlist_or_exit(connection, playlist_name)
+    index = target_entry_or_exit(connection, playlist, match)
+    was_playing = playlist.entries[index].video_id == playing_video_id()
+    dropped = service.drop_entry(playlist, index)
+
+    if was_playing and not keep_playing:
+        # Best effort: the video is already out of the playlist file, and mpv
+        # having gone away between the two is not a reason to report a failure.
+        with contextlib.suppress(player.NotPlayingError):
+            player.command(paths.mpv_socket(), ['playlist-next'])
+
+    if as_json:
+        print_json({'playlist': playlist.name, 'video_id': dropped.video_id, 'video_count': len(playlist.entries)})
+        return
+    messages.print(f'Dropped [bold]{dropped.title or dropped.video_id}[/bold] — {len(playlist.entries)} left')
+    report_after_change(playlist)
+
+
+def shift(connection: sqlite3.Connection, playlist_name: str | None, match: str | None, offset: int, as_json: bool) -> None:
+    playlist = current_playlist_or_exit(connection, playlist_name)
+    index = target_entry_or_exit(connection, playlist, match)
+    entry = playlist.entries[index]
+    destination = service.move_entry(playlist, index, offset)
+
+    if as_json:
+        print_json({'playlist': playlist.name, 'video_id': entry.video_id, 'position': destination + 1})
+        return
+    messages.print(f'[bold]{entry.title or entry.video_id}[/bold] is now #{destination + 1} of {len(playlist.entries)}')
+    report_after_change(playlist)
+
+
+@app.command('later', rich_help_panel=PLAYING)
+def later(
+    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.'),
+    count: int = typer.Option(1, '--count', '-n', help='How many places to move it back.'),
+    playlist_name: str = typer.Option(None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Push a video further down the playlist."""
+    shift(db.connect(), playlist_name, match, count, as_json)
+
+
+@app.command('sooner', rich_help_panel=PLAYING)
+def sooner(
+    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.'),
+    count: int = typer.Option(1, '--count', '-n', help='How many places to move it up.'),
+    playlist_name: str = typer.Option(None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """Bring a video further up the playlist."""
+    shift(db.connect(), playlist_name, match, -count, as_json)
 
 
 @app.command('next', rich_help_panel=PLAYING)
