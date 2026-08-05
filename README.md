@@ -22,7 +22,7 @@ anything back to YouTube is a separate, deliberate, queued act.
 ## Install
 
 ```bash
-uv tool install 'ypl @ git+https://github.com/datapointchris/youtube-playlists.git@<newest release tag>'
+uv tool install 'ypl @ git+https://github.com/datapointchris/ypl.git@<newest release tag>'
 uv tool install .    # from a checkout, for development
 ```
 

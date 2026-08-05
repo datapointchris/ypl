@@ -147,9 +147,7 @@ console = Console(highlight=False)
 # handle width themselves.
 messages = Console(stderr=True, highlight=False, soft_wrap=True)
 
-# `repo` is stated because it defaults to the tool name, and the releases this
-# reads are published by youtube-playlists rather than by a repo called ypl.
-UPDATE_CONFIG = UpdateConfig(tool='ypl', owner='datapointchris', repo='youtube-playlists')
+UPDATE_CONFIG = UpdateConfig(tool='ypl', owner='datapointchris')
 
 
 @app.callback()

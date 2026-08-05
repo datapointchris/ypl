@@ -1,8 +1,8 @@
 [project]
-# The distribution is named for the command, not for the repository. uv keys a
-# tool's receipt directory on the distribution name and pyselfupdate reads the
-# running version from it, so a distribution called `youtube-playlists` would
-# install a `ypl` whose own `update` could not find itself.
+# The distribution, the command, the module and the repository are all `ypl`.
+# uv keys a tool's receipt directory on the distribution name and pyselfupdate
+# reads the running version from it, so a distribution named anything else
+# installs a `ypl` whose own `update` cannot find itself.
 name = "ypl"
 version = "0.1.0"
 description = "Organize YouTube music playlists of long DJ mixes."
