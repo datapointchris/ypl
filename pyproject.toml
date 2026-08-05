@@ -1,49 +1,25 @@
-[tool.poetry]
+[project]
 name = "youtube-playlists"
 version = "0.1.0"
-description = ""
-authors = ["Chris Birch <datapointchris@gmail.com>"]
+description = "Organize YouTube music playlists of long DJ mixes."
+authors = [{ name = "Chris Birch", email = "datapointchris@gmail.com" }]
 license = "MIT"
 readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "google-auth-oauthlib>=1.2.1",
+    "google-api-python-client>=2.146.0",
+]
 
-[tool.poetry.dependencies]
-python = "^3.12"
-dataset = "^1.6.2"
-google-auth-oauthlib = "^1.2.1"
-google-api-python-client = "^2.146.0"
-
-
-[tool.poetry.group.dev.dependencies]
-ipykernel = "^6.29.5"
-ipywidgets = "^8.1.5"
-black = "^24.8.0"
-flake8 = "^7.1.1"
-pytest = "^8.3.3"
-pre-commit = "^3.8.0"
-pytest-cov = "^5.0.0"
-bandit = "^1.7.9"
-mypy = "^1.11.2"
-isort = "^5.13.2"
+[dependency-groups]
+dev = [
+    "pytest>=8.3.3",
+    "pytest-cov>=5.0.0",
+    "pre-commit>=3.8.0",
+    "mypy>=1.11.2",
+]
 
 # ---------- Configurations ---------- #
-
-[tool.bandit]
-exclude_dirs = ["tests", "scripts"]
-skips = ["B311"]
-
-[tool.black]
-line-length = 120
-skip-string-normalization = true
-exclude = '''
-(
-/alembic
-| .git
-| .mypy_cache
-| .venv
-| build
-| dist
-)
-'''
 
 [tool.codespell]
 skip = '*.css.map,*.ipynb'
@@ -62,23 +38,80 @@ extend_skip = [".md", ".json"]
 [tool.mypy]
 pretty = true
 ignore_missing_imports = true
-# strict = true
-allow_untyped_defs = true
 check_untyped_defs = false
 warn_return_any = false
 
-[tool.refurb]
-enable_all = true
-
 [tool.ruff]
-line-length = 120
+line-length = 140
 ignore = []
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "I",    # isort
+]
+ignore = [
+    "SIM108",  # ternary operator — often less readable
+]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "env.py" = ["F401"]
 
 
+[tool.ruff.lint.isort]
+force-single-line = true
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+
+[tool.pyright]
+typeCheckingMode = "standard"
+analyzeUnannotatedFunctions = true
+
+[tool.pytest.ini_options]
+addopts = "-vv"
+minversion = "8.0"
+testpaths = ["tests"]
+
+[tool.forge]
+# Keys the standard owns, written by `forge dies run maintenance/sync-pyproject.sh`.
+# Dropping one from the template removes it here on the next sync; a key absent
+# from this list belongs to the project and is never touched. Do not hand-edit.
+managed = [
+    ["ruff", "line-length"],
+    ["ruff", "format", "quote-style"],
+    ["ruff", "format", "indent-style"],
+    ["ruff", "format", "skip-magic-trailing-comma"],
+    ["ruff", "format", "line-ending"],
+    ["ruff", "format", "docstring-code-format"],
+    ["ruff", "lint", "select"],
+    ["ruff", "lint", "ignore"],
+    ["ruff", "lint", "isort", "force-single-line"],
+    ["ruff", "lint", "per-file-ignores", "__init__.py"],
+    ["mypy", "pretty"],
+    ["mypy", "ignore_missing_imports"],
+    ["mypy", "check_untyped_defs"],
+    ["mypy", "warn_return_any"],
+    ["pyright", "typeCheckingMode"],
+    ["pyright", "analyzeUnannotatedFunctions"],
+    ["codespell", "check-filenames"],
+    ["pytest", "ini_options", "addopts"],
+    ["pytest", "ini_options", "minversion"],
+    ["pytest", "ini_options", "testpaths"],
+]
+
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["uv_build>=0.9.13,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "youtube_playlists"
+module-root = ""
