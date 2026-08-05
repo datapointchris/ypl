@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v0.7.1 (2026-08-05)
+
+### Bug Fixes
+
+- **auth**: One login, not two
+  ([`5368669`](https://github.com/datapointchris/ypl/commit/5368669c22d5e8f9b0a3d514ba2838b8235ac8a4))
+
+`ypl remote auth --browser safari` signed in, and `ypl sync` then said it had nothing to read. Both
+  were working exactly as built, which was the problem: auth stored the YouTube Music session, every
+  read borrows cookies through yt-dlp instead, and nothing connected the two — so the tool held two
+  unrelated ideas of being logged in and signing in only ever set one.
+
+Signing in now records which browser it read from, beside the session file it wrote, and every read
+  falls back to it. An explicit --browser still wins, then the config, then this. A `sync --browser`
+  that came back with playlists records it too, since that also proves the browser holds a session.
+
+The config keeps precedence over what was inferred: it is the setting a person wrote down.
+
+
 ## v0.7.0 (2026-08-05)
 
 ### Bug Fixes
