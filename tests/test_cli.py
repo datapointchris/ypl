@@ -15,6 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ypl import basestore
+from ypl import config
 from ypl import db
 from ypl import local
 from ypl import main
@@ -22,6 +23,7 @@ from ypl import paths
 from ypl import player
 from ypl import remote
 from ypl import service
+from ypl import session
 from ypl import throttle
 from ypl import ytdlp
 from ypl import ytmusic
@@ -953,6 +955,7 @@ def test_signing_in_stores_the_session_and_names_the_account(signing_in):
         'path': str(paths.ytmusic_auth_file()),
         'account': 'Chris Birch',
         'handle': '@chrisbirch',
+        'browser': '',
     }
 
 
@@ -1678,3 +1681,35 @@ def test_completion_answers_with_nothing_rather_than_raising(monkeypatch):
 
 def test_completion_offers_nothing_when_no_playlist_is_current(two_videos):
     assert main.complete_entry('') == []
+
+
+def test_signing_in_from_a_browser_teaches_the_reads_which_browser_it_was(signing_in, monkeypatch):
+    """Two subsystems, one login. Signing in once should not have to be told twice."""
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'x'})
+    runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+
+    assert session.browser() == 'safari'
+    assert main.reading_browser(config.Config()) == 'safari'
+
+
+def test_a_bare_sync_uses_the_browser_signed_in_with(account, signing_in, monkeypatch):
+    """The bug this fixes: logged in, and `ypl sync` said it had nothing to read."""
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'x'})
+    runner.invoke(app, ['remote', 'auth', '--browser', 'firefox'])
+
+    result = runner.invoke(app, ['sync', '--json'])
+    assert result.exit_code == 0
+    assert len(json.loads(result.stdout)) == 2
+
+
+def test_a_browser_that_worked_for_a_sync_is_remembered_too(account):
+    """Naming it once is enough, whichever command was told."""
+    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
+    assert session.browser() == 'safari'
+    assert runner.invoke(app, ['sync', '--json']).exit_code == 0
+
+
+def test_the_config_still_wins_over_what_was_remembered(monkeypatch):
+    """It is the setting a person wrote down; nothing inferred should override it."""
+    monkeypatch.setattr(session, 'browser', lambda: 'safari')
+    assert main.reading_browser(config.Config(cookies_from_browser='firefox')) == 'firefox'

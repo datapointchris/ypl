@@ -242,6 +242,18 @@ def timestamp_words(seconds: int | None) -> str:
     return f'{hours}:{minutes:02d}:{secs:02d}' if hours else f'{minutes}:{secs:02d}'
 
 
+def reading_browser(settings: config.Config, override: str | None = None) -> str | None:
+    """Which browser's cookies a read should borrow.
+
+    An explicit flag wins, then the config, then whatever browser signing in
+    last worked with. That last step is the one that matters: `ypl remote auth`
+    proves a browser holds a YouTube session, and a tool that then asks you to
+    tell it the same thing again in a config file is asking you to log in
+    twice.
+    """
+    return override or settings.cookies_from_browser or session.browser() or None
+
+
 def load_config_or_exit() -> config.Config:
     """A broken config is a usage error, not a crash — it got that way by hand."""
     try:
@@ -388,16 +400,17 @@ def sync(
     connection = db.connect()
 
     if url is None:
-        source = browser or settings.cookies_from_browser
+        source = reading_browser(settings, browser)
         if not source:
             messages.print('[red]Nothing to sync from.[/red] Give a playlist URL, or name a browser to read your account:')
-            messages.print('  [bold]ypl sync --browser safari[/bold]')
-            messages.print('  [bold]ypl config init[/bold] then set [bold]cookies_from_browser[/bold] to make it the default')
+            messages.print('  [bold]ypl sync --browser safari[/bold]  — remembered afterwards, so once is enough')
+            messages.print('  [bold]ypl remote auth --browser safari[/bold]  — signs in for writing too')
             raise typer.Exit(2)
 
         if not as_json:
             messages.print('Reading your playlists...')
         result = sync_account_or_exit(connection, source, limit, quiet=as_json)
+        session.remember_browser(source)
         if as_json:
             print_json(
                 [
@@ -413,7 +426,7 @@ def sync(
         return
 
     try:
-        playlist = service.sync_playlist(connection, url, cookies_from_browser=settings.cookies_from_browser)
+        playlist = service.sync_playlist(connection, url, cookies_from_browser=reading_browser(settings, browser))
     except ytdlp.YtdlpUnavailableError as error:
         messages.print(f'[red]{error}[/red]')
         raise typer.Exit(1) from error
@@ -480,7 +493,7 @@ def enrich(
             status.update(f'[{index}/{len(video_ids)}] {video_id}')
             pace.wait()
             try:
-                tracks = service.enrich_video(connection, video_id, cookies_from_browser=settings.cookies_from_browser)
+                tracks = service.enrich_video(connection, video_id, cookies_from_browser=reading_browser(settings))
             except ytdlp.YtdlpRateLimitedError as error:
                 stopped = str(error).splitlines()[-1] if str(error) else 'YouTube asked us to slow down'
                 break
@@ -1438,7 +1451,7 @@ def remote_auth(
         messages.print(f'[red]{auth_file} already exists.[/red] Pass --replace to sign in again.')
         raise typer.Exit(1)
 
-    source = browser or load_config_or_exit().cookies_from_browser
+    source = browser or reading_browser(load_config_or_exit())
     if source:
         headers_raw = headers_from_browser_or_exit(source)
     else:
@@ -1470,8 +1483,14 @@ def remote_auth(
         messages.print(f'[yellow]Stored, but could not be checked:[/yellow] {error}')
         raise typer.Exit(1) from error
 
+    if source:
+        # Every read borrows cookies through yt-dlp rather than through this
+        # session, so a browser that just proved it holds one is exactly what
+        # `ypl sync` needs to know and had no way of learning.
+        session.remember_browser(source)
+
     if as_json:
-        print_json({'path': str(auth_file), 'account': account.name, 'handle': account.handle})
+        print_json({'path': str(auth_file), 'account': account.name, 'handle': account.handle, 'browser': source or ''})
         return
     messages.print(f'Signed in as [bold]{account.name or "an account YouTube did not name"}[/bold] {account.handle}'.strip())
     messages.print(str(auth_file))

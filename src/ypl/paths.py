@@ -43,6 +43,17 @@ def database_file() -> Path:
     return state_dir() / 'ypl.db'
 
 
+def auth_file() -> Path:
+    """What ypl learned while signing in, beside the session it learned it from.
+
+    Only the browser, so far. It sits in the config directory rather than in
+    state because it is part of account setup and because deleting it should be
+    as deliberate as deleting the session next to it — losing it silently would
+    turn a working `ypl sync` back into one that says it has nothing to read.
+    """
+    return config_dir() / 'auth.json'
+
+
 def ytmusic_auth_file() -> Path:
     """The YouTube session `ypl remote` writes through.
 
