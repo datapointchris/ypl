@@ -893,16 +893,6 @@ class SyncRun:
     def changed(self) -> bool:
         return bool(self.adopted or self.reconciled or self.pushed or self.enriched)
 
-    @property
-    def in_sync(self) -> bool:
-        """Whether anything is still owed after this run.
-
-        What makes the log readable at a glance: a run that changed nothing and
-        left nothing over is the steady state, and one that stopped with work
-        remaining is the next run's job rather than a failure.
-        """
-        return not self.unenriched and not self.stopped and not self.failures
-
     def payload(self) -> dict:
         """The line this run leaves in the log."""
         return {
