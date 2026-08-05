@@ -394,6 +394,7 @@ def sync(
 def enrich(
     playlist: str = typer.Option(None, '--playlist', '-p', help='Limit to one playlist, by title or id.'),
     limit: int = typer.Option(None, '--limit', '-n', help='How many videos to fetch this run.'),
+    everything: bool = typer.Option(False, '--all', help='Keep going until nothing is left, however long that takes.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Fetch each video in full and parse its tracklist.
@@ -401,11 +402,16 @@ def enrich(
     Chapters where a video has them, timestamped description lines where it does
     not. One request per video, so this is the slow half — it is resumable, and
     a video already enriched is skipped.
+
+    --all is what a whole library needs before anything can be curated from it,
+    and it is measured in hours rather than minutes. Stopping it costs nothing:
+    every video enriched is already stored.
     """
     settings = load_config_or_exit()
     connection = db.connect()
     resolved = resolve_or_exit(connection, playlist) if playlist else None
-    video_ids = service.unenriched_for(connection, resolved, limit or settings.enrich_batch_size)
+    batch = None if everything else limit or settings.enrich_batch_size
+    video_ids = service.unenriched_for(connection, resolved, batch)
     if not video_ids:
         messages.print('Nothing left to enrich.')
         if as_json:
@@ -834,6 +840,72 @@ def playlists_delete(
         typer.confirm(f'Delete {playlist.name} ({len(playlist.entries)} videos) at {playlist.path}?', abort=True)
     service.delete_local_playlist(playlist)
     messages.print(f'Deleted {playlist.path}')
+
+
+@videos_app.command('list', rich_help_panel=READING)
+def videos_list(
+    playlist: str = typer.Option(None, '--playlist', '-p', help='Only videos in this playlist.'),
+    artist: str = typer.Option(None, '--artist', '-a', help='Only videos with a track by an artist matching this.'),
+    min_minutes: int = typer.Option(None, '--min-minutes', help='Only videos at least this long.'),
+    max_minutes: int = typer.Option(None, '--max-minutes', help='Only videos at most this long.'),
+    sort: str = typer.Option('longest', '--sort', help=f'One of: {", ".join(service.LIBRARY_SORT_CLAUSES)}.'),
+    limit: int = typer.Option(None, '--limit', '-n', help='Show at most this many.'),
+    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+) -> None:
+    """The whole library, one row per mix, with the artists inside it.
+
+    The read curation runs on. A mix cannot be chosen from its title and is far
+    too long to hand over whole, so each one is collapsed to what decides
+    whether it belongs in a set: how long it is, whose channel it came from,
+    which of your playlists hold it, and its artists, commonest first.
+
+      ypl videos list --json --min-minutes 60 | claude -p 'pick six hours of uptempo house'
+
+    Nothing here says "house" or "120bpm" — a chapter marker never does. What
+    says it is knowing what those artists sound like, which is why this hands
+    over the artists rather than trying to label the genre.
+    """
+    if sort not in service.LIBRARY_SORT_CLAUSES:
+        raise typer.BadParameter(
+            f'{sort!r} is not a sort here — choose one of: {", ".join(service.LIBRARY_SORT_CLAUSES)}', param_hint='--sort'
+        )
+    connection = db.connect()
+    resolved = resolve_or_exit(connection, playlist) if playlist else None
+    rows = service.library_videos(
+        connection,
+        playlist_id=resolved.identifier if resolved and resolved.kind == service.REMOTE else None,
+        artist=artist,
+        min_seconds=min_minutes * 60 if min_minutes else None,
+        max_seconds=max_minutes * 60 if max_minutes else None,
+        sort=sort,
+        limit=limit,
+    )
+    if as_json:
+        print_json(rows)
+        return
+    if not rows:
+        messages.print('Nothing matches. [bold]ypl sync[/bold] first, or loosen the filters.')
+        return
+
+    total = sum(row['duration_seconds'] or 0 for row in rows)
+    table = Table(title=f'{len(rows)} videos, {timestamp_words(total)}')
+    table.add_column('Title')
+    table.add_column('Channel')
+    table.add_column('Length', justify='right')
+    table.add_column('Tracks', justify='right')
+    table.add_column('Artists')
+    for row in rows:
+        table.add_row(
+            row['title'],
+            row['channel'],
+            duration_words(row['duration_seconds']),
+            str(row['track_count']),
+            ', '.join(row['artists'][:3]),
+        )
+    console.print(table)
+    unenriched = sum(1 for row in rows if not row['enriched_ts'])
+    if unenriched:
+        messages.print(f'{unenriched} have no tracklist yet — [bold]ypl enrich --all[/bold] is what fills them in')
 
 
 # YouTube video ids are base64url, so roughly one in thirty starts with a

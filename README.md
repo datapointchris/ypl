@@ -185,6 +185,45 @@ It exits 1 when nothing is playing, with nothing on stdout, so a status bar can 
 On Arch, waybar's built-in `mpris` module already shows mpv without any of this — install
 `mpv-mpris` and `ypl play` appears there on its own.
 
+## Building a playlist from what you have
+
+```bash
+ypl enrich --all                                  # tracklists for the whole library, once
+ypl videos list --min-minutes 60                  # the mixes long enough to work to
+ypl videos list --artist 'black coffee'           # everything he appears in, anywhere
+```
+
+`ypl videos list --json` is the read curation runs on. A mix cannot be chosen from its title, and
+is far too long to hand over whole — forty tracks each across a library of thousands is megabytes
+— so each video collapses to what decides whether it belongs in a set:
+
+```json
+{
+  "video_id": "aaaaaaaaaaa",
+  "title": "Shimza at Citadelle de Sisteron",
+  "channel": "Cercle",
+  "duration_seconds": 7533,
+  "track_count": 24,
+  "artists": ["Black Coffee", "Shimza", "Da Capo"],
+  "playlists": ["BE HAPPY"],
+  "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa"
+}
+```
+
+Nothing there says "house" or "124bpm", and nothing ever will — a chapter marker does not carry
+genre. What says it is knowing what those artists sound like, which is why this hands over the
+artists rather than pretending to label the mix. The playlists a video already sits in are carried
+for the same reason: you named those, so they are a judgement that already exists.
+
+The loop is three commands, and the middle one is a prompt:
+
+```bash
+ypl videos list --json --min-minutes 60 > library.json
+# ...Claude picks six hours of it and writes the URLs out...
+cat chosen.txt | ypl playlists create 'six-hour-work-uptempo-house'
+ypl playlists edit 'six-hour-work-uptempo-house'   # the header totals the running time
+```
+
 ## Changing a playlist while it plays
 
 ```bash

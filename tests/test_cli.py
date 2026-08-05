@@ -257,6 +257,15 @@ def test_every_sort_the_cli_accepts_is_implemented_for_both_kinds_of_playlist():
     assert set(service.SORT_CLAUSES) == set(service.LOCAL_SORT_KEYS) | {'position', 'random'}
 
 
+def test_the_library_invents_no_sort_names_of_its_own():
+    """One vocabulary, minus the name that means nothing across playlists.
+
+    A video's position is a fact about a slot in one playlist, and the library
+    holds videos sitting in several.
+    """
+    assert set(service.LIBRARY_SORT_CLAUSES) == set(service.SORT_CLAUSES) - {'position'}
+
+
 @pytest.fixture
 def built(synced):
     """A local playlist copied out of the mirrored one."""
@@ -1497,3 +1506,76 @@ def test_editing_with_no_name_edits_the_current_playlist(current):
     result = runner.invoke(app, ['playlists', 'edit', '--json'], input='https://youtu.be/vid2\n')
     assert result.exit_code == 0
     assert json.loads(result.stdout)['name'] == 'Sunday'
+
+
+@pytest.fixture
+def enriched_library(two_videos, monkeypatch):
+    """Two mixes with real tracklists, which is what curation reads."""
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_video',
+        lambda video_id, **kwargs: RemoteVideo(
+            video_id=video_id,
+            title='A Talk' if video_id == 'vid1' else 'Another',
+            channel='Cercle',
+            duration_seconds=7200 if video_id == 'vid1' else 600,
+            chapters=[Chapter(start_seconds=0, end_seconds=600, title='Black Coffee - Wish You Were Here')]
+            if video_id == 'vid1'
+            else [Chapter(start_seconds=0, end_seconds=300, title='Bonobo - Kerala')],
+        ),
+    )
+    runner.invoke(app, ['enrich', '--all'])
+
+
+def test_the_library_hands_over_the_artists_inside_each_mix(enriched_library):
+    """The whole point: a mix cannot be chosen from its title."""
+    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json']).stdout)
+    by_id = {row['video_id']: row for row in payload}
+    assert by_id['vid1']['artists'] == ['Black Coffee']
+    assert by_id['vid2']['artists'] == ['Bonobo']
+
+
+def test_the_library_says_which_of_your_playlists_hold_each_mix(enriched_library):
+    """Your own playlist names are a label you already applied."""
+    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json']).stdout)
+    assert payload[0]['playlists'] == ['More']
+
+
+def test_the_library_can_be_filtered_to_mixes_long_enough_for_a_work_set(enriched_library):
+    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json', '--min-minutes', '60']).stdout)
+    assert [row['video_id'] for row in payload] == ['vid1']
+
+
+def test_the_library_can_be_filtered_by_an_artist_inside_the_mix(enriched_library):
+    """Not the channel — someone who appears in a tracklist an hour in."""
+    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json', '--artist', 'bonobo']).stdout)
+    assert [row['video_id'] for row in payload] == ['vid2']
+
+
+def test_the_library_sorts_longest_first_so_a_six_hour_set_is_choosable(enriched_library):
+    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json']).stdout)
+    assert [row['video_id'] for row in payload] == ['vid1', 'vid2']
+
+
+def test_position_is_not_a_sort_the_library_offers(enriched_library):
+    result = runner.invoke(app, ['videos', 'list', '--sort', 'position'])
+    assert result.exit_code == 2
+
+
+def test_the_library_carries_urls_so_a_selection_pipes_straight_into_a_playlist(enriched_library):
+    """This is the whole curation loop: list, choose, create."""
+    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json', '--min-minutes', '60']).stdout)
+    chosen = '\n'.join(row['url'] for row in payload)
+
+    result = runner.invoke(app, ['playlists', 'create', 'Uptempo Work', '--json'], input=chosen)
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)['video_count'] == 1
+
+
+def test_enrich_all_does_not_stop_at_the_batch_size(two_videos, monkeypatch):
+    monkeypatch.setattr(ytdlp, 'fetch_video', lambda video_id, **kwargs: RemoteVideo(video_id=video_id, title='A Mix', channel='Cercle'))
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text('enrich_batch_size = 1\n')
+
+    result = runner.invoke(app, ['enrich', '--all', '--json'])
+    assert json.loads(result.stdout)['enriched'] == 2

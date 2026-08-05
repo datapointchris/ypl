@@ -28,6 +28,7 @@ from ypl.local import LocalPlaylist
 from ypl.models import PlaylistRef
 from ypl.models import RemotePlaylist
 from ypl.models import Track
+from ypl.models import watch_url
 from ypl.remote import Backend
 from ypl.remote import RemoteItem
 
@@ -967,6 +968,126 @@ SORT_CLAUSES = {
     'title': 'v.title COLLATE NOCASE ASC, pv.position ASC',
     'random': 'RANDOM()',
 }
+
+
+# The same vocabulary, minus the one name that means nothing across playlists:
+# a video's position is a fact about a slot in one playlist, and the library
+# holds videos that sit in several. Every other name is the same sort it is
+# everywhere else, which is what a test asserts.
+LIBRARY_SORT_CLAUSES = {
+    'oldest': 'v.upload_date ASC NULLS LAST, v.title COLLATE NOCASE ASC',
+    'newest': 'v.upload_date DESC NULLS LAST, v.title COLLATE NOCASE ASC',
+    'longest': 'v.duration_seconds DESC NULLS LAST, v.title COLLATE NOCASE ASC',
+    'shortest': 'v.duration_seconds ASC NULLS LAST, v.title COLLATE NOCASE ASC',
+    'title': 'v.title COLLATE NOCASE ASC',
+    'random': 'RANDOM()',
+}
+
+
+def artists_by_video(connection: sqlite3.Connection) -> dict[str, list[str]]:
+    """Every video's artists, commonest first.
+
+    Read whole rather than filtered to the videos in hand: the tracks table of
+    a personal library is tens of thousands of rows, one scan of it is
+    milliseconds, and the alternative is chunking an `IN` clause around
+    SQLite's parameter limit for no measurable gain.
+    """
+    rows = connection.execute(
+        """
+        SELECT video_id, artist, COUNT(*) AS appearances
+        FROM tracks
+        WHERE artist IS NOT NULL AND artist != ''
+        GROUP BY video_id, artist
+        ORDER BY appearances DESC, artist COLLATE NOCASE ASC
+        """
+    )
+    artists: dict[str, list[str]] = {}
+    for row in rows:
+        artists.setdefault(row['video_id'], []).append(row['artist'])
+    return artists
+
+
+def playlists_by_video(connection: sqlite3.Connection) -> dict[str, list[str]]:
+    """Which playlists hold each video.
+
+    Worth carrying because the names are yours: a mix sitting in "BE HAPPY"
+    has been labelled by you already, and that is a stronger signal about it
+    than anything the metadata says.
+    """
+    rows = connection.execute(
+        """
+        SELECT pv.video_id, p.title
+        FROM playlist_videos pv
+        JOIN playlists p ON p.playlist_id = pv.playlist_id
+        ORDER BY p.title COLLATE NOCASE ASC
+        """
+    )
+    titles: dict[str, list[str]] = {}
+    for row in rows:
+        held = titles.setdefault(row['video_id'], [])
+        if row['title'] not in held:
+            held.append(row['title'])
+    return titles
+
+
+def library_videos(
+    connection: sqlite3.Connection,
+    playlist_id: str | None = None,
+    artist: str | None = None,
+    min_seconds: int | None = None,
+    max_seconds: int | None = None,
+    sort: str = 'longest',
+    limit: int | None = None,
+) -> list[dict]:
+    """The whole library as one row per video, summarized enough to choose from.
+
+    This is the read curation runs on. A mix is not choosable from its title
+    alone and is far too long to hand over whole — forty tracks each across a
+    library of thousands would be megabytes — so each video is collapsed to
+    what actually decides whether it belongs in a set: how long it is, whose
+    channel it came from, which of your playlists already hold it, and the
+    artists inside it, commonest first.
+
+    Genre and tempo are deliberately absent. Nothing in a chapter marker says
+    "uptempo house"; what says it is knowing what Shimza sounds like, and that
+    is the reader's job rather than the schema's.
+    """
+    query = """
+        SELECT DISTINCT v.video_id, v.title, v.channel, v.duration_seconds, v.upload_date, v.enriched_ts,
+               (SELECT COUNT(*) FROM tracks t WHERE t.video_id = v.video_id) AS track_count
+        FROM videos v
+        JOIN playlist_videos pv ON pv.video_id = v.video_id
+        WHERE v.is_unavailable = 0
+    """
+    parameters: list[object] = []
+    if playlist_id:
+        query += ' AND pv.playlist_id = ?'
+        parameters.append(playlist_id)
+    if min_seconds is not None:
+        query += ' AND v.duration_seconds >= ?'
+        parameters.append(min_seconds)
+    if max_seconds is not None:
+        query += ' AND v.duration_seconds <= ?'
+        parameters.append(max_seconds)
+    if artist:
+        query += ' AND EXISTS (SELECT 1 FROM tracks t WHERE t.video_id = v.video_id AND t.artist LIKE ?)'
+        parameters.append(f'%{artist}%')
+    query += f' ORDER BY {LIBRARY_SORT_CLAUSES[sort]}'
+    if limit:
+        query += ' LIMIT ?'
+        parameters.append(limit)
+
+    artists = artists_by_video(connection)
+    playlists = playlists_by_video(connection)
+    return [
+        {
+            **dict(row),
+            'artists': artists.get(row['video_id'], []),
+            'playlists': playlists.get(row['video_id'], []),
+            'url': watch_url(row['video_id']),
+        }
+        for row in connection.execute(query, parameters)
+    ]
 
 
 def playlist_video_urls(connection: sqlite3.Connection, playlist_id: str, sort: str, limit: int | None = None) -> list[sqlite3.Row]:
