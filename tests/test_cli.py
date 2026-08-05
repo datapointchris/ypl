@@ -2071,3 +2071,38 @@ def test_status_says_when_a_sync_is_going_on_right_now(account, signed_in):
 
     with runlock.held():
         assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['running'] is True
+
+
+def test_a_signed_out_session_stops_the_remote_half_with_one_message(account, signed_in):
+    """The shape this took in the wild: forty failures, each four kilobytes of
+    YouTube JSON, and nowhere among them the fact that explains all of it."""
+    signed_in.error = remote.RemoteAuthError('answered as a signed-out visitor')
+
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+    assert (run['signed_in'], run['adopted']) == (False, [])
+    assert len(run['failures']) == 1
+    assert 'ypl remote auth --replace' in run['failures'][0]
+
+
+def test_a_read_with_no_slot_handles_is_not_adopted(library):
+    """A signed-out read returns the playlist and no handles for any of it.
+
+    Binding to that records a playlist that looks adopted and can never be
+    pushed, so it has to be refused before anything is written.
+    """
+    library.items = [RemoteItem(video_id='vid1', set_video_id=''), RemoteItem(video_id='vid2', set_video_id='')]
+
+    result = runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    assert result.exit_code == 1
+    assert 'not signed in' in result.output
+    assert not local.path_for('DRIVE TIME').exists()
+
+
+def test_a_base_with_no_handles_is_read_again_rather_than_trusted(library):
+    """Self-repair for the bases a signed-out run already wrote: they match the
+    mirror exactly, so nothing else would ever ask for them again."""
+    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    stored = basestore.load('drive-time')
+    basestore.save(basestore.Base(slug='drive-time', playlist_id='PLMINE', items=[RemoteItem(v.video_id, '') for v in stored.items]))
+
+    assert service.needs_reconcile(db.connect(), local.load(local.path_for('DRIVE TIME'))) is True

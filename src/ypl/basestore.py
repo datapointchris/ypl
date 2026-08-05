@@ -71,6 +71,18 @@ class Base:
     def video_ids(self) -> list[str]:
         return [item.video_id for item in self.items]
 
+    @property
+    def pushable(self) -> bool:
+        """Whether this base carries the handles a push would need.
+
+        A read taken while signed out returns the playlist and no `setVideoId`
+        for any of it — enough to look like a successful reconcile, and useless
+        the moment something has to be removed or moved. Judged on the whole
+        list rather than per item, because one missing handle is an oddity and
+        none of them is a different kind of read entirely.
+        """
+        return not self.items or any(item.set_video_id for item in self.items)
+
     def handles_for(self, video_id: str) -> list[str]:
         """Every slot holding this video, in playlist order.
 

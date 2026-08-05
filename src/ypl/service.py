@@ -560,6 +560,18 @@ def merged_entries(connection: sqlite3.Connection, video_ids: list[str], items: 
     return entries
 
 
+def brief(error: Exception, limit: int = 160) -> str:
+    """A failure short enough to read in a log.
+
+    YouTube answers a request it does not like with several kilobytes of its
+    own JSON, and ytmusicapi puts all of it in the exception message. Forty of
+    those is a log nobody opens twice, which for an unattended sync is the same
+    as having no log.
+    """
+    message = ' '.join(str(error).split())
+    return message if len(message) <= limit else f'{message[:limit]}...'
+
+
 def owned_by(account: remote.RemoteAccount, channel: str) -> bool:
     """Whether a mirrored playlist belongs to the account we are signed in as.
 
@@ -625,6 +637,12 @@ def adopt_playlist(connection: sqlite3.Connection, playlist: ResolvedPlaylist, b
         raise local.LocalPlaylistExistsError(path)
 
     items = backend.playlist_items(playlist.identifier)
+    if items and not any(item.set_video_id for item in items):
+        # The shape a signed-out read takes: the playlist comes back, every
+        # slot handle is empty. Binding to that records a playlist that looks
+        # adopted and can never be pushed, so refuse before anything is written.
+        raise AdoptionError(f'{playlist.title} read back with no slot handles — this session is not signed in')
+
     adopted = LocalPlaylist(
         name=playlist.title,
         path=path,
@@ -787,7 +805,15 @@ def needs_reconcile(connection: sqlite3.Connection, playlist: LocalPlaylist) -> 
     It answers a coarser question than the merge does, and deliberately: it
     cannot tell which side moved, only that they disagree, and disagreement is
     exactly the condition for spending a real read to find out.
+
+    A base with no handles in it also counts as drift, which is what repairs the
+    damage a signed-out session does: those reads record a base that looks
+    right, matches the mirror, and cannot serve a push. Left to the comparison
+    above it would never be read again. Asking for it back is the fix.
     """
+    recorded = basestore.load(playlist.slug)
+    if recorded is not None and not recorded.pushable:
+        return True
     return mirrored_video_ids(connection, playlist.remote_id) != playlist.video_ids
 
 
@@ -943,7 +969,20 @@ def sync_everything(
     budget.charge(READ_COST * (len(account.synced) + 1))
 
     if backend is not None:
-        run.signed_in = True
+        # Asked once, before any of the work. A session that is not signed in
+        # answers every playlist read with a page a logged-out visitor gets, so
+        # without this the run fails forty times over with four kilobytes of
+        # YouTube's JSON each, and the one fact that explains all of it — sign
+        # in again — appears nowhere.
+        try:
+            backend.account()
+            run.signed_in = True
+        except remote.RemoteAuthError as error:
+            run.failures.append(('signed in', f'{error} — run `ypl remote auth --replace`'))
+        except remote.RemoteError as error:
+            run.failures.append(('signed in', brief(error)))
+
+    if run.signed_in and backend is not None:
         for item in queued_work(connection, account, backend):
             if budget.exhausted:
                 run.stopped = 'budget'
@@ -952,11 +991,11 @@ def sync_everything(
             try:
                 item.perform(run)
             except remote.RemoteRateLimitedError as error:
-                run.failures.append((item.label, str(error)))
+                run.failures.append((item.label, brief(error)))
                 run.stopped = 'rate limit'
                 break
             except (AdoptionError, local.LocalPlaylistExistsError, remote.RemoteError, basestore.BaseStoreError, OSError) as error:
-                run.failures.append((item.label, str(error)))
+                run.failures.append((item.label, brief(error)))
 
     if not run.stopped:
         enrich_pending(connection, run, cookies_from_browser, pace=pace, budget=budget, on_video=on_video)

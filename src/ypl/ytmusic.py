@@ -165,9 +165,26 @@ class YtMusicBackend:
         The one call that distinguishes a headers file that parsed from a
         session that works: the paste is validated locally, the cookie is only
         ever tested by YouTube answering.
+
+        A signed-out session does not fail here — it answers, with the account
+        menu a logged-out visitor gets: Get Music Premium, Settings, Terms. No
+        account header. ytmusicapi raises a navigation `KeyError` on that, whose
+        message says nothing about authentication, so the generic translation
+        called it an unknown error and the session was kept. It has to be an
+        auth error, because that is exactly what it is, and because everything
+        downstream then reads public playlists anonymously and quietly records
+        bases it cannot push from.
         """
-        payload = self.call(self.client.get_account_info)
-        return RemoteAccount(name=payload.get('accountName') or '', handle=payload.get('channelHandle') or '')
+        try:
+            payload = self.call(self.client.get_account_info)
+        except RemoteError as error:
+            if 'activeAccountHeaderRenderer' in str(error) or 'accountName' in str(error):
+                raise RemoteAuthError('YouTube answered as a signed-out visitor — the stored cookies are no longer a session') from error
+            raise
+        name = payload.get('accountName') or ''
+        if not name:
+            raise RemoteAuthError('YouTube did not name an account for this session')
+        return RemoteAccount(name=name, handle=payload.get('channelHandle') or '')
 
     def playlist_items(self, playlist_id: str) -> list[RemoteItem]:
         """Read the playlist the way the write path needs it.
