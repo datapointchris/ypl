@@ -5,6 +5,7 @@ the API rather than a nicety.
 """
 
 import json
+import os
 import shutil
 import stat
 import tempfile
@@ -41,10 +42,34 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    """Keep the tests off the real mirror, config and playlist directory."""
+    """Keep the tests off the real mirror, config and playlist directory.
+
+    HOME as well as the three XDG variables, because not everything this tool
+    writes has an XDG home to redirect: a launch agent lives at a fixed path
+    under `~/Library` on macOS, and a suite that overrode only the XDG three
+    wrote one onto whichever machine ran it.
+    """
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HOME', str(home))
     monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'state'))
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
+
+
+@pytest.fixture(autouse=True)
+def no_real_service_manager(monkeypatch):
+    """launchctl and systemctl answer to the session running the suite.
+
+    An isolated HOME keeps the written unit out of the way, but loading it does
+    not go through the filesystem: `launchctl load` on a plist under a temporary
+    directory still registers the job with the real launchd. Every test that
+    invokes `sync` installs a timer, so this has to be autouse rather than
+    something a timer test opts into — the tests that left one running on this
+    machine, firing every thirty minutes against a checkout, were about
+    adoption and had never heard of the scheduler.
+    """
+    monkeypatch.setattr(schedule, 'run_manager', lambda arguments: (True, ''))
 
 
 @pytest.fixture(autouse=True)
@@ -1621,10 +1646,9 @@ def test_the_run_a_timer_leaves_behind_is_readable_afterwards(account, signed_in
 
 @pytest.fixture
 def linux_timer(monkeypatch):
-    """A machine whose service manager co-operates, without touching this one."""
+    """A machine whose timer is systemd's, whichever one is running the suite."""
     monkeypatch.setattr(schedule, 'is_macos', lambda: False)
     monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
-    monkeypatch.setattr(schedule, 'run_manager', lambda arguments: (True, ''))
 
 
 def test_syncing_once_leaves_the_machine_syncing_itself(account, signed_in, linux_timer):
@@ -1668,13 +1692,69 @@ def test_a_macos_agent_runs_at_load_as_well_as_on_the_interval(tmp_path, monkeyp
     """The run that matters most is the first one after the machine was off."""
     monkeypatch.setattr(schedule, 'is_macos', lambda: True)
     monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
-    monkeypatch.setattr(schedule, 'run_manager', lambda arguments: (True, ''))
-    monkeypatch.setattr(schedule, 'agent_path', lambda: tmp_path / 'com.ichrisbirch.ypl.plist')
 
     assert schedule.ensure(30) is not None
-    written = (tmp_path / 'com.ichrisbirch.ypl.plist').read_text()
+    # Read back through agent_path rather than a path this test chose, so that
+    # where a launch agent lands is covered rather than stubbed out.
+    assert schedule.agent_path().is_relative_to(tmp_path)
+    written = schedule.agent_path().read_text()
     assert '<key>RunAtLoad</key>' in written
     assert '<integer>1800</integer>' in written
+
+
+def test_a_timer_naming_a_ypl_that_moved_is_replaced_on_the_next_run(account, signed_in, monkeypatch):
+    """A unit that fires and fails still reports as scheduled, which is the worst
+    of the three states — this is how a timer pointed into a deleted checkout
+    went on being reported as healthy."""
+    monkeypatch.setattr(schedule, 'is_macos', lambda: False)
+    monkeypatch.setattr(schedule, 'executable', lambda: '/somewhere/else/ypl')
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert 'ExecStart=/somewhere/else/ypl sync' in schedule.service_path().read_text()
+
+    monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
+    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
+
+    assert 'ExecStart=/usr/local/bin/ypl sync' in schedule.service_path().read_text()
+
+
+def test_the_timer_prefers_an_installed_ypl_to_the_one_in_a_virtualenv(tmp_path, monkeypatch):
+    """Developing means running `uv run ypl sync`, which puts the checkout first
+    on PATH. A timer bound to it dies with the next rebuild of that directory."""
+    checkout = tmp_path / 'checkout' / '.venv' / 'bin'
+    installed = tmp_path / 'installed'
+    for directory in (checkout, installed):
+        directory.mkdir(parents=True)
+        (directory / 'ypl').touch(mode=0o755)
+    monkeypatch.setenv('VIRTUAL_ENV', str(tmp_path / 'checkout' / '.venv'))
+    monkeypatch.setenv('PATH', f'{checkout}{os.pathsep}{installed}')
+
+    assert schedule.executable() == str(installed / 'ypl')
+
+
+def test_the_checkouts_ypl_is_still_used_when_it_is_the_only_one(tmp_path, monkeypatch):
+    """The fallback the docstring promises: a machine with nothing installed."""
+    checkout = tmp_path / 'checkout' / '.venv' / 'bin'
+    checkout.mkdir(parents=True)
+    (checkout / 'ypl').touch(mode=0o755)
+    monkeypatch.setenv('VIRTUAL_ENV', str(tmp_path / 'checkout' / '.venv'))
+    monkeypatch.setenv('PATH', str(checkout))
+
+    assert schedule.executable() == str(checkout / 'ypl')
+
+
+def test_a_sync_on_a_mac_writes_its_agent_inside_the_isolated_home(account, signed_in, tmp_path, monkeypatch):
+    """The guard on `isolated_home`, and the bug it was written for.
+
+    This suite installed a real launch agent on the machine running it — loaded,
+    firing every thirty minutes, and pointed at a checkout — because the agent
+    path comes from HOME and only the XDG variables were redirected.
+    """
+    monkeypatch.setattr(schedule, 'is_macos', lambda: True)
+
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+
+    assert schedule.agent_path().is_relative_to(tmp_path)
+    assert schedule.agent_path().exists()
 
 
 def test_editing_a_playlist_applies_the_order_the_buffer_asked_for(two_videos):

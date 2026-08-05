@@ -46,6 +46,15 @@ def is_macos() -> bool:
     return platform.system() == 'Darwin'
 
 
+def outside_virtualenv() -> str | None:
+    """A `ypl` on PATH that is not the active virtualenv's own, if there is one."""
+    environment = os.environ.get('VIRTUAL_ENV')
+    if not environment:
+        return None
+    outside = [entry for entry in os.environ.get('PATH', '').split(os.pathsep) if entry and not Path(entry).is_relative_to(environment)]
+    return shutil.which('ypl', path=os.pathsep.join(outside))
+
+
 def executable() -> str:
     """The `ypl` a timer should call.
 
@@ -53,8 +62,14 @@ def executable() -> str:
     environment: `ypl` alone works in a shell and is not found by either. The
     fallback matters on a machine where the tool is run from a checkout rather
     than installed.
+
+    A checkout's `ypl` is passed over when an installed one exists. `uv run ypl
+    sync` while developing puts the virtualenv first on PATH, and a timer
+    pointed into a checkout stops working the moment that directory is rebuilt
+    or moved — silently, and for as long as nobody reads the log, because
+    `ypl status` goes on reporting a timer that is installed and dead.
     """
-    found = shutil.which('ypl')
+    found = outside_virtualenv() or shutil.which('ypl')
     if found:
         return str(Path(found).resolve())
     if sys.argv and sys.argv[0] and Path(sys.argv[0]).exists():
@@ -176,7 +191,16 @@ def ensure(interval_minutes: int = DEFAULT_INTERVAL_MINUTES, wanted: bool = True
         uninstall()
         return None
     existing = installed()
-    if existing and existing.interval_minutes == interval_minutes:
+    try:
+        command = [executable(), 'sync']
+    except ScheduleError:
+        # Nothing can be installed and nothing can be compared, so whatever is
+        # already there is the answer. Saying "no timer" would be a lie about a
+        # unit that is still running.
+        return existing
+    # The command as well as the interval, because a unit naming a `ypl` that has
+    # moved is worse than no unit: it fires, fails, and reports as scheduled.
+    if existing and existing.interval_minutes == interval_minutes and existing.command == command:
         return existing
     try:
         return install(interval_minutes)
@@ -230,20 +254,42 @@ def uninstall() -> list[Path]:
 def installed() -> Installed | None:
     """The timer this machine has, read back from the file rather than assumed.
 
-    Deliberately does not resolve the executable: this is the question asked
-    before every sync, and a machine that cannot find `ypl` on its PATH must
-    still be able to answer "no timer" rather than raise into the run.
+    Deliberately does not resolve this machine's `ypl`: this is the question
+    asked before every sync, and a machine that cannot find one on its PATH must
+    still be able to answer "no timer" rather than raise into the run. The
+    command reported is the one the unit names, which is what makes a unit
+    written by an older install — or by a checkout — recognisable as stale.
     """
     path = agent_path() if is_macos() else timer_path()
     if not path.exists():
         return None
+    text = path.read_text()
     return Installed(
         path=path,
         manager='launchd' if is_macos() else 'systemd',
-        command=[],
-        interval_minutes=interval_from(path.read_text()),
+        command=command_from(text),
+        interval_minutes=interval_from(text),
         loaded=True,
     )
+
+
+def command_from(text: str) -> list[str]:
+    """The command a written unit runs, whichever manager's file it is."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('ExecStart='):
+            return stripped.removeprefix('ExecStart=').split()
+    arguments = []
+    inside = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == '<key>ProgramArguments</key>':
+            inside = True
+        elif inside and stripped.startswith('<string>'):
+            arguments.append(stripped.removeprefix('<string>').removesuffix('</string>'))
+        elif inside and stripped == '</array>':
+            break
+    return arguments
 
 
 def interval_from(text: str) -> int:
