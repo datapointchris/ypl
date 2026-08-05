@@ -1,6 +1,37 @@
 # CHANGELOG
 
 
+## v0.11.1 (2026-08-05)
+
+### Bug Fixes
+
+- **remote**: Treat a signed-out session as one, not as an odd error
+  ([`6dcccef`](https://github.com/datapointchris/ypl/commit/6dcccef2d1033ac6c4722adf621a0d5346f33eed))
+
+The first real sync failed twenty-five playlists with four kilobytes of YouTube JSON each, and the
+  fact explaining all of them — the stored session is signed out — appeared nowhere. Three separate
+  holes let that happen.
+
+`account()` is meant to be the check that a session works, and a signed-out session does not fail
+  it. It answers, with the account menu a logged-out visitor gets: Get Music Premium, Settings,
+  Terms, and no account header. ytmusicapi raises a navigation KeyError whose message says nothing
+  about authentication, so it was translated to a generic error, kept by `remote auth`, and believed
+  by everything after.
+
+The sync then asked forty playlists individually instead of asking once. It now checks the session
+  before any of the work and skips the whole remote half with one line naming the command that fixes
+  it.
+
+And the reads that did succeed were the public playlists, which come back anonymously with no
+  `setVideoId` on any slot — enough to look like a reconcile and useless to a push. Adoption now
+  refuses a read where no slot carries a handle, and a base that has none counts as drift, so the
+  seventeen already written repair themselves on the next signed-in run rather than sitting there
+  matching the mirror forever.
+
+Failures are also truncated. Forty four-kilobyte messages is a log nobody opens twice, which for an
+  unattended sync is the same as no log.
+
+
 ## v0.11.0 (2026-08-05)
 
 ### Bug Fixes
