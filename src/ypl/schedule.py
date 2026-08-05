@@ -1,17 +1,17 @@
 """Running `ypl sync` without anyone running it.
 
-A sync you have to remember is a sync that stops happening, so the tool installs
-its own timer: launchd on macOS, a systemd user timer on Linux. Both are set to
-fire at startup and then on an interval, because the run that matters most is
-the first one after the machine has been off — that is when the phone has been
-the only thing touching the playlists.
+There is no command for this and there must not be one. The first `ypl sync` on
+a machine installs the timer as a side effect and every run after that finds it
+already there — a launch agent on macOS, a systemd user timer on Linux, both
+firing at startup and then on an interval. A verb here would be one more thing
+to remember, which is the exact problem the timer exists to remove.
 
-The unit is written rather than templated into the repo, because it has to name
-this machine's `ypl` and this machine's paths, and a file checked in with
-someone else's home directory in it is a file that silently does nothing.
+The run that matters most is the first one after the machine has been off: that
+is when the phone has been the only thing touching the playlists.
 
-Only the writing lives here. Whether a given machine has one installed is
-per-machine setup and says nothing about the state of the tool.
+The unit is written rather than shipped in the repo, because it has to name this
+machine's `ypl` and this machine's paths, and a file checked in with someone
+else's home directory in it is a file that silently does nothing.
 """
 
 import os
@@ -161,6 +161,29 @@ def run_manager(arguments: list[str]) -> tuple[bool, str]:
     return finished.returncode == 0, message
 
 
+def ensure(interval_minutes: int = DEFAULT_INTERVAL_MINUTES, wanted: bool = True) -> Installed | None:
+    """Make this machine's timer match what the config asks for.
+
+    Called by every `ypl sync`, so the first run on a machine sets it up and the
+    rest cost one `stat`. Turning `background_sync` off removes it on the next
+    run instead of needing a command to undo what no command created.
+
+    A failure to install is returned as nothing rather than raised: the sync
+    that is running right now is the one that matters, and a machine where
+    launchd or systemd will not co-operate should still sync when it is asked.
+    """
+    if not wanted:
+        uninstall()
+        return None
+    existing = installed()
+    if existing and existing.interval_minutes == interval_minutes:
+        return existing
+    try:
+        return install(interval_minutes)
+    except (ScheduleError, OSError):
+        return None
+
+
 def install(interval_minutes: int = DEFAULT_INTERVAL_MINUTES) -> Installed:
     command = [executable(), 'sync']
     log_path().parent.mkdir(parents=True, exist_ok=True)
@@ -205,16 +228,20 @@ def uninstall() -> list[Path]:
 
 
 def installed() -> Installed | None:
-    """The timer this machine has, read back from the file rather than assumed."""
+    """The timer this machine has, read back from the file rather than assumed.
+
+    Deliberately does not resolve the executable: this is the question asked
+    before every sync, and a machine that cannot find `ypl` on its PATH must
+    still be able to answer "no timer" rather than raise into the run.
+    """
     path = agent_path() if is_macos() else timer_path()
     if not path.exists():
         return None
-    text = path.read_text()
     return Installed(
         path=path,
         manager='launchd' if is_macos() else 'systemd',
-        command=[executable(), 'sync'],
-        interval_minutes=interval_from(text),
+        command=[],
+        interval_minutes=interval_from(path.read_text()),
         loaded=True,
     )
 

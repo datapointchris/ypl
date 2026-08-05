@@ -24,6 +24,12 @@ enrich_batch_size = 50
 # Lower it if you are impatient and signed out; raise it if YouTube complains.
 request_interval_seconds = 2.0
 
+# Whether the first `ypl sync` on a machine sets itself up to keep running —
+# at startup and every `background_sync_minutes` after that. There is no command
+# for this on purpose: turning it off here removes the timer on the next run.
+background_sync = true
+background_sync_minutes = 30
+
 # How long one `ypl sync` may spend before stopping and leaving the rest for
 # the next run. Everything it does is resumable, so a ceiling costs nothing but
 # patience — a library enriches itself over a day or two of background runs
@@ -43,6 +49,8 @@ class Config:
     enrich_batch_size: int = 50
     request_interval_seconds: float = 2.0
     sync_minutes: float = 15.0
+    background_sync: bool = True
+    background_sync_minutes: int = 30
     mpv_arguments: list[str] = field(default_factory=list)
 
     @property
@@ -87,6 +95,12 @@ def load() -> Config:
     sync_minutes = payload.get('sync_minutes', 15.0)
     if not isinstance(sync_minutes, int | float) or isinstance(sync_minutes, bool) or sync_minutes < 0:
         raise ConfigError(path, f'sync_minutes must be a number of minutes, got {sync_minutes!r}')
+    background_sync = payload.get('background_sync', True)
+    if not isinstance(background_sync, bool):
+        raise ConfigError(path, f'background_sync must be true or false, got {background_sync!r}')
+    background_minutes = payload.get('background_sync_minutes', 30)
+    if not isinstance(background_minutes, int) or isinstance(background_minutes, bool) or background_minutes < 1:
+        raise ConfigError(path, f'background_sync_minutes must be a positive integer, got {background_minutes!r}')
     mpv_arguments = payload.get('mpv_arguments', [])
     # Checked rather than trusted: these go straight onto an mpv command line,
     # and a bare string would be spread one character per argument.
@@ -97,6 +111,8 @@ def load() -> Config:
         enrich_batch_size=batch_size,
         request_interval_seconds=float(interval),
         sync_minutes=float(sync_minutes),
+        background_sync=background_sync,
+        background_sync_minutes=background_minutes,
         mpv_arguments=mpv_arguments,
     )
 

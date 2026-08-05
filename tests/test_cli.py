@@ -1618,21 +1618,49 @@ def test_the_run_a_timer_leaves_behind_is_readable_afterwards(account, signed_in
     assert sorted(status['last_run']['adopted']) == ['Art', 'Deep Night']
 
 
-def test_a_timer_can_be_installed_and_read_back(tmp_path, monkeypatch):
-    """Written by the tool because it has to name this machine's paths."""
+@pytest.fixture
+def linux_timer(monkeypatch):
+    """A machine whose service manager co-operates, without touching this one."""
     monkeypatch.setattr(schedule, 'is_macos', lambda: False)
     monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
     monkeypatch.setattr(schedule, 'run_manager', lambda arguments: (True, ''))
 
-    result = runner.invoke(app, ['schedule', 'install', '--every', '20', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['interval_minutes'] == 20
-    assert 'OnUnitActiveSec=20min' in schedule.timer_path().read_text()
-    assert 'ExecStart=/usr/local/bin/ypl sync' in schedule.service_path().read_text()
 
-    assert json.loads(runner.invoke(app, ['schedule', 'status', '--json']).stdout)['interval_minutes'] == 20
-    assert runner.invoke(app, ['schedule', 'uninstall']).exit_code == 0
+def test_syncing_once_leaves_the_machine_syncing_itself(account, signed_in, linux_timer):
+    """No command installs this. Running the sync at all is what sets it up."""
+    result = runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert result.exit_code == 0
+
+    assert 'OnUnitActiveSec=30min' in schedule.timer_path().read_text()
+    assert 'ExecStart=/usr/local/bin/ypl sync' in schedule.service_path().read_text()
+    assert 'every 30 minutes' in result.output
+    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['scheduled'] is True
+
+
+def test_a_second_sync_neither_reinstalls_the_timer_nor_mentions_it(account, signed_in, linux_timer):
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    result = runner.invoke(app, ['sync', '--browser', 'safari'])
+
+    assert 'every 30 minutes' not in result.output
+
+
+def test_turning_background_syncing_off_takes_the_timer_away_on_the_next_run(account, signed_in, linux_timer):
+    """Off is a setting, not a verb: nothing installed it, so nothing uninstalls it."""
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    paths.config_file().write_text('background_sync = false\n')
+
+    runner.invoke(app, ['sync', '--browser', 'safari'])
     assert not schedule.timer_path().exists()
+    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['scheduled'] is False
+
+
+def test_a_machine_that_will_not_take_a_timer_still_syncs(account, signed_in, monkeypatch):
+    """The run happening now matters more than the ones that would follow it."""
+    monkeypatch.setattr(schedule, 'executable', lambda: (_ for _ in ()).throw(schedule.ScheduleError('no ypl on PATH')))
+
+    result = runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert result.exit_code == 0
+    assert sorted(json.loads(runner.invoke(app, ['status', '--json']).stdout)['last_run']['adopted']) == ['Art', 'Deep Night']
 
 
 def test_a_macos_agent_runs_at_load_as_well_as_on_the_interval(tmp_path, monkeypatch):
@@ -1642,7 +1670,7 @@ def test_a_macos_agent_runs_at_load_as_well_as_on_the_interval(tmp_path, monkeyp
     monkeypatch.setattr(schedule, 'run_manager', lambda arguments: (True, ''))
     monkeypatch.setattr(schedule, 'agent_path', lambda: tmp_path / 'com.ichrisbirch.ypl.plist')
 
-    assert runner.invoke(app, ['schedule', 'install', '--every', '30']).exit_code == 0
+    assert schedule.ensure(30) is not None
     written = (tmp_path / 'com.ichrisbirch.ypl.plist').read_text()
     assert '<key>RunAtLoad</key>' in written
     assert '<integer>1800</integer>' in written

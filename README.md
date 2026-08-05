@@ -36,14 +36,17 @@ Needs [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and, for playback, [`mpv`](ht
 
 ## Use
 
-Two commands, once:
+Once:
 
 ```bash
 ypl remote auth --browser safari   # sign in, from a browser already signed in
-ypl schedule install               # run the sync at startup and every 30 minutes
+ypl sync                           # and it keeps running itself from here on
 ```
 
-After that nothing needs typing to stay in sync. Everything else is reading:
+The first sync leaves the machine syncing on its own — at startup and every 30 minutes, through a
+launch agent on macOS or a systemd user timer on Linux. There is no command to install that and
+there should not be one; `background_sync = false` in the config takes it away again on the next
+run. Everything else is reading:
 
 ```bash
 ypl status                                             # is it working, and how far behind

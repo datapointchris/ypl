@@ -42,9 +42,9 @@ playlist changes only the final word.
 
 `ypl sync` does all of it: mirrors your account, takes over playlists made in
 the web player, brings down changes made on your phone, sends up changes made
-here, and fills in tracklists with whatever time is left. Sign in once with
-`ypl remote auth`, install the timer with `ypl schedule install`, and it keeps
-itself in sync — `ypl status` says whether it is working.
+here, and fills in tracklists with whatever time is left. Run it once and it
+keeps running itself, at startup and on an interval. Sign in with `ypl remote
+auth` and that is the setup; `ypl status` says whether it is working.
 
 Organizing happens locally and instantly: playlists you build are M3U files on
 this machine, playable straight away. The `ypl remote` verbs are the same work
@@ -136,20 +136,6 @@ POST, and copy its whole Request Headers block.
 Paste it below, then press Enter and Ctrl-D.
 """
 
-SCHEDULE_HELP = """\
-The timer that runs `ypl sync` so you do not have to.
-
-A launch agent on macOS, a systemd user timer on Linux. Both fire shortly after
-the machine starts and then on an interval, because the run that matters most
-is the first one after it has been off — that is when your phone has been the
-only thing touching the playlists.
-
-  ypl schedule install            every 30 minutes, and at startup
-  ypl schedule install --every 15
-  ypl schedule status             what is installed, and what the last run did
-  ypl schedule uninstall
-"""
-
 READING = 'Reading (the local mirror)'
 SYNCING = 'Syncing (pulls from YouTube, no API quota)'
 BUILDING = 'Building (writes M3U files here; YouTube only via ypl remote)'
@@ -163,13 +149,11 @@ videos_app = typer.Typer(name='videos', no_args_is_help=True, help=VIDEOS_HELP)
 config_app = typer.Typer(name='config', no_args_is_help=True, help=CONFIG_HELP)
 plays_app = typer.Typer(name='plays', no_args_is_help=True, help=PLAYS_HELP)
 remote_app = typer.Typer(name='remote', no_args_is_help=True, help=REMOTE_HELP)
-schedule_app = typer.Typer(name='schedule', no_args_is_help=True, help=SCHEDULE_HELP)
 
 app.add_typer(playlists_app, name='playlists', rich_help_panel=READING)
 app.add_typer(videos_app, name='videos', rich_help_panel=READING)
 app.add_typer(plays_app, name='plays', rich_help_panel=PLAYING)
 app.add_typer(remote_app, name='remote', rich_help_panel=WRITING)
-app.add_typer(schedule_app, name='schedule', rich_help_panel=SYNCING)
 app.add_typer(config_app, name='config', rich_help_panel=ADMIN)
 
 # Data goes to stdout and nothing else does, so a caller parsing --json never
@@ -444,6 +428,25 @@ def sync_everything_or_exit(connection: sqlite3.Connection, browser: str, limit:
         raise typer.Exit(1) from error
 
 
+def keep_running(settings: config.Config, quiet: bool) -> None:
+    """Leave this machine set up to sync itself, from the first run onwards.
+
+    Part of syncing rather than a command of its own: a timer you have to
+    install is one more thing to remember, and remembering is the problem the
+    timer exists to solve. The first run installs it, every later one finds it
+    already there, and `background_sync = false` in the config takes it away
+    again — no verb to undo what no verb created.
+    """
+    was = schedule.installed()
+    timer = schedule.ensure(settings.background_sync_minutes, wanted=settings.background_sync)
+    if quiet or (was and timer):
+        return
+    if timer:
+        messages.print(f'Now syncing on its own — every {timer.interval_minutes} minutes, and at startup ({timer.path})')
+    elif was:
+        messages.print('Background syncing turned off — the timer is gone. Run this again whenever you want.')
+
+
 def report_sync(run: service.SyncRun) -> None:
     """What a run did, in one line per thing that actually happened."""
     messages.print(f'Mirrored [bold]{run.mirrored}[/bold] playlists, {run.videos} videos')
@@ -509,6 +512,7 @@ def sync(
         run = sync_everything_or_exit(connection, source, limit, quiet=as_json)
         session.remember_browser(source)
         synclog.record(run.payload())
+        keep_running(settings, quiet=as_json)
         if as_json:
             print_json(run.payload())
         else:
@@ -1993,7 +1997,7 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
         return
 
     messages.print(f'Signed in       {"yes" if payload["signed_in"] else "no — ypl remote auth"}')
-    messages.print(f'Scheduled       {f"every {timer.interval_minutes} min ({timer.manager})" if timer else "no — ypl schedule install"}')
+    messages.print(f'Scheduled       {f"every {timer.interval_minutes} min ({timer.manager})" if timer else "no — run ypl sync once"}')
     messages.print(f'Last sync       {payload["last_sync"] or "never"}')
     if last:
         done = [f'{last[key]} {key}' for key in ('adopted', 'reconciled', 'pushed') if last.get(key)]
@@ -2005,61 +2009,6 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
     messages.print(f'Unenriched      {payload["unenriched"]} videos, {payload["unreadable"]} unreadable')
     if pending:
         messages.print(f'Waiting to push {", ".join(pending)}')
-
-
-@schedule_app.command('install')
-def schedule_install(
-    every: int = typer.Option(schedule.DEFAULT_INTERVAL_MINUTES, '--every', help='Minutes between runs.'),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Run `ypl sync` at startup and on an interval, from now on."""
-    if every < 1:
-        raise typer.BadParameter('must be at least 1 minute', param_hint='--every')
-    try:
-        result = schedule.install(every)
-    except schedule.ScheduleError as error:
-        messages.print(f'[red]{error}[/red]')
-        raise typer.Exit(1) from error
-
-    if as_json:
-        print_json(
-            {'path': str(result.path), 'manager': result.manager, 'interval_minutes': result.interval_minutes, 'loaded': result.loaded}
-        )
-        return
-    messages.print(f'Installed [bold]{result.path}[/bold] — every {result.interval_minutes} minutes, and at startup')
-    if not result.loaded:
-        messages.print(f'[yellow]Written but not started[/yellow] — {result.manager} refused. It will start at the next login.')
-
-
-@schedule_app.command('status')
-def schedule_status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.')) -> None:
-    """Whether this machine runs ypl on a timer."""
-    timer = schedule.installed()
-    if as_json:
-        print_json(
-            {
-                'installed': bool(timer),
-                'path': str(timer.path) if timer else None,
-                'interval_minutes': timer.interval_minutes if timer else None,
-            }
-        )
-        return
-    if not timer:
-        messages.print('No timer on this machine. [bold]ypl schedule install[/bold] adds one.')
-        return
-    messages.print(f'[bold]{timer.path}[/bold] — every {timer.interval_minutes} minutes, and at startup ({timer.manager})')
-    messages.print(f'Log             {schedule.log_path()}')
-
-
-@schedule_app.command('uninstall')
-def schedule_uninstall() -> None:
-    """Stop running ypl on a timer. Playlists and the mirror are untouched."""
-    removed = schedule.uninstall()
-    if not removed:
-        messages.print('No timer on this machine.')
-        return
-    for path in removed:
-        messages.print(f'Removed {path}')
 
 
 @app.command('update', rich_help_panel=ADMIN)
