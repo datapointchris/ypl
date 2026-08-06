@@ -1,6 +1,30 @@
 # CHANGELOG
 
 
+## v0.12.5 (2026-08-06)
+
+### Bug Fixes
+
+- **config**: Show every setting, not two of them
+  ([`dd9b717`](https://github.com/datapointchris/ypl/commit/dd9b717e852cfff8633c79b843428f61357384b7))
+
+`config show` says it prints the settings in effect including defaults, and printed two of the
+  seven. The five it left out include `background_sync`, which the README tells you to set to turn
+  the timer off — so there was no way to confirm it had taken — and `sync_minutes`, which decides
+  how long a run lasts. Walked off the dataclass now, so a setting added later cannot go missing
+  again, and rendered as it would be written in the TOML so a value can be copied back rather than
+  translated.
+
+### Documentation
+
+- **readme**: Say where the scheduled runs write their log
+  ([`0736808`](https://github.com/datapointchris/ypl/commit/07368080421f2ee5f08d2f3f65ffa56e089c3bd7))
+
+The bug that hid for a day left its only trace there: every timer-driven sync failed for want of
+  yt-dlp on PATH while `ypl status` reported a healthy schedule, and nothing pointed a reader at the
+  one file that said so.
+
+
 ## v0.12.4 (2026-08-05)
 
 ### Bug Fixes
