@@ -25,35 +25,40 @@ def video(video_id, set_video_id='', title='Title'):
     return {'playlistVideoRenderer': renderer}
 
 
-def wrapped_list(items, token=''):
+def item_list(items, token='', tracking=''):
+    """A `playlistVideoListRenderer` holding these items, and maybe a next page.
+
+    The continuation is nested the way the real one is: inside a
+    `commandExecutorCommand` whose other command is a page-reload signal, so a
+    parser that only looks directly under `continuationEndpoint` finds nothing.
+    """
     contents = list(items)
     if token:
-        contents.append({'continuationItemRenderer': {'continuationEndpoint': {'continuationCommand': {'token': token}}}})
-    return {'contents': {'twoColumnBrowseResultsRenderer': {'tabs': [{'playlistVideoListRenderer': {'contents': contents}}]}}}
-
-
-def item_list(items, token=''):
-    """A `playlistVideoListRenderer` holding these items, and maybe a next page."""
-    contents = list(items)
-    if token:
+        command = {'continuationCommand': {'token': token}}
+        if tracking:
+            command['clickTrackingParams'] = tracking
         contents.append(
             {
                 'continuationItemRenderer': {
-                    'continuationEndpoint': {'commandExecutorCommand': {'commands': [{'continuationCommand': {'token': token}}]}}
+                    'continuationEndpoint': {
+                        'commandExecutorCommand': {
+                            'commands': [{'signalAction': {'signal': 'SOFT_RELOAD_PAGE'}}, command],
+                        }
+                    }
                 }
             }
         )
     return {'playlistVideoListRenderer': {'contents': contents, 'isEditable': True}}
 
 
-def page_html(items, token='', visitor='VISITOR', decoy_token='DECOY'):
-    """A playlist page as YouTube serves one.
+def browse_response(items, token='', tracking='', decoy_token='DECOY'):
+    """What `browse` answers a playlist with.
 
-    Carries a second continuation outside the item list, because the real pages
-    do: it belongs to a recommendations shelf, and following it appends videos
+    Carries a second continuation outside the item list, because the real one
+    does: it belongs to a recommendations shelf, and following it appends videos
     that are not in the playlist.
     """
-    data = {
+    return {
         'contents': {
             'twoColumnBrowseResultsRenderer': {
                 'tabs': [
@@ -62,7 +67,7 @@ def page_html(items, token='', visitor='VISITOR', decoy_token='DECOY'):
                             'content': {
                                 'sectionListRenderer': {
                                     'contents': [
-                                        {'itemSectionRenderer': {'contents': [item_list(items, token)]}},
+                                        {'itemSectionRenderer': {'contents': [item_list(items, token, tracking)]}},
                                         {
                                             'continuationItemRenderer': {
                                                 'continuationEndpoint': {'continuationCommand': {'token': decoy_token}}
@@ -77,7 +82,6 @@ def page_html(items, token='', visitor='VISITOR', decoy_token='DECOY'):
             }
         }
     }
-    return f'<script>ytcfg.set({{"VISITOR_DATA": "{visitor}"}});</script><script>var ytInitialData = {json.dumps(data)};</script>'
 
 
 def continuation_response(items, token=''):
@@ -88,18 +92,23 @@ def continuation_response(items, token=''):
     }
 
 
+def bootstrap_page(visitor='VISITOR', version='2.20260806.01.00'):
+    """The home page, read once for the two facts that cannot be hardcoded."""
+    return f'<script>ytcfg.set({{"VISITOR_DATA": "{visitor}", "INNERTUBE_CLIENT_VERSION": "{version}"}});</script>'
+
+
 class Recorder:
     """An httpx client that answers from a script and keeps what it was sent."""
 
     def __init__(self, responses, page=None):
         self.responses = list(responses)
-        self.page = page
+        self.page = bootstrap_page() if page is None else page
         self.requests = []
         self.gets = []
 
     def get(self, url, params=None, headers=None, follow_redirects=False):
         self.gets.append({'url': url, 'params': params, 'headers': headers})
-        return httpx.Response(200, text=self.page or '', request=httpx.Request('GET', url))
+        return httpx.Response(200, text=self.page, request=httpx.Request('GET', url))
 
     def post(self, url, json=None, headers=None, params=None):
         self.requests.append({'url': url, 'body': json, 'headers': headers})
@@ -171,12 +180,12 @@ def test_a_browser_holding_cookies_but_no_login_is_not_a_session():
 
 
 @pytest.mark.parametrize('given', ['PL123', 'VLPL123'])
-def test_a_stored_id_reaches_the_page_without_its_browse_prefix(given):
+def test_a_stored_id_is_prefixed_once_and_only_once(given):
     """Ids arrive from yt-dlp, from an M3U file and from `playlist/create`, and
-    only some of them carry the `VL` a browse call wanted."""
-    reader = backend(page=page_html([video('a', 'h1')]))
+    only some of them already carry the `VL` a browse call wants."""
+    reader = backend([(200, browse_response([video('a', 'h1')]))])
     reader.playlist_items(given)
-    assert reader.client.gets[0]['params'] == {'list': 'PL123'}
+    assert reader.client.requests[0]['body']['browseId'] == 'VLPL123'
 
 
 def test_items_are_found_wherever_youtube_has_moved_the_renderers():
@@ -186,49 +195,72 @@ def test_items_are_found_wherever_youtube_has_moved_the_renderers():
     failure this tool must never have, so the parse holds on to the leaf
     renderers rather than to the wrappers around them.
     """
-    buried = {'someNewWrapper': {'andAnother': [wrapped_list([video('a', 'h1'), video('b', 'h2')])]}}
+    buried = {'someNewWrapper': {'andAnother': [item_list([video('a', 'h1'), video('b', 'h2')])]}}
     assert [item.video_id for item in youtubei.items_from(buried)] == ['a', 'b']
 
 
 def test_an_item_without_a_handle_is_kept_rather_than_dropped():
     """It is still a video in the playlist, and dropping it reads as a deletion."""
-    items = youtubei.items_from(wrapped_list([video('a', 'h1'), video('b')]))
+    items = youtubei.items_from(item_list([video('a', 'h1'), video('b')]))
     assert [(item.video_id, item.set_video_id) for item in items] == [('a', 'h1'), ('b', '')]
 
 
-def test_a_playlist_is_read_from_its_page_not_from_a_browse_call():
-    """`browseId: VL<id>` is the music.youtube.com convention.
+def test_the_read_asks_for_the_params_that_make_browse_return_videos():
+    """Without it the same call answers with the page furniture and no videos.
 
-    On the main site it answers with the page furniture and no videos at all,
-    so the read that carries handles is the page itself.
+    It also asks for unavailable videos to be included: one that has gone
+    private is still a slot, and omitting it reads to the merge as a deletion.
     """
-    reader = backend(page=page_html([video('a', 'h1'), video('b', 'h2')]))
-    items = reader.playlist_items('PL1')
-    assert [(item.video_id, item.set_video_id) for item in items] == [('a', 'h1'), ('b', 'h2')]
-    assert reader.client.gets[0]['params'] == {'list': 'PL1'}
-    assert reader.client.requests == []
+    reader = backend([(200, browse_response([video('a', 'h1')]))])
+    reader.playlist_items('PL1')
+    assert reader.client.requests[0]['body']['params'] == youtubei.PLAYLIST_ITEMS_PARAMS
 
 
 def test_reading_a_playlist_follows_every_continuation():
     reader = backend(
         [
+            (200, browse_response([video('a', 'h1')], token='more')),
             (200, continuation_response([video('b', 'h2')], token='evenmore')),
             (200, continuation_response([video('c', 'h3')])),
-        ],
-        page=page_html([video('a', 'h1')], token='more'),
+        ]
     )
     assert [item.video_id for item in reader.playlist_items('PL1')] == ['a', 'b', 'c']
 
 
+def test_a_continuation_carries_its_click_tracking_in_the_request_root():
+    """Not inside `context`, where the client's own fixed one already lives, and
+    it has to be the tracking of the same command that carried the token.
+
+    Getting either wrong answers 200 with no items rather than an error, which
+    is the failure mode that made this look like the wrong endpoint entirely.
+    """
+    reader = backend(
+        [
+            (200, browse_response([video('a', 'h1')], token='more', tracking='CTP')),
+            (200, continuation_response([video('b', 'h2')])),
+        ]
+    )
+    reader.playlist_items('PL1')
+    body = reader.client.requests[1]['body']
+    assert body['clickTracking'] == {'clickTrackingParams': 'CTP'}
+    assert 'clickTracking' not in body['context']
+
+
+def test_a_token_buried_under_a_command_executor_is_still_found():
+    """The playlist's own continuation shares its endpoint with a reload signal."""
+    node = item_list([video('a', 'h1')], token='deep')
+    assert youtubei.continuation_query(node) == {'continuation': 'deep'}
+
+
 def test_the_recommendations_continuation_is_never_followed():
-    """A playlist page carries a second token belonging to a shelf below it.
+    """The response carries a second token belonging to a shelf below the list.
 
     Following it appends videos that are not in the playlist, which merges as a
     pile of local additions and pushes them onto YouTube.
     """
-    reader = backend(page=page_html([video('a', 'h1')], decoy_token='DECOY'))
+    reader = backend([(200, browse_response([video('a', 'h1')], decoy_token='DECOY'))])
     assert [item.video_id for item in reader.playlist_items('PL1')] == ['a']
-    assert reader.client.requests == []
+    assert len(reader.client.requests) == 1
 
 
 def test_a_short_read_is_refused_rather_than_returned():
@@ -237,28 +269,72 @@ def test_a_short_read_is_refused_rather_than_returned():
     So a hundred slots read out of a thousand would queue nine hundred removals
     on YouTube. Reading less than there is has to be louder than reading none.
     """
-    reader = backend([(200, {'onResponseReceivedActions': []})], page=page_html([video('a', 'h1')], token='more'))
+    reader = backend(
+        [
+            (200, browse_response([video('a', 'h1')], token='more')),
+            (200, {'onResponseReceivedActions': []}),
+        ]
+    )
     with pytest.raises(youtubei.YouTubeiError, match='Refusing a partial read'):
         reader.playlist_items('PL1')
 
 
-def test_a_page_with_no_video_list_is_an_error_not_an_empty_playlist():
-    """Reading nothing and reading an empty playlist must never look the same."""
+def test_a_response_with_no_video_list_is_an_error_not_an_empty_playlist():
+    """Reading nothing and reading an empty playlist must never look the same.
+
+    This is also what a playlist on somebody else's channel answers with, which
+    is a refusal worth surfacing rather than an empty read worth merging.
+    """
     with pytest.raises(youtubei.YouTubeiError):
-        backend(page='<script>var ytInitialData = {"contents": {}};</script>').playlist_items('PL1')
+        backend([(200, {'contents': {}})]).playlist_items('PL1')
 
 
-def test_a_page_that_carries_no_data_at_all_says_so():
-    with pytest.raises(youtubei.YouTubeiError):
-        backend(page='<html>signed out</html>').playlist_items('PL1')
+def test_the_visitor_id_and_client_version_are_bootstrapped_not_hardcoded():
+    """YouTube ships a client version most days and the visitor id is per-session.
 
-
-def test_the_visitor_id_is_taken_from_the_page_and_sent_on_later_calls():
-    """Not optional despite the name: without it `browse` answers
-    PERMISSION_DENIED for every playlist that is not public."""
-    reader = backend([(200, continuation_response([video('b', 'h2')]))], page=page_html([video('a', 'h1')], token='more'))
+    Without the visitor id `browse` answers PERMISSION_DENIED for every playlist
+    that is not public, so neither can be a constant that ages.
+    """
+    reader = backend([(200, browse_response([video('a', 'h1')]))], page=bootstrap_page(visitor='V2', version='2.20260806.01.00'))
     reader.playlist_items('PL1')
-    assert reader.client.requests[0]['headers']['x-goog-visitor-id'] == 'VISITOR'
+    assert reader.client.requests[0]['headers']['x-goog-visitor-id'] == 'V2'
+    assert reader.client.requests[0]['body']['context']['client']['clientVersion'] == '2.20260806.01.00'
+    assert reader.client.requests[0]['body']['context']['client']['visitorData'] == 'V2'
+
+
+def test_a_missing_page_id_is_recovered_from_the_browser():
+    """The browser knows which channel it is on, so this is recoverable.
+
+    Worth recovering because sending no page id is not an error: `browse`
+    answers 200 with page furniture and no videos, which reads as an empty
+    playlist and merges as every video having been deleted.
+    """
+    page = '<script>ytcfg.set({"VISITOR_DATA": "V", "DELEGATED_SESSION_ID": "RECOVERED"});</script>'
+    reader = backend([(200, browse_response([video('a', 'h1')]))], page=page)
+    reader.playlist_items('PL1')
+    assert reader.client.requests[0]['headers']['x-goog-pageid'] == 'RECOVERED'
+
+
+def test_a_stored_page_id_is_never_overridden_by_the_browser():
+    """Signing in chose that channel deliberately; the browser's selection did not."""
+    page = '<script>ytcfg.set({"VISITOR_DATA": "V", "DELEGATED_SESSION_ID": "OTHER"});</script>'
+    reader = backend([(200, browse_response([video('a', 'h1')]))], page_id='CHOSEN', page=page)
+    reader.playlist_items('PL1')
+    assert reader.client.requests[0]['headers']['x-goog-pageid'] == 'CHOSEN'
+
+
+def test_the_session_is_bootstrapped_once_however_many_calls_follow():
+    reader = backend([(200, browse_response([video('a', 'h1')])), (200, browse_response([video('b', 'h2')]))])
+    reader.playlist_items('PL1')
+    reader.playlist_items('PL2')
+    assert len(reader.client.gets) == 1
+
+
+def test_an_unreadable_bootstrap_falls_back_rather_than_failing():
+    """The constants are a floor. A call that still cannot work will say so."""
+    reader = backend([(200, browse_response([video('a', 'h1')]))], page='<html>nothing here</html>')
+    assert [item.video_id for item in reader.playlist_items('PL1')] == ['a']
+    assert reader.client.requests[0]['body']['context']['client']['clientVersion'] == youtubei.CLIENT_VERSION
 
 
 def test_a_refusal_arriving_with_a_200_is_still_a_refusal():
@@ -377,6 +453,9 @@ def test_every_request_carries_the_client_context():
 
 def test_a_network_failure_is_a_remote_error_not_a_traceback():
     class Broken:
+        def get(self, *args, **kwargs):
+            raise httpx.ConnectError('no route to host')
+
         def post(self, *args, **kwargs):
             raise httpx.ConnectError('no route to host')
 
@@ -387,6 +466,9 @@ def test_a_network_failure_is_a_remote_error_not_a_traceback():
 
 def test_a_response_that_is_not_json_says_so():
     class Garbage:
+        def get(self, url, **kwargs):
+            return httpx.Response(200, text='', request=httpx.Request('GET', url))
+
         def post(self, url, **kwargs):
             return httpx.Response(200, text='<!doctype html>', request=httpx.Request('POST', url))
 

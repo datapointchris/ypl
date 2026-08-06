@@ -77,7 +77,11 @@ LOGIN_COOKIE = 'LOGIN_INFO'
 # this identity cannot write returns success-shaped nothing unless this is read.
 STATUS_SUCCEEDED = 'STATUS_SUCCEEDED'
 
-PLAYLIST_URL = f'{ORIGIN}/playlist'
+# What makes `browse` answer a playlist with its videos rather than with the
+# page furniture alone. A fixed value — the web client's own — and it asks for
+# unavailable videos to be included, which a merge needs: a video that has gone
+# private is still a slot, and omitting it reads as a deletion.
+PLAYLIST_ITEMS_PARAMS = 'wgYCCAA='
 
 # Sent because youtubei answers a non-browser agent differently, and httpx
 # would otherwise announce itself as one.
@@ -86,8 +90,6 @@ USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.
 # `ytcfg.set({...})` appears several times in a page and the useful keys are
 # spread across them, so every match is merged rather than the first taken.
 YTCFG_PATTERN = re.compile(r'ytcfg\.set\s*\(\s*(\{.+?\})\s*\)\s*;')
-
-INITIAL_DATA_PATTERN = re.compile(r'var ytInitialData = (\{.+?\});</script>')
 
 REQUEST_TIMEOUT_SECONDS = 30.0
 
@@ -144,17 +146,6 @@ def page_config(html: str) -> dict[str, Any]:
     return config
 
 
-def initial_data(html: str) -> dict[str, Any]:
-    """The `ytInitialData` a page was rendered with, or an empty mapping."""
-    found = INITIAL_DATA_PATTERN.search(html)
-    if not found:
-        return {}
-    try:
-        return json.loads(found.group(1))
-    except json.JSONDecodeError:
-        return {}
-
-
 def request_headers(cookies: dict[str, str], page_id: str = '', visitor_id: str = '') -> dict[str, str]:
     """What every youtubei call carries.
 
@@ -192,7 +183,7 @@ def request_headers(cookies: dict[str, str], page_id: str = '', visitor_id: str 
     return headers
 
 
-def request_context() -> dict[str, Any]:
+def request_context(client_version: str = CLIENT_VERSION, visitor_id: str = '') -> dict[str, Any]:
     """The client block youtubei wants wrapped around every request body.
 
     Language and timezone are pinned rather than inherited so that titles come
@@ -200,16 +191,48 @@ def request_context() -> dict[str, Any]:
     on the laptop and pushed from the Arch box cannot disagree about what a
     video is called.
     """
-    return {
-        'client': {
-            'clientName': CLIENT_NAME,
-            'clientVersion': CLIENT_VERSION,
-            'hl': 'en',
-            'gl': 'US',
-            'timeZone': 'UTC',
-            'utcOffsetMinutes': 0,
-        }
+    client = {
+        'clientName': CLIENT_NAME,
+        'clientVersion': client_version,
+        'hl': 'en',
+        'gl': 'US',
+        'timeZone': 'UTC',
+        'utcOffsetMinutes': 0,
     }
+    if visitor_id:
+        client['visitorData'] = visitor_id
+    return {'client': client}
+
+
+def continuation_query(node: Any) -> dict[str, Any] | None:
+    """The request body that fetches the next page, or None at the end.
+
+    Two things here are easy to get wrong and both fail silently, answering 200
+    with no items rather than an error.
+
+    The token is not at a fixed depth. A playlist's own continuation arrives
+    wrapped in a `commandExecutorCommand` holding several commands, one of them
+    a page-reload signal, so every command is tried in turn.
+
+    `clickTracking` belongs in the request *root*, beside `continuation`, and it
+    has to be the `clickTrackingParams` of the same command that carried the
+    token — not the endpoint's, and not folded into `context` where the client's
+    own fixed one already lives.
+    """
+    for renderer in find_all(node, 'continuationItemRenderer'):
+        endpoint = renderer.get('continuationEndpoint') or {}
+        commands = list((endpoint.get('commandExecutorCommand') or {}).get('commands') or [])
+        commands.append(endpoint)
+        for command in commands:
+            token = (command.get('continuationCommand') or {}).get('token')
+            if not token:
+                continue
+            query: dict[str, Any] = {'continuation': token}
+            tracking = command.get('clickTrackingParams')
+            if tracking:
+                query['clickTracking'] = {'clickTrackingParams': tracking}
+            return query
+    return None
 
 
 def find_all(payload: Any, key: str) -> list[dict[str, Any]]:
@@ -261,25 +284,6 @@ def items_from(payload: Any) -> list[RemoteItem]:
         for renderer in find_all(payload, 'playlistVideoRenderer')
         if renderer.get('videoId')
     ]
-
-
-def continuation_token(node: Any) -> str:
-    """The next-page token inside one node, or '' when there is none.
-
-    Scoped to whatever is passed in, never to the whole page. A playlist page
-    carries a second `continuationItemRenderer` one level up from the item list,
-    belonging to a recommendations shelf, and following that one appends videos
-    that are not in the playlist — which merges as a pile of local additions and
-    pushes them onto YouTube.
-
-    The token itself sits at no fixed depth: the item list's own continuation
-    arrives wrapped in a `commandExecutorCommand` alongside a page-reload signal,
-    so this looks for the command rather than for a path to it.
-    """
-    for command in find_all(node, 'continuationCommand'):
-        if command.get('token'):
-            return command['token']
-    return ''
 
 
 def appended_items(payload: dict[str, Any]) -> list[Any]:
@@ -360,9 +364,12 @@ class YouTubeiBackend:
             raise RemoteAuthError('that browser has no YouTube session — sign in and run `ypl auth` again')
         self.cookies = cookies
         self.page_id = page_id
-        # Learned from the first page loaded and reused after that, because it
-        # identifies the browsing session rather than the playlist.
+        # Both learned from one page load and reused after that, because they
+        # describe the browsing session rather than any playlist. Defaults are
+        # a fallback for the moment before `bootstrap` has run.
         self.visitor_id = ''
+        self.client_version = CLIENT_VERSION
+        self.bootstrapped = False
         self.throttle = throttle or Throttle()
         # Separate, because creation is the only endpoint with a measured limit
         # and sharing one floor would either crawl every add or outrun the one
@@ -370,15 +377,47 @@ class YouTubeiBackend:
         self.create_throttle = create_throttle or Throttle(CREATE_INTERVAL_SECONDS)
         self.client = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
 
+    def bootstrap(self) -> None:
+        """Learn the client version and visitor id from one page load.
+
+        Both are pinned to the moment: YouTube ships a new `INNERTUBE_CLIENT_VERSION`
+        most days, and the visitor id identifies this browsing session. Reading
+        them rather than hardcoding them is what keeps this working without a
+        release every time YouTube deploys — the constants here are only a floor.
+
+        Costs one request per backend, and never repeats. A page that cannot be
+        read is not fatal: the constants stand in, and the call that needed them
+        will say so itself.
+        """
+        if self.bootstrapped:
+            return
+        self.bootstrapped = True
+        self.throttle.wait()
+        try:
+            response = self.client.get(ORIGIN, headers=page_headers(self.cookies), follow_redirects=True)
+        except httpx.HTTPError:
+            return
+        if response.status_code >= 400:
+            return
+        config = page_config(response.text)
+        self.visitor_id = config.get('VISITOR_DATA') or self.visitor_id
+        self.client_version = config.get('INNERTUBE_CLIENT_VERSION') or self.client_version
+        # The browser already knows which channel it is acting as, so a missing
+        # page id is recoverable rather than fatal. Worth recovering because the
+        # symptom of not sending one is not an error: `browse` answers 200 with
+        # the page furniture and no videos, which reads as an empty playlist.
+        self.page_id = self.page_id or config.get('DELEGATED_SESSION_ID') or ''
+
     def call(self, endpoint: str, body: dict[str, Any], throttle: Throttle | None = None) -> dict[str, Any]:
         """One youtubei request, paced and translated.
 
-        A 401 or 403 is a dead cookie and a 429 is a throttle, and the
-        difference is the only one the queue acts on: one clears by waiting and
-        the other never does.
+        A 401 is a dead cookie and a 429 is a throttle, and the difference is
+        the only one the queue acts on: one clears by waiting and the other
+        never does.
         """
+        self.bootstrap()
         (throttle or self.throttle).wait()
-        payload = {'context': request_context(), **body}
+        payload = {'context': request_context(self.client_version, self.visitor_id), **body}
         try:
             response = self.client.post(
                 f'{API_BASE}/{endpoint}',
@@ -440,60 +479,34 @@ class YouTubeiBackend:
         chosen = channel_account(accounts)
         return RemoteAccount(name=chosen['name'], handle=chosen['page_id'])
 
-    def playlist_page(self, playlist_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-        """The playlist's own page, as the config and the data baked into it.
-
-        A page load rather than a `browse` call, which is what the write path
-        needs and what youtubei will not give: `browseId: VL<id>` is the
-        *music.youtube.com* convention, and on the main site it answers with
-        the page furniture and no videos at all. The page carries the first
-        hundred slots with their `setVideoId` handles.
-
-        It also carries `VISITOR_DATA`, which is the header every later call
-        needs — without it `browse` answers PERMISSION_DENIED for exactly the
-        playlists this tool exists to write to.
-        """
-        self.throttle.wait()
-        try:
-            response = self.client.get(
-                PLAYLIST_URL,
-                params={'list': playlist_id.removeprefix('VL')},
-                headers=page_headers(self.cookies),
-                follow_redirects=True,
-            )
-        except httpx.HTTPError as error:
-            raise RemoteError(f'could not reach YouTube: {error}') from error
-        if response.status_code >= 400:
-            raise RemoteError(f'YouTube returned HTTP {response.status_code} for the {playlist_id} page')
-
-        config = page_config(response.text)
-        data = initial_data(response.text)
-        if not data:
-            raise YouTubeiError(f'the {playlist_id} page carried no playlist data — is it one this account can see?')
-        if config.get('VISITOR_DATA'):
-            self.visitor_id = config['VISITOR_DATA']
-        return config, data
-
     def playlist_items(self, playlist_id: str) -> list[RemoteItem]:
         """Read the playlist the way the write path needs it, following pages.
 
         Read immediately before writing rather than out of the mirror, so that
         a push acts on what is there now and on handles that are still valid.
 
-        A short read is an error rather than a short list. The merge treats what
-        is missing from a remote read as deleted on YouTube, so returning the
-        first hundred of a thousand would queue nine hundred removals — reading
-        less than there is has to be louder than reading nothing.
+        `params` is what makes `browse` answer with videos. Without it the same
+        call returns the page furniture and nothing else, which is what made
+        this look like the wrong endpoint for a long time. The value is a fixed
+        one — it is the tab the web client asks for, and it includes videos that
+        have gone unavailable, which matters because dropping them would look
+        to the merge exactly like somebody deleting them.
+
+        A short read is an error rather than a short list, for the same reason.
+        The merge treats what is missing from a remote read as deleted on
+        YouTube, so returning the first hundred of a thousand would queue nine
+        hundred removals — reading less than there is has to be louder than
+        reading nothing at all.
         """
-        config, data = self.playlist_page(playlist_id)
-        lists = find_all(data, 'playlistVideoListRenderer')
+        payload = self.call('browse', {'browseId': f'VL{playlist_id.removeprefix("VL")}', 'params': PLAYLIST_ITEMS_PARAMS})
+        lists = find_all(payload, 'playlistVideoListRenderer')
         if not lists:
-            raise YouTubeiError(f'the {playlist_id} page held no video list — is it a playlist this account can see?')
+            raise YouTubeiError(f'YouTube served no video list for {playlist_id} — is it a playlist this account owns?')
 
         items = items_from(lists[0])
-        token = continuation_token(lists[0])
-        while token:
-            block = appended_items(self.call('browse', {'continuation': token}))
+        query = continuation_query(lists[0])
+        while query:
+            block = appended_items(self.call('browse', query))
             fresh = items_from(block)
             if not fresh:
                 raise YouTubeiError(
@@ -501,7 +514,7 @@ class YouTubeiBackend:
                     'Refusing a partial read, because the merge would take the missing ones for deletions.'
                 )
             items.extend(fresh)
-            token = continuation_token(block)
+            query = continuation_query(block)
         return items
 
     def create_playlist(self, title: str, description: str = '') -> str:
