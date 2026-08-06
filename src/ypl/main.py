@@ -1,6 +1,7 @@
 """The ypl command tree."""
 
 import contextlib
+import dataclasses
 import importlib.metadata
 import json
 import sqlite3
@@ -1236,11 +1237,29 @@ def config_show(
 ) -> None:
     """Print the settings in effect, including defaults."""
     settings = load_config_or_exit()
+    # Walked off the dataclass rather than listed by hand. The listed version
+    # printed two of the seven, so `background_sync` — which the README tells you
+    # to set to turn the timer off — could not be confirmed from the command
+    # whose whole job is showing what is in effect, and neither could the
+    # `sync_minutes` budget that decides how long a run lasts.
+    values = {field.name: getattr(settings, field.name) for field in dataclasses.fields(settings)}
     if as_json:
-        print_json({'cookies_from_browser': settings.cookies_from_browser, 'enrich_batch_size': settings.enrich_batch_size})
+        print_json(values)
         return
-    messages.print(f'cookies_from_browser  {settings.cookies_from_browser or "(unset)"}')
-    messages.print(f'enrich_batch_size     {settings.enrich_batch_size}')
+    width = max(len(name) for name in values)
+    for name, value in values.items():
+        messages.print(f'{name:<{width}}  {as_written(value)}')
+
+
+def as_written(value: object) -> str:
+    """A setting as it would be written in the config, so it can be copied back."""
+    if value is None:
+        return '(unset)'
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, list):
+        return ', '.join(str(item) for item in value) or '(none)'
+    return str(value)
 
 
 @app.command('play', rich_help_panel=PLAYING)

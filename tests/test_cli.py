@@ -4,6 +4,7 @@
 the API rather than a nicety.
 """
 
+import dataclasses
 import json
 import os
 import shutil
@@ -220,6 +221,26 @@ def test_the_starter_config_written_by_init_loads_back():
     result = runner.invoke(app, ['config', 'show', '--json'])
     assert result.exit_code == 0
     assert json.loads(result.stdout)['enrich_batch_size'] == 50
+
+
+def test_config_show_shows_every_setting_there_is():
+    """It claimed "including defaults" and printed two of the seven, so
+    `background_sync` — the one the README tells you to set — could not be
+    confirmed from the command that exists to show what is in effect."""
+    shown = json.loads(runner.invoke(app, ['config', 'show', '--json']).stdout)
+
+    assert set(shown) == {field.name for field in dataclasses.fields(config.Config)}
+
+
+def test_a_setting_is_shown_as_it_would_be_written():
+    """So it can be copied back into the TOML rather than translated."""
+    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text('background_sync = false\n')
+
+    lines = dict(line.split(maxsplit=1) for line in runner.invoke(app, ['config', 'show']).output.splitlines())
+    assert lines['background_sync'].strip() == 'false'
+    assert lines['cookies_from_browser'].strip() == '(unset)'
+    assert lines['mpv_arguments'].strip() == '(none)'
 
 
 def test_unparseable_config_is_a_usage_error_naming_the_file():
