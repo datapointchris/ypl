@@ -564,9 +564,9 @@ def brief(error: Exception, limit: int = 160) -> str:
     """A failure short enough to read in a log.
 
     YouTube answers a request it does not like with several kilobytes of its
-    own JSON, and ytmusicapi puts all of it in the exception message. Forty of
-    those is a log nobody opens twice, which for an unattended sync is the same
-    as having no log.
+    own JSON, and yt-dlp puts all of it in the message. Forty of those is a log
+    nobody opens twice, which for an unattended sync is the same as having no
+    log.
     """
     message = ' '.join(str(error).split())
     return message if len(message) <= limit else f'{message[:limit]}...'

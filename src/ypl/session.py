@@ -52,28 +52,48 @@ def forget() -> None:
     paths.current_file().unlink(missing_ok=True)
 
 
-def remember_browser(browser: str) -> None:
-    """Record which browser a command successfully read a YouTube session from.
+def remember_browser(browser_name: str, page_id: str = '') -> None:
+    """Record which browser holds the YouTube session, and which channel to act as.
 
-    Written by anything that proves it works — `remote auth` signing in, or a
-    `sync --browser` that came back with playlists. Signing in once should not
-    have to be told twice, and it was: `remote auth` stored the YouTube Music
-    session while every read went through yt-dlp's own cookie handling, so the
-    tool held two unrelated ideas of being logged in and only one of them was
-    ever set.
+    These two are the whole of what signing in stores. There is no session file
+    any more: the cookies are read out of the browser on every run, so the only
+    durable facts are where to read them from and which of the identities they
+    carry to send as `x-goog-pageid`.
+
+    The page id is the fix the rebuild is downstream of. A jar can reach several
+    identities — a personal Google account and the brand account that actually
+    owns the channel — and without naming one, every request authenticates as
+    whichever the browser last selected. That was the personal account, which
+    owns nothing, so every playlist read back `owned: false` and every write
+    failed.
     """
     path = paths.auth_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({'browser': browser}) + '\n')
+    path.write_text(json.dumps({'browser': browser_name, 'page_id': page_id}) + '\n')
+
+
+def stored_auth() -> dict[str, str]:
+    """What signing in wrote, or an empty mapping when nothing has.
+
+    A file that cannot be parsed counts as nothing rather than raising, by the
+    same rule as `current`: the answer to a mangled one-line file is to sign in
+    again, not to make every command that reads it fail.
+    """
+    path = paths.auth_file()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def browser() -> str:
     """The browser signed in with, or '' when nothing has recorded one."""
-    path = paths.auth_file()
-    if not path.exists():
-        return ''
-    try:
-        payload = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return ''
-    return payload.get('browser') or '' if isinstance(payload, dict) else ''
+    return stored_auth().get('browser') or ''
+
+
+def page_id() -> str:
+    """The channel to act as, or '' when nothing has recorded one."""
+    return stored_auth().get('page_id') or ''

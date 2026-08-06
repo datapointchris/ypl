@@ -44,25 +44,19 @@ def database_file() -> Path:
 
 
 def auth_file() -> Path:
-    """What ypl learned while signing in, beside the session it learned it from.
-
-    Only the browser, so far. It sits in the config directory rather than in
-    state because it is part of account setup and because deleting it should be
-    as deliberate as deleting the session next to it — losing it silently would
-    turn a working `ypl sync` back into one that says it has nothing to read.
-    """
-    return config_dir() / 'auth.json'
-
-
-def ytmusic_auth_file() -> Path:
-    """The YouTube session `ypl remote` writes through.
+    """The whole of what signing in stores: a browser name and a page id.
 
     Config rather than state, despite being written by the tool: it is account
     setup, it survives every re-sync, and deleting it costs a trip to a browser
-    rather than a command. It holds a Google session cookie, so it is written
-    at 0600 and never at the umask's mode.
+    rather than a command.
+
+    It holds no credential. The session file that used to sit beside it did,
+    and it is gone — a copy of a Google session cookie goes stale on its own
+    while saying nothing, because Google rotates the SIDTS cookies while you
+    stay signed in. Reading the browser's jar on every run is both safer and
+    the only version where signing in once means once.
     """
-    return config_dir() / 'ytmusic.json'
+    return config_dir() / 'auth.json'
 
 
 def playlists_dir() -> Path:

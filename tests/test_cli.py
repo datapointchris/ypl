@@ -8,7 +8,6 @@ import dataclasses
 import json
 import os
 import shutil
-import stat
 import tempfile
 import tomllib
 from pathlib import Path
@@ -30,8 +29,8 @@ from ypl import service
 from ypl import session
 from ypl import synclog
 from ypl import throttle
+from ypl import youtubei
 from ypl import ytdlp
-from ypl import ytmusic
 from ypl.main import app
 from ypl.models import Chapter
 from ypl.models import PlaylistRef
@@ -952,7 +951,9 @@ def test_a_video_reachable_only_through_a_local_playlist_can_still_be_enriched(m
     assert shown['video']['title'] == 'A Set'
 
 
-HEADERS = 'cookie: __Secure-3PAPISID=aaa; SID=bbb\nx-goog-authuser: 0\n'
+# A signed-in jar: a SID cookie to hash, and the LOGIN_INFO that distinguishes
+# a live session from a browser that merely still holds one.
+BROWSER_COOKIES = {'__Secure-3PAPISID': 'aaa', 'SID': 'bbb', 'LOGIN_INFO': 'ccc'}
 
 
 class FakeBackend:
@@ -970,8 +971,13 @@ class FakeBackend:
     created: list[str] = []
     handles: int = 0
 
-    def __init__(self, auth_file):
-        self.auth_file = auth_file
+    cookies: dict[str, str] = {}
+    page_ids: list[str] = []
+
+    def __init__(self, cookies, page_id='', **kwargs):
+        FakeBackend.cookies = cookies
+        FakeBackend.page_ids.append(page_id)
+        self.page_id = page_id
 
     @classmethod
     def reset(cls):
@@ -980,6 +986,8 @@ class FakeBackend:
         cls.items = []
         cls.created = []
         cls.handles = 0
+        cls.cookies = {}
+        cls.page_ids = []
 
     @classmethod
     def handle(cls, video_id):
@@ -989,7 +997,7 @@ class FakeBackend:
     def account(self):
         if self.error:
             raise self.error
-        return remote.RemoteAccount(name='Chris Birch', handle='@chrisbirch')
+        return remote.RemoteAccount(name='iChrisBirch', handle='115127243664537694481')
 
     def playlist_items(self, playlist_id):
         if self.error:
@@ -1025,67 +1033,89 @@ class FakeBackend:
 def signing_in(monkeypatch):
     """Stand in for YouTube, reset between tests because the state is class-level."""
     FakeBackend.reset()
-    monkeypatch.setattr(ytmusic, 'YtMusicBackend', FakeBackend)
+    monkeypatch.setattr(youtubei, 'YouTubeiBackend', FakeBackend)
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: dict(BROWSER_COOKIES))
     yield FakeBackend
     FakeBackend.reset()
 
 
-def test_signing_in_stores_the_session_and_names_the_account(signing_in):
-    result = runner.invoke(app, ['remote', 'auth', '--json'], input=HEADERS)
+def test_signing_in_stores_the_browser_and_the_channel_it_acts_as(signing_in):
+    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari', '--json'])
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {
-        'path': str(paths.ytmusic_auth_file()),
-        'account': 'Chris Birch',
-        'handle': '@chrisbirch',
-        'browser': '',
+        'browser': 'safari',
+        'account': 'iChrisBirch',
+        'page_id': '115127243664537694481',
+        'path': str(paths.auth_file()),
     }
 
 
-def test_the_stored_session_is_not_readable_by_anyone_else(signing_in):
-    """The end-to-end half of the mode test — the command must not widen it."""
-    runner.invoke(app, ['remote', 'auth'], input=HEADERS)
-    assert stat.S_IMODE(paths.ytmusic_auth_file().stat().st_mode) == 0o600
+def test_the_page_id_is_what_gets_stored_not_the_account_that_was_selected(signing_in):
+    """The whole bug, in one assertion.
+
+    A jar reaches a personal Google account and the brand account beneath it,
+    and the browser was left selected on the personal one — which owns no
+    channel and no playlists. What has to be recorded is the identity that owns
+    the channel, so every later request can name it.
+    """
+    runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    assert session.page_id() == '115127243664537694481'
 
 
-def test_signing_in_again_refuses_rather_than_replacing_a_working_session(signing_in):
-    """Re-copying headers is a browser round trip, so the overwrite is asked for."""
-    runner.invoke(app, ['remote', 'auth'], input=HEADERS)
-    stored = paths.ytmusic_auth_file().read_text()
+def test_signing_in_stores_no_credential(signing_in):
+    """There is nothing here worth protecting at 0600, because nothing is kept.
 
-    result = runner.invoke(app, ['remote', 'auth'], input='cookie: other\nx-goog-authuser: 0\n')
-    assert result.exit_code == 1
-    assert '--replace' in result.output
-    assert paths.ytmusic_auth_file().read_text() == stored
-
-
-def test_replace_signs_in_over_the_old_session(signing_in):
-    runner.invoke(app, ['remote', 'auth'], input=HEADERS)
-    result = runner.invoke(app, ['remote', 'auth', '--replace'], input='cookie: newer\nx-goog-authuser: 0\n')
-    assert result.exit_code == 0
-    assert json.loads(paths.ytmusic_auth_file().read_text())['cookie'] == 'newer'
+    The session file this replaces held a Google account cookie, which is the
+    entire credential. Reading the browser's jar per run means the only durable
+    facts are a browser name and a page id, neither of which signs anyone in.
+    """
+    runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    stored = json.loads(paths.auth_file().read_text())
+    assert set(stored) == {'browser', 'page_id'}
+    assert 'aaa' not in paths.auth_file().read_text()
 
 
-def test_headers_that_do_not_parse_are_a_usage_error(signing_in):
-    """Exit 2: the paste was wrong, which is the caller's input rather than a failure."""
-    result = runner.invoke(app, ['remote', 'auth'], input='accept: */*\n')
+def test_signing_in_twice_just_signs_in_again(signing_in):
+    """No --replace, because there is no stored credential to refuse to clobber.
+
+    The old flow guarded the overwrite because re-copying headers was a trip
+    through DevTools. Naming a browser costs nothing, so the guard was asking
+    permission to redo something free.
+    """
+    assert runner.invoke(app, ['remote', 'auth', '--browser', 'safari']).exit_code == 0
+    assert runner.invoke(app, ['remote', 'auth', '--browser', 'firefox']).exit_code == 0
+    assert session.browser() == 'firefox'
+
+
+def test_naming_no_browser_at_all_is_a_usage_error(signing_in):
+    """Exit 2: nothing was wrong, the one required fact was not given."""
+    result = runner.invoke(app, ['remote', 'auth'])
     assert result.exit_code == 2
-    assert not paths.ytmusic_auth_file().exists()
+    assert not paths.auth_file().exists()
 
 
-def test_a_session_youtube_rejects_is_not_left_behind(signing_in):
-    """A stored credential that cannot work would only fail later, further from here."""
+def test_a_session_youtube_rejects_stores_nothing(signing_in):
+    """Recording a browser that cannot sign in would only fail later, further from here."""
     signing_in.error = remote.RemoteAuthError('cookie expired')
-    result = runner.invoke(app, ['remote', 'auth'], input=HEADERS)
+    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
     assert result.exit_code == 1
-    assert not paths.ytmusic_auth_file().exists()
+    assert not paths.auth_file().exists()
 
 
-def test_a_session_that_could_not_be_checked_is_kept(signing_in):
-    """A throttle or a dead network says nothing about the headers."""
+def test_a_session_that_could_not_be_checked_leaves_an_existing_sign_in_alone(signing_in):
+    """A throttle or a dead network says nothing about the browser.
+
+    Nothing new is stored, and — the part that matters — the sign-in already
+    there is not replaced by a worse one on the strength of a failure that was
+    never about it.
+    """
+    session.remember_browser('safari', 'PAGEID')
     signing_in.error = remote.RemoteRateLimitedError('slow down')
-    result = runner.invoke(app, ['remote', 'auth'], input=HEADERS)
+
+    result = runner.invoke(app, ['remote', 'auth', '--browser', 'firefox'])
     assert result.exit_code == 1
-    assert paths.ytmusic_auth_file().exists()
+    assert session.browser() == 'safari'
+    assert session.page_id() == 'PAGEID'
 
 
 def test_deleting_a_playlist_takes_its_merge_base_with_it(synced):
@@ -1110,7 +1140,7 @@ def bind(name: str, remote_id: str = 'PLR') -> local.LocalPlaylist:
 
 
 @pytest.fixture
-def bound(two_videos, signing_in):
+def bound(two_videos, signed_in):
     """A synced playlist on YouTube, with a base recorded for it."""
     runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
     bind('Sunday')
@@ -1121,7 +1151,7 @@ def bound(two_videos, signing_in):
             items=[RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')],
         )
     )
-    return signing_in
+    return signed_in
 
 
 def test_a_pull_applies_what_changed_on_youtube_and_keeps_what_changed_here(bound, monkeypatch):
@@ -1200,14 +1230,14 @@ def test_pulling_without_a_session_names_the_command_that_fixes_it(two_videos):
     assert 'ypl remote auth' in result.output
 
 
-def test_pulling_with_nothing_on_youtube_yet_succeeds_and_says_so(two_videos, signing_in):
+def test_pulling_with_nothing_on_youtube_yet_succeeds_and_says_so(two_videos, signed_in):
     runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
     result = runner.invoke(app, ['remote', 'pull'])
     assert result.exit_code == 0
     assert 'Nothing to pull' in result.output
 
 
-def test_naming_a_playlist_that_is_not_on_youtube_yet_is_an_error(two_videos, signing_in):
+def test_naming_a_playlist_that_is_not_on_youtube_yet_is_an_error(two_videos, signed_in):
     """A sweep passes over it silently; asking for it by name has to answer."""
     runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
     result = runner.invoke(app, ['remote', 'pull', 'Sunday'])
@@ -1229,31 +1259,32 @@ def test_a_demoted_playlist_is_not_pulled_into(bound):
 
 
 @pytest.fixture
-def library(monkeypatch, signing_in):
+def library(monkeypatch, signed_in):
     """A mirrored account: one playlist of mine, one of someone else's, one of YouTube's.
 
     Channels are set because ownership is the thing the sweep filters on, and
-    the fake account signs in as `Chris Birch` / `@chrisbirch`.
+    the fake account signs in as the channel `iChrisBirch` rather than as the
+    Google account behind it.
     """
     playlists = {
         'PLMINE': RemotePlaylist(
             playlist_id='PLMINE',
             title='DRIVE TIME',
-            channel='Chris Birch',
+            channel='iChrisBirch',
             videos=[RemoteVideo(video_id='vid1', title='A Talk'), RemoteVideo(video_id='vid2', title='Another')],
         ),
         'PLTHEIRS': RemotePlaylist(
             playlist_id='PLTHEIRS', title='Their Mix', channel='Robert Greene', videos=[RemoteVideo(video_id='vid3', title='Theirs')]
         ),
         'LL': RemotePlaylist(
-            playlist_id='LL', title='Liked videos', channel='Chris Birch', videos=[RemoteVideo(video_id='vid4', title='Liked')]
+            playlist_id='LL', title='Liked videos', channel='iChrisBirch', videos=[RemoteVideo(video_id='vid4', title='Liked')]
         ),
     }
     monkeypatch.setattr(ytdlp, 'fetch_playlist', lambda url, **kwargs: playlists[url.rsplit('/', 1)[-1]])
     for playlist_id in playlists:
         runner.invoke(app, ['sync', f'https://example.invalid/{playlist_id}'])
-    signing_in.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
-    return signing_in
+    signed_in.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
+    return signed_in
 
 
 def test_adopting_binds_a_local_file_to_the_playlist_youtube_holds(library):
@@ -1375,27 +1406,27 @@ def test_planning_reads_and_writes_nothing(bound):
     assert [item.video_id for item in bound.items] == ['vid1', 'vid2']
 
 
-def test_a_new_playlist_is_created_on_youtube_and_filled(two_videos, signing_in):
+def test_a_new_playlist_is_created_on_youtube_and_filled(two_videos, signed_in):
     runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
 
     result = runner.invoke(app, ['remote', 'apply'])
     assert result.exit_code == 0
-    assert signing_in.created == ['sunday']
-    assert [item.video_id for item in signing_in.items] == ['vid1', 'vid2']
+    assert signed_in.created == ['sunday']
+    assert [item.video_id for item in signed_in.items] == ['vid1', 'vid2']
     assert local.load(local.path_for('Sunday')).remote_id == 'PLNEW'
 
 
-def test_a_created_playlist_is_bound_before_its_videos_go_up(two_videos, signing_in):
+def test_a_created_playlist_is_bound_before_its_videos_go_up(two_videos, signed_in):
     """Otherwise a failed fill orphans it, and the next run creates a second one."""
-    signing_in.add_error = remote.RemoteError('network went away')
+    signed_in.add_error = remote.RemoteError('network went away')
     runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
 
     assert runner.invoke(app, ['remote', 'apply']).exit_code == 1
     assert local.load(local.path_for('Sunday')).remote_id == 'PLNEW'
 
-    signing_in.add_error = None
+    signed_in.add_error = None
     assert runner.invoke(app, ['remote', 'apply']).exit_code == 0
-    assert signing_in.created == ['sunday']
+    assert signed_in.created == ['sunday']
 
 
 def test_a_video_deleted_here_is_removed_on_youtube(bound):
@@ -1455,14 +1486,11 @@ def test_a_limited_run_says_how_much_it_left(bound):
     assert '1 of 2' in result.output
 
 
-def test_signing_in_from_a_browser_needs_no_paste(signing_in, monkeypatch):
+def test_signing_in_from_a_browser_needs_no_paste(signing_in):
     """The whole point: no DevTools, no clipboard, no EOF on stdin."""
-    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'x', 'SID': 'y'})
-
     result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari', '--json'])
     assert result.exit_code == 0
-    assert json.loads(result.stdout)['account'] == 'Chris Birch'
-    assert stat.S_IMODE(paths.ytmusic_auth_file().stat().st_mode) == 0o600
+    assert json.loads(result.stdout)['account'] == 'iChrisBirch'
 
 
 def test_the_configured_browser_is_used_when_no_flag_is_given(signing_in, monkeypatch):
@@ -1470,18 +1498,24 @@ def test_the_configured_browser_is_used_when_no_flag_is_given(signing_in, monkey
     paths.config_file().parent.mkdir(parents=True, exist_ok=True)
     paths.config_file().write_text('cookies_from_browser = "firefox"\n')
     asked = []
-    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: asked.append(browser) or {'__Secure-3PAPISID': 'x'})
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: asked.append(browser) or dict(BROWSER_COOKIES))
 
     assert runner.invoke(app, ['remote', 'auth']).exit_code == 0
     assert asked == ['firefox']
 
 
-def test_a_browser_that_is_not_signed_in_fails_without_writing_anything(signing_in, monkeypatch):
-    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'SID': 'y'})
+def test_a_browser_that_is_not_signed_in_fails_without_writing_anything(monkeypatch):
+    """A jar can hold a SID cookie long after the session behind it ended.
+
+    Deliberately against the real backend rather than the fake: this is the one
+    refusal that happens before any request, and faking the thing under test
+    would assert nothing.
+    """
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'aaa'})
 
     result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
     assert result.exit_code == 1
-    assert not paths.ytmusic_auth_file().exists()
+    assert not paths.auth_file().exists()
 
 
 def test_a_browser_yt_dlp_cannot_read_names_the_browser(signing_in, monkeypatch):
@@ -1519,8 +1553,14 @@ def account(monkeypatch):
             # remote half of a sync is skipped for a playlist that is not; and
             # this account's own channel, because the sweep only adopts what the
             # account owns and the feed lists saved playlists too.
+            #
+            # The channel is the brand account, which is the fact the old
+            # backend could not see: it answered with the *Google account* name,
+            # so every one of this account's own playlists was judged to belong
+            # to somebody else. Naming it `Chris Birch` here made the suite
+            # agree with the bug.
             availability='public',
-            channel='Chris Birch',
+            channel='iChrisBirch',
         ),
     )
     monkeypatch.setattr(
@@ -1564,7 +1604,7 @@ def test_a_saved_playlist_from_someone_elses_channel_is_not_adopted_by_the_sweep
             title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
             availability='public',
-            channel='Chris Birch' if url == 'PLa' else 'The Partially Examined Life',
+            channel='iChrisBirch' if url == 'PLa' else 'The Partially Examined Life',
         )
 
     monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
@@ -1590,7 +1630,7 @@ def test_a_playlist_that_is_not_public_is_left_out_of_the_remote_half(account, s
             title=title,
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
             availability='public' if url == 'PLa' else '',
-            channel='Chris Birch',
+            channel='iChrisBirch',
         )
 
     monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
@@ -1625,7 +1665,7 @@ def test_the_system_lists_are_not_named_among_the_playlists_that_are_not_public(
             title={'PLa': 'Deep Night', 'LL': 'Liked videos'}[url],
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
             availability='public' if url == 'PLa' else '',
-            channel='Chris Birch',
+            channel='iChrisBirch',
         )
 
     monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
@@ -1689,13 +1729,13 @@ def test_syncing_one_playlist_by_url_still_works(synced):
 
 @pytest.fixture
 def signed_in(signing_in):
-    """A machine that has already signed in, without going through the paste.
+    """A machine that has already signed in.
 
-    The backend is faked either way; what this adds is the session file, which
-    is what `ypl sync` looks at to decide whether this machine can write.
+    The backend is faked either way; what this adds is the recorded browser and
+    page id, which is what `ypl sync` looks at to decide whether this machine
+    can write.
     """
-    paths.ytmusic_auth_file().parent.mkdir(parents=True, exist_ok=True)
-    paths.ytmusic_auth_file().write_text('{}')
+    session.remember_browser('safari', '115127243664537694481')
     return signing_in
 
 
@@ -2418,29 +2458,39 @@ def test_a_base_with_no_handles_is_read_again_rather_than_trusted(library):
     assert service.needs_reconcile(db.connect(), local.load(local.path_for('DRIVE TIME'))) is True
 
 
-def test_the_session_is_rebuilt_from_the_browser_before_a_sync(account, signed_in, linux_timer, monkeypatch):
+def test_the_cookies_are_read_from_the_browser_on_every_sync(account, signed_in, linux_timer, monkeypatch):
     """A stored session is a photograph of something that moves.
 
     Google rotates the session cookies while you stay signed in, so signing in
-    once only means once if the file is rebuilt from the browser each run —
-    which is why the first real run mirrored all afternoon while the write path
-    had quietly become a signed-out visitor.
+    once only means once if the jar is re-read each run — which is why the
+    first real run mirrored all afternoon while the write path had quietly
+    become a signed-out visitor. There is no stored copy to go stale now, and
+    this is the assertion that keeps it that way.
     """
-    session.remember_browser('safari')
-    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'fresh', 'SID': 'x'})
-    paths.ytmusic_auth_file().write_text('{"cookie": "stale"}')
+    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {**BROWSER_COOKIES, '__Secure-3PAPISID': 'fresh'})
 
     assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
-    assert 'fresh' in paths.ytmusic_auth_file().read_text()
+    assert FakeBackend.cookies['__Secure-3PAPISID'] == 'fresh'
 
 
-def test_a_browser_that_cannot_be_read_leaves_the_stored_session_alone(monkeypatch):
-    """Stale beats absent: it may still work, and nothing else can sign in."""
-    paths.ytmusic_auth_file().parent.mkdir(parents=True, exist_ok=True)
-    paths.ytmusic_auth_file().write_text('{"cookie": "stored"}')
+def test_the_stored_page_id_reaches_the_backend_on_every_sync(account, signed_in, linux_timer):
+    """Every request has to name the channel, not just the one that signed in.
+
+    A page id recorded at sign-in and then not sent is the same bug it was
+    introduced to fix: the write path authenticates as the Google account and
+    every playlist comes back owned by somebody else.
+    """
+    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
+    assert FakeBackend.page_ids
+    assert set(FakeBackend.page_ids) == {'115127243664537694481'}
+
+
+def test_a_browser_that_cannot_be_read_leaves_sync_mirroring(account, signed_in, linux_timer, monkeypatch):
+    """Mirroring needs no session, so a locked browser costs the write half only."""
     monkeypatch.setattr(
         ytdlp, 'browser_cookies', lambda browser, **kwargs: (_ for _ in ()).throw(ytdlp.YtdlpFailedError('safari is locked'))
     )
 
-    assert ytmusic.refresh_session('safari', paths.ytmusic_auth_file()) is False
-    assert 'stored' in paths.ytmusic_auth_file().read_text()
+    result = runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert result.exit_code == 0
+    assert 'mirroring only' in result.output

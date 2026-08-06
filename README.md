@@ -210,7 +210,7 @@ Private and unlisted playlists need a logged-in session — set `cookies_from_br
 | `$XDG_DATA_HOME/ypl/plays.jsonl` | Listening history, appended one line per listen. Not rebuildable from anything, so it sits with the playlists rather than in the mirror. |
 | `$XDG_DATA_HOME/ypl/remote/` | What YouTube held for each playlist at the last reconcile, one JSON file per playlist. The base of the three-way merge, and the only copy of each slot's `setVideoId`. Not rebuildable — re-reading YouTube answers what is there now, not what was there then. |
 | `$XDG_CONFIG_HOME/ypl/config.toml` | Settings. `ypl config init` writes a starter. |
-| `$XDG_CONFIG_HOME/ypl/ytmusic.json` | The YouTube session, mode 0600. Written by `ypl remote auth`; it is a Google account cookie, so treat it as the password it is. |
+| `$XDG_CONFIG_HOME/ypl/auth.json` | Which browser holds the YouTube session, and which channel to act as. Written by `ypl remote auth`. No credential: the cookies are read from the browser on every run. |
 | `$XDG_STATE_HOME/ypl/mpv.sock` | mpv's IPC socket while `ypl play` is running. Read by `ypl now`. |
 
 `ypl config path` prints the first three.
@@ -340,11 +340,15 @@ caches its own draw, which is where stability within a session comes from.
 
 ## Writing back to YouTube
 
-Writes go through the YouTube Music web client's own endpoints (`ytmusicapi`), not the official
-Data API. `playlistItems.insert` costs 50 units of a per-project 10,000/day, which is 200 writes a
-day permanently — splitting an 1,800-video playlist through it is eighteen days of queue draining,
-which forces the shape that looks least like a person: a daemon making requests around the clock
-for weeks.
+Writes go through the web client's own endpoints on `www.youtube.com` — youtubei — and not the
+official Data API. `playlistItems.insert` costs 50 units of a per-project 10,000/day, which is 200
+writes a day permanently — splitting an 1,800-video playlist through it is eighteen days of queue
+draining, which forces the shape that looks least like a person: a daemon making requests around
+the clock for weeks.
+
+Not YouTube Music either, which is where this started. A brand account has no Music presence, so
+`music.youtube.com` answers its cookies with the account menu a signed-out visitor gets; the main
+site answers the same cookies with the full edit surface.
 
 The web client protocol batches. One request carries an `actions` array of a hundred additions, so
 the same reorganisation is a couple of dozen requests — *less* traffic than doing it by hand in the
@@ -358,29 +362,28 @@ front of a 200-track playlist is one request, not 200.
 
 The backend sits behind an interface, so the Data API remains a one-module swap.
 
-Signing in is a paste, once per machine. There is no OAuth: ytmusicapi's OAuth flow now needs a
-TV-type Google client of your own, which is the Data API project setup this route exists to avoid.
+Signing in is one command, once per machine:
 
 ```bash
 ypl remote auth --browser safari   # firefox, chrome, brave, edge, chromium, vivaldi, opera
 ```
 
-That is the whole flow: no DevTools, no paste. yt-dlp already decrypts every browser's cookie
-store — it is how private playlists are read — so the session is built from the cookies of a
-browser you are already signed in to. With no `--browser`, `cookies_from_browser` from the config
-is used instead.
+That is the whole flow: no DevTools, no paste, no OAuth. yt-dlp already decrypts every browser's
+cookie store — it is how private playlists are read — so the session comes from a browser you are
+already signed in to. With no `--browser`, `cookies_from_browser` from the config is used instead.
 
-The headers ytmusicapi wants are only a delivery mechanism for three facts, and the cookie jar
-holds all of them: the cookie itself, which account is selected, and a SAPISIDHASH. The last one
-looks like the important one and is the least — it is recomputed from the cookie before every
-request, and the stored value exists only so the session is recognised as browser auth.
+**Nothing about the session is stored.** The cookies are read from the browser on every run, so
+`auth.json` holds only a browser name and a page id, neither of which signs anyone in. This is not
+only about secrets: Google rotates the session cookies while you stay signed in, so a copy taken at
+two o'clock is a signed-out visitor by five — and it says nothing when it stops working. Re-reading
+the jar is what makes signing in once mean once.
 
-Pasting request headers still works (`ypl remote auth` with nothing piped, or `pbpaste | ypl remote
-auth`) if a browser's cookies are ever unreadable. They are stored at
-`$XDG_CONFIG_HOME/ypl/ytmusic.json`, mode 0600 — the cookie in there is the entire credential, so
-treat the file as the password it is. `ypl remote auth` then asks YouTube whose account it reaches
-and prints the answer, because a paste that parses is not yet a session that works; one YouTube
-rejects is deleted rather than stored to fail later. `--replace` signs in over a stored session.
+The page id is the other half. A cookie jar can reach several identities — a personal Google
+account and any brand accounts under it — and without naming one, every request authenticates as
+whichever the browser last selected. If that is the personal account, its own channel's playlists
+come back owned by somebody else, with no item handles and no write that succeeds. So `ypl remote
+auth` asks YouTube which identities the cookies reach, takes the one that owns a channel, and
+records its page id for every later request to send.
 
 ### Taking over what YouTube already holds
 

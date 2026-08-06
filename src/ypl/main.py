@@ -33,8 +33,8 @@ from ypl import service
 from ypl import session
 from ypl import synclog
 from ypl import throttle
+from ypl import youtubei
 from ypl import ytdlp
-from ypl import ytmusic
 from ypl.models import watch_url
 
 ROOT_HELP = """\
@@ -123,22 +123,6 @@ Examples:
   ypl remote apply                                send it
   ypl remote apply --limit 5                      a drain on a timer
 """
-
-# The fallback, and it stays a fallback: --browser needs none of this. Ctrl-D
-# is called out twice over because it only signals EOF at the start of a line,
-# so a paste with no trailing newline swallows the first one and looks broken.
-AUTH_INSTRUCTIONS = """\
-[bold]ypl remote auth --browser safari[/bold] does this without DevTools — the
-session comes out of a browser you are already signed in to. Otherwise:
-
-Sign in at [bold]music.youtube.com[/bold], open DevTools on the Network tab,
-and click something — Library, or any playlist — to make the page talk; it
-records only while it is open. Filter for [bold]/youtubei/[/bold], pick any
-POST, and copy its whole Request Headers block.
-
-Paste it below, then press Enter and Ctrl-D.
-"""
-
 READING = 'Reading (the local mirror)'
 SYNCING = 'Syncing (pulls from YouTube, no API quota)'
 BUILDING = 'Building (writes M3U files here; YouTube only via ypl remote)'
@@ -417,24 +401,22 @@ def video_ids_from_stdin_or_exit() -> list[str]:
     return video_ids_or_exit([line for line in sys.stdin.read().splitlines() if line.strip()])
 
 
-def signed_in_backend(quiet: bool) -> ytmusic.YtMusicBackend | None:
+def signed_in_backend(quiet: bool) -> youtubei.YouTubeiBackend | None:
     """The write backend when this machine has signed in, and None when it has not.
 
     None rather than an exit: mirroring needs no session, and a machine that has
-    never run `remote auth` must still get a working `ypl sync`. Signing in is
+    never run `ypl auth` must still get a working `ypl sync`. Signing in is
     per-machine setup, and holding the whole sync hostage to it would make the
     automatic case fail on exactly the machine nobody is watching.
     """
-    if not paths.ytmusic_auth_file().exists():
+    stored = session.stored_auth()
+    if not stored.get('browser'):
         if not quiet:
             messages.print('Not signed in — mirroring only. [bold]ypl remote auth --browser safari[/bold] syncs both ways.')
         return None
-    # Rebuilt from the browser first, because the stored copy goes stale on its
-    # own: Google rotates the session cookies while you stay signed in.
-    ytmusic.refresh_session(session.browser(), paths.ytmusic_auth_file())
     try:
-        return ytmusic.YtMusicBackend(paths.ytmusic_auth_file())
-    except remote.RemoteError as error:
+        return backend_for_browser(stored['browser'], stored.get('page_id') or '')
+    except (remote.RemoteError, ytdlp.YtdlpUnavailableError, ytdlp.YtdlpFailedError) as error:
         if not quiet:
             messages.print(f'[yellow]Signed-in session unusable, mirroring only:[/yellow] {error}')
         return None
@@ -1591,21 +1573,19 @@ def plays_list(
     console.print(table)
 
 
-def headers_from_browser_or_exit(browser: str) -> str:
-    """Read the browser's YouTube cookies and build a session out of them."""
-    try:
-        cookies = ytdlp.browser_cookies(browser)
-    except ytdlp.YtdlpUnavailableError as error:
-        messages.print(f'[red]{error}[/red]')
-        raise typer.Exit(1) from error
-    except ytdlp.YtdlpFailedError as error:
-        messages.print(f'[red]Could not read cookies from {browser}.[/red] {error}')
-        raise typer.Exit(1) from error
-    try:
-        return ytmusic.session_headers(cookies)
-    except remote.RemoteAuthError as error:
-        messages.print(f'[red]{error}[/red]')
-        raise typer.Exit(1) from error
+def backend_for_browser(browser: str, page_id: str) -> youtubei.YouTubeiBackend:
+    """A write backend over whatever cookies that browser holds right now.
+
+    Built per call rather than cached, because the cookies are the credential
+    and they rotate underneath a long-running sync. Reading them costs a local
+    file and no request.
+    """
+    settings = load_config_or_exit()
+    return youtubei.YouTubeiBackend(
+        ytdlp.browser_cookies(browser),
+        page_id=page_id,
+        throttle=throttle.Throttle(settings.request_interval_seconds),
+    )
 
 
 @remote_app.command('auth')
@@ -1613,79 +1593,74 @@ def remote_auth(
     browser: str = typer.Option(
         None, '--browser', '-b', help='Read the session from this browser: safari, firefox, chrome, brave, edge...'
     ),
-    replace: bool = typer.Option(False, '--replace', help='Overwrite a session that is already stored.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
-    """Store the YouTube session the write path signs in with.
+    """Sign in, by naming a browser you are already signed in to.
 
-    [bold]ypl remote auth --browser safari[/bold] takes it straight out of a
-    browser you are already signed in to, through yt-dlp, and asks nothing of
-    you. With no --browser it falls back to `cookies_from_browser` in the
-    config, and failing that to pasted request headers on stdin.
+    [bold]ypl remote auth --browser safari[/bold] and nothing else. There is
+    nothing to paste and nothing to find in DevTools: yt-dlp already decrypts
+    every browser's cookie store, so the session is read from the one you are
+    using.
 
-    Whatever the source, the session is written at 0600 and then used once to
-    ask YouTube whose account it reaches — headers that parse are not yet a
-    session that works.
+    Nothing about the session is stored — only which browser to read it from,
+    and which channel to act as. YouTube is asked once which identities those
+    cookies reach, and the one that owns a channel is the one recorded: a
+    Google account and the brand account beneath it are different identities,
+    and acting as the first is why every write this tool made used to fail.
     """
-    auth_file = paths.ytmusic_auth_file()
-    if auth_file.exists() and not replace:
-        messages.print(f'[red]{auth_file} already exists.[/red] Pass --replace to sign in again.')
-        raise typer.Exit(1)
-
-    source = browser or reading_browser(load_config_or_exit())
-    if source:
-        headers_raw = headers_from_browser_or_exit(source)
-    else:
-        if sys.stdin.isatty():
-            messages.print(AUTH_INSTRUCTIONS)
-        headers_raw = sys.stdin.read()
+    source = browser or reading_browser(load_config_or_exit()) or session.browser()
+    if not source:
+        messages.print('[red]Which browser are you signed in to YouTube with?[/red]')
+        messages.print('Run [bold]ypl remote auth --browser safari[/bold] — or firefox, chrome, brave, edge.')
+        raise typer.Exit(2)
 
     try:
-        ytmusic.write_session(headers_raw, auth_file)
-    except remote.RemoteAuthError as error:
-        messages.print(f'[red]Those headers cannot be used.[/red] {error}')
-        raise typer.Exit(2) from error
-    except remote.RemoteError as error:
+        cookies = ytdlp.browser_cookies(source)
+    except ytdlp.YtdlpUnavailableError as error:
         messages.print(f'[red]{error}[/red]')
         raise typer.Exit(1) from error
+    except ytdlp.YtdlpFailedError as error:
+        messages.print(f'[red]Could not read cookies from {source}.[/red] {error}')
+        raise typer.Exit(1) from error
 
     try:
-        account = ytmusic.YtMusicBackend(auth_file).account()
+        # Built without a page id on purpose: which one to send is the question
+        # this call answers, and pinning one first would only confirm itself.
+        account = youtubei.YouTubeiBackend(cookies).account()
     except remote.RemoteAuthError as error:
-        # The headers parsed and the cookie does not work, so what was just
-        # written is a credential that can only fail later, further from here.
-        auth_file.unlink(missing_ok=True)
-        messages.print(f'[red]YouTube rejected that session.[/red] {error}')
-        messages.print('Nothing was stored. Copy the headers again from a tab that is signed in.')
+        messages.print(f'[red]YouTube did not accept that browser session.[/red] {error}')
+        messages.print(f'Nothing was stored. Sign in at youtube.com in {source} and run this again.')
         raise typer.Exit(1) from error
     except remote.RemoteError as error:
-        # Kept: this is a throttle or a network failure, which says nothing
-        # about the session, and re-copying the headers would not help.
-        messages.print(f'[yellow]Stored, but could not be checked:[/yellow] {error}')
+        # A throttle or a dead network says nothing about the session, so there
+        # is nothing here to correct by signing in again.
+        messages.print(f'[yellow]Could not check that session:[/yellow] {error}')
         raise typer.Exit(1) from error
 
-    if source:
-        # Every read borrows cookies through yt-dlp rather than through this
-        # session, so a browser that just proved it holds one is exactly what
-        # `ypl sync` needs to know and had no way of learning.
-        session.remember_browser(source)
+    session.remember_browser(source, account.handle)
 
     if as_json:
-        print_json({'path': str(auth_file), 'account': account.name, 'handle': account.handle, 'browser': source or ''})
+        print_json({'browser': source, 'account': account.name, 'page_id': account.handle, 'path': str(paths.auth_file())})
         return
-    messages.print(f'Signed in as [bold]{account.name or "an account YouTube did not name"}[/bold] {account.handle}'.strip())
-    messages.print(str(auth_file))
+    messages.print(f'Signed in as [bold]{account.name or "an account YouTube did not name"}[/bold], reading {source}.')
 
 
-def backend_or_exit() -> ytmusic.YtMusicBackend:
-    ytmusic.refresh_session(session.browser(), paths.ytmusic_auth_file())
+def backend_or_exit() -> youtubei.YouTubeiBackend:
+    stored = session.stored_auth()
+    if not stored.get('browser'):
+        messages.print('[red]Not signed in.[/red]')
+        messages.print('Run [bold]ypl remote auth --browser safari[/bold] to sign in.')
+        raise typer.Exit(1)
     try:
-        return ytmusic.YtMusicBackend(paths.ytmusic_auth_file())
+        return backend_for_browser(stored['browser'], stored.get('page_id') or '')
+    except ytdlp.YtdlpFailedError as error:
+        messages.print(f'[red]Could not read cookies from {stored["browser"]}.[/red] {error}')
+        raise typer.Exit(1) from error
     except remote.RemoteAuthError as error:
         messages.print(f'[red]{error}[/red]')
         messages.print('Run [bold]ypl remote auth[/bold] to sign in.')
         raise typer.Exit(1) from error
-    except remote.RemoteError as error:
+    except (remote.RemoteError, ytdlp.YtdlpUnavailableError) as error:
         messages.print(f'[red]{error}[/red]')
         raise typer.Exit(1) from error
 
@@ -1726,7 +1701,7 @@ def mirrored_or_exit(connection: sqlite3.Connection, name: str) -> service.Resol
         raise typer.Exit(2) from error
 
 
-def account_or_exit(backend: ytmusic.YtMusicBackend) -> remote.RemoteAccount:
+def account_or_exit(backend: youtubei.YouTubeiBackend) -> remote.RemoteAccount:
     try:
         return backend.account()
     except remote.RemoteError as error:
@@ -1942,7 +1917,7 @@ def push_payload(push: service.Push) -> dict:
 
 def plan_pushes(
     connection: sqlite3.Connection, name: str | None, limit: int | None
-) -> tuple[ytmusic.YtMusicBackend | None, list[service.Push]]:
+) -> tuple[youtubei.YouTubeiBackend | None, list[service.Push]]:
     """Plan every target, and hand back the backend that read them.
 
     The same backend carries on into `apply`, so a run is one signed-in session
@@ -2064,7 +2039,7 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
     timer = schedule.installed()
     payload = {
         'running': runlock.running(),
-        'signed_in': paths.ytmusic_auth_file().exists(),
+        'signed_in': bool(session.browser()),
         'scheduled': bool(timer),
         'interval_minutes': timer.interval_minutes if timer else None,
         'last_sync': last.get('ts') if last else None,

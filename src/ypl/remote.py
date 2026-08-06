@@ -1,25 +1,17 @@
-"""Writes against YouTube, through the YouTube Music web client's own endpoints.
+"""What the write path needs from YouTube, and the planning that is provider-free.
 
-Not the official Data API. `playlistItems.insert` costs 50 units of a per-project
-10,000/day, which is 200 writes a day permanently — a cap no OAuth setup lifts
-and that a Google audit personal tools do not get would be needed to raise.
-Splitting an 1,800-video playlist through it is eighteen days of queue draining,
-which forces exactly the shape that looks least like a person: a daemon making
-requests around the clock for weeks.
+The interface and the provider stay separable: this module is the `Backend`
+Protocol, the pacing constants and the reorder planner, and `src/ypl/youtubei.py`
+is the only thing that knows what a request looks like. Swapping to the official
+Data API would be replacing that module, not rewriting the write path — which is
+the point of the split, and why the argument for the current provider lives
+there rather than here.
 
-`ytmusicapi` speaks the web client's protocol with the session cookie, and adds
-batch: one request carries an `actions` array holding a hundred additions. The
-same 1,800-video reorganisation is a couple of dozen requests. Doing it this way
-generates *less* traffic than clicking through the web UI would.
-
-That trade is deliberate and it is not free — the YouTube Terms prohibit
-automated access to the Service, and the credential is a Google account cookie.
-Everything here is therefore built to stay at human scale rather than to go as
-fast as it can: every call goes through `Throttle`, batches are bounded, and a
-429 stops the run instead of retrying into it.
-
-The backend is a Protocol so the Data API remains a one-module swap if that
-trade ever stops being worth it.
+The pacing lives here because the reason for it is not a provider detail. The
+credential is a Google account cookie and the Terms prohibit automated access,
+so everything is built to stay at human scale rather than to go as fast as it
+can: every call goes through `Throttle`, batches are bounded, and a 429 stops
+the run instead of retrying into it.
 """
 
 from collections.abc import Hashable
@@ -100,6 +92,26 @@ class Backend(Protocol):
     def playlist_items(self, playlist_id: str) -> list[RemoteItem]: ...
 
     def create_playlist(self, title: str, description: str = '') -> str: ...
+
+    def delete_playlist(self, playlist_id: str) -> None:
+        """Remove the playlist from YouTube.
+
+        Part of the interface because the file and the playlist are one thing:
+        `ypl playlists delete` destroys both, and a backend that could create
+        but not delete would leave the account accumulating every playlist this
+        tool ever made.
+        """
+        ...
+
+    def rename_playlist(self, playlist_id: str, title: str) -> None:
+        """Change the playlist's title to match the file's.
+
+        A rename is the one local edit with no representation in the items, so
+        without this the sync would have to answer a renamed file by deleting
+        the playlist and making a new one — losing its id, its handles and its
+        place in anyone's library.
+        """
+        ...
 
     def add_items(self, playlist_id: str, video_ids: list[str]) -> None: ...
 
