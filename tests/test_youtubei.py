@@ -411,9 +411,17 @@ def test_new_playlists_are_private():
     assert maker.client.requests[0]['body']['privacyStatus'] == 'PRIVATE'
 
 
-def test_deleting_a_playlist_is_held_to_its_own_status():
+def test_a_delete_is_confirmed_by_the_command_it_answers_with():
+    """`playlist/delete` returns no `status`, unlike every edit_playlist action.
+
+    Checking for one made every successful delete look like a refusal.
+    """
+    backend([(200, {'responseContext': {}, 'command': {}})]).delete_playlist('PL1')
+
+
+def test_a_delete_that_confirms_nothing_is_an_error():
     with pytest.raises(RemoteError):
-        backend([(200, {'status': 'STATUS_FAILED'})]).delete_playlist('PL1')
+        backend([(200, {'responseContext': {}})]).delete_playlist('PL1')
 
 
 def test_renaming_sends_the_title_action():

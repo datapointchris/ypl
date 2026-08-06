@@ -517,10 +517,17 @@ class YouTubeiBackend:
         return playlist_id
 
     def delete_playlist(self, playlist_id: str) -> None:
+        """Remove the playlist from YouTube.
+
+        Checked on `command` rather than on `status`, which this endpoint does
+        not return — unlike every `edit_playlist` action. A refusal arrives as
+        a status code instead: an id that is not a playlist is a 400, and one
+        this identity may not delete is a 403, both of which `call` has already
+        turned into errors by here.
+        """
         payload = self.call('playlist/delete', {'playlistId': playlist_id})
-        status = payload.get('status') or ''
-        if status != STATUS_SUCCEEDED:
-            raise RemoteError(f'YouTube refused to delete the playlist: {status or "no status"}')
+        if 'command' not in payload:
+            raise RemoteError(f'YouTube did not confirm deleting {playlist_id}')
 
     def rename_playlist(self, playlist_id: str, title: str) -> None:
         self.edit(playlist_id, [{'action': 'ACTION_SET_PLAYLIST_NAME', 'playlistName': title}])
