@@ -971,7 +971,9 @@ def sync_everything(
         # YouTube's JSON each, and the one fact that explains all of it — sign
         # in again — appears nowhere.
         try:
-            backend.account()
+            # Kept rather than discarded: the sweep needs to know whose account
+            # this is to tell the playlists it owns from the ones it merely saved.
+            identity = backend.account()
             run.signed_in = True
         except remote.RemoteAuthError as error:
             run.failures.append(('signed in', f'{error} — run `ypl remote auth --replace`'))
@@ -980,7 +982,7 @@ def sync_everything(
 
     if run.signed_in and backend is not None:
         run.withheld = sorted(not_public(account).values())
-        for item in queued_work(connection, account, backend):
+        for item in queued_work(connection, account, backend, identity):
             if budget.exhausted:
                 run.stopped = 'budget'
                 break
@@ -1024,7 +1026,12 @@ def not_public(account: AccountSync) -> dict[str, str]:
     return {playlist.playlist_id: playlist.title for playlist in account.synced if playlist.availability != 'public'}
 
 
-def queued_work(connection: sqlite3.Connection, account: AccountSync, backend: Backend) -> list[Work]:
+def queued_work(
+    connection: sqlite3.Connection,
+    account: AccountSync,
+    backend: Backend,
+    identity: remote.RemoteAccount,
+) -> list[Work]:
     """Everything the account is owed, most valuable first.
 
     Derived on every run rather than stored, for the reason the push queue is:
@@ -1086,15 +1093,18 @@ def queued_work(connection: sqlite3.Connection, account: AccountSync, backend: B
                 )
             )
 
-    # The feed is the authority on ownership: a playlist is in it because this
-    # account has it, which is a stronger answer than comparing channel names
-    # and is only available here, on the read that just listed them.
+    # The feed is not the authority on ownership, which is what it was taken for:
+    # a playlist saved from someone else's channel is in it too, and two of them
+    # were — a lecture series and a podcast, queued for adoption on every run and
+    # refused by YouTube Music on every run, because nothing here can write to a
+    # playlist it does not own. `remote adopt` with no name has always applied
+    # this rule through `adoptable_playlists`; the sweep is the path that did not.
     bound = adopted_remote_ids(local.list_playlists().playlists)
     refused = declined.load()
     for mirrored in account.synced:
         if mirrored.playlist_id in bound or mirrored.playlist_id in refused or mirrored.playlist_id in SYSTEM_PLAYLIST_IDS:
             continue
-        if mirrored.playlist_id in withheld:
+        if mirrored.playlist_id in withheld or not owned_by(identity, mirrored.channel):
             continue
         candidate = ResolvedPlaylist(kind=REMOTE, title=mirrored.title, identifier=mirrored.playlist_id)
         work.append(Work(kind='adopt', label=mirrored.title, cost=READ_COST, perform=partial(adopt_one, candidate=candidate)))

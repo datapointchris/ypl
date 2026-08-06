@@ -1516,8 +1516,11 @@ def account(monkeypatch):
             title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
             # Public, because YouTube Music serves nothing else and the whole
-            # remote half of a sync is skipped for a playlist that is not.
+            # remote half of a sync is skipped for a playlist that is not; and
+            # this account's own channel, because the sweep only adopts what the
+            # account owns and the feed lists saved playlists too.
             availability='public',
+            channel='Chris Birch',
         ),
     )
     monkeypatch.setattr(
@@ -1549,6 +1552,32 @@ def test_a_bare_sync_with_no_browser_anywhere_says_what_to_do(account):
     assert '--browser' in result.output
 
 
+def test_a_saved_playlist_from_someone_elses_channel_is_not_adopted_by_the_sweep(account, signed_in, monkeypatch):
+    """Being in the playlists feed is not ownership, which is what it was taken
+    for. Two of the real account's forty-two are a lecture series and a podcast
+    saved from other channels — queued every run, refused by YouTube Music every
+    run, because nothing here can write to a playlist it does not own."""
+
+    def fetch(url, **kwargs):
+        return RemotePlaylist(
+            playlist_id=url,
+            title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
+            videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
+            availability='public',
+            channel='Chris Birch' if url == 'PLa' else 'The Partially Examined Life',
+        )
+
+    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
+
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+
+    assert run['adopted'] == ['Deep Night']
+    assert run['failures'] == []
+    # Still mirrored and still readable — it is worth copying from, which is why
+    # it is in the feed at all.
+    assert 'Art' in [row['title'] for row in json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)]
+
+
 def test_a_playlist_that_is_not_public_is_left_out_of_the_remote_half(account, signed_in, monkeypatch):
     """Measured against the real account: YouTube Music answers a non-public
     playlist with a page carrying no `contents`, for its owner, with a live
@@ -1561,6 +1590,7 @@ def test_a_playlist_that_is_not_public_is_left_out_of_the_remote_half(account, s
             title=title,
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
             availability='public' if url == 'PLa' else '',
+            channel='Chris Birch',
         )
 
     monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
