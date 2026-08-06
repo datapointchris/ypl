@@ -38,22 +38,22 @@ from ypl.models import watch_url
 ROOT_HELP = """\
 Organize YouTube playlists.
 
-The noun comes first and the verb last, so a list -> show -> urls loop on one
-playlist changes only the final word.
+Two commands are the whole setup:
 
-`ypl sync` does all of it: mirrors your account, takes over playlists made in
-the web player, brings down changes made on your phone, sends up changes made
-here, and fills in tracklists with whatever time is left. Run it once and it
-keeps running itself, at startup and on an interval. Sign in with `ypl remote
-auth` and that is the setup; `ypl status` says whether it is working.
+  ypl auth --browser safari
+  ypl sync
 
-Organizing happens locally and instantly: playlists you build are M3U files on
-this machine, playable straight away. The `ypl remote` verbs are the same work
-done deliberately, for when a piece of it needs forcing.
+`ypl sync` is everything — it mirrors your account, gives every playlist a file
+here, brings down changes made on your phone, sends up changes made here, and
+fills in tracklists with whatever time is left. It is also the only command
+that reaches YouTube. Run it once and it keeps running itself, at startup and
+on an interval; a bare `ypl` says where things stand.
+
+Organizing happens locally and instantly: every playlist is an M3U file on this
+machine, playable straight away.
 
 A playlist is named by its title, so `ypl playlists show 'Get Insights'` works
-without an id; a partial title matches when it is unambiguous. Run any partial
-command with no arguments or --help to see what comes next.
+without an id; a partial title matches when it is unambiguous.
 """
 
 PLAYLISTS_HELP = """\
@@ -98,9 +98,7 @@ Examples:
 CONFIG_HELP = """\
 The settings file at $XDG_CONFIG_HOME/ypl/config.toml.
 
-Examples:
-
-  ypl config example                              print it without writing anything
+Hand-written and entirely optional — every setting has a working default.
 """
 
 READING = 'Reading (the local mirror)'
@@ -114,7 +112,7 @@ ADMIN = 'Admin'
 # whole list is still in the log, and `--json` still carries all of them.
 STATUS_FAILURES_SHOWN = 5
 
-app = typer.Typer(name='ypl', no_args_is_help=True, help=ROOT_HELP)
+app = typer.Typer(name='ypl', no_args_is_help=False, help=ROOT_HELP)
 playlists_app = typer.Typer(name='playlists', no_args_is_help=True, help=PLAYLISTS_HELP)
 videos_app = typer.Typer(name='videos', no_args_is_help=True, help=VIDEOS_HELP)
 config_app = typer.Typer(name='config', no_args_is_help=True, help=CONFIG_HELP)
@@ -170,7 +168,47 @@ def show_version(asked: bool) -> None:
     raise typer.Exit()
 
 
-@app.callback()
+def next_command() -> str:
+    """The one thing to run next, given where this machine has got to.
+
+    One line rather than a menu, because every state below has exactly one
+    sensible answer and offering the others is what turns a first run into
+    reading. Ordered by what blocks what: nothing works before signing in, and
+    nothing is here before the first sync.
+    """
+    if not session.browser():
+        return 'ypl auth --browser safari'
+    if not synclog.last():
+        return 'ypl sync'
+    if not schedule.installed():
+        return 'ypl sync'
+    return ''
+
+
+def glance() -> None:
+    """What a bare `ypl` answers with.
+
+    Not a catalogue. Thirty-nine commands in six panels is the answer to "what
+    can this do", which is not the question anyone types a bare command to ask —
+    they are asking where things stand and what to do about it. `--help` is
+    still there for the other question.
+    """
+    signed_in = bool(session.browser())
+    last = synclog.last()
+    playlists = local.list_playlists().playlists
+
+    messages.print(f'Signed in       {"yes" if signed_in else "no"}')
+    messages.print(f'Last sync       {last.get("ts") if last else "never"}')
+    messages.print(f'Playlists       {len(playlists)} here')
+
+    following = next_command()
+    if following:
+        messages.print(f'\nRun [bold]{following}[/bold]')
+        return
+    messages.print('\nUp to date, and syncing itself. [bold]ypl status[/bold] for the detail.')
+
+
+@app.callback(invoke_without_command=True)
 def root(
     ctx: typer.Context,
     version: Annotated[
@@ -180,6 +218,8 @@ def root(
 ) -> None:
     if ctx.invoked_subcommand != 'update':
         notify(UPDATE_CONFIG)
+    if ctx.invoked_subcommand is None:
+        glance()
 
 
 def matching_playlist_titles(incomplete: str, kind: str | None) -> list[str]:
@@ -256,7 +296,7 @@ def load_config_or_exit() -> config.Config:
         return config.load()
     except config.ConfigError as error:
         messages.print(f'[red]{error.path} cannot be read:[/red] {error.reason}')
-        messages.print('Run [bold]ypl config example[/bold] to see a valid file.')
+        messages.print('Every setting has a working default — deleting the file is a valid fix.')
         raise typer.Exit(2) from error
 
 

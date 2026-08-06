@@ -40,8 +40,11 @@ Once:
 
 ```bash
 ypl auth --browser safari   # sign in, from a browser already signed in
-ypl sync                           # and it keeps running itself from here on
+ypl sync                    # and it keeps running itself from here on
 ```
+
+A bare `ypl` says where things stand and the one thing to run next, which on a
+machine that has never been set up is the first line above and nothing else.
 
 The first sync leaves the machine syncing on its own — at startup and every 30 minutes, through a
 launch agent on macOS or a systemd user timer on Linux. There is no command to install that and

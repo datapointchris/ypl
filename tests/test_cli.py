@@ -100,18 +100,26 @@ def synced(monkeypatch):
     runner.invoke(app, ['sync', 'https://example.invalid/PL1'])
 
 
-def test_bare_invocation_shows_help_rather_than_doing_anything():
-    """Help on stdout, exit 2.
+def test_bare_invocation_answers_rather_than_printing_a_catalogue():
+    """A deliberate departure from the fleet's no-args-shows-help rule.
 
-    Both halves matter and they answer different readers. A person gets the
-    help text instead of an error, which is the no-args-shows-help rule; a
-    caller gets 2, which says "incomplete command, retrying with different
-    arguments could work" rather than 1's "it ran and failed". safekeep settled
-    this for the fleet in `fix(safekeep): exit 2 on bare invocation`.
+    `~/dev/standards/cli-design.md` says bare always shows help, and argues it
+    structurally: a tool that does work bare cannot gain a command later
+    without silently changing what bare means. The standard allows an override
+    for a tool whose identity is one read-only action, which this now is — the
+    glance takes no options, writes nothing, and `--help` still answers the
+    question it used to.
+
+    What made it worth the departure: a bare `ypl` answered with thirty-nine
+    commands in six panels, which is the answer to "what can this do" rather
+    than to the question anyone types a bare command to ask.
+
+    Exit 0, not 2 — it ran and answered.
     """
     result = runner.invoke(app, [])
-    assert result.exit_code == 2
-    assert 'Usage:' in result.output
+    assert result.exit_code == 0
+    assert 'Usage:' not in result.output
+    assert 'ypl auth --browser safari' in result.output
 
 
 def test_version_is_one_line_naming_the_tool_and_exits_clean():
@@ -1246,3 +1254,26 @@ def test_status_stops_short_of_reprinting_a_whole_failed_run():
     assert 'playlist 8' not in output
     # The lines the whole command exists to answer still have to be below it.
     assert 'Unenriched' in output
+
+
+def test_a_bare_ypl_says_where_things_stand_and_what_to_run():
+    """Not a catalogue.
+
+    Thirty-nine commands in six panels answered "what can this do", which is
+    not the question a bare command is typed to ask. On a machine that has
+    never been set up there is exactly one thing to do, so that is what it says.
+    """
+    output = runner.invoke(app, []).output
+    assert 'Signed in       no' in output
+    assert 'Last sync       never' in output
+    assert 'ypl auth --browser safari' in output
+
+
+def test_a_bare_ypl_stops_naming_a_next_command_once_there_is_none():
+    """Signed in, synced and on a timer is the steady state, and it reads as one."""
+    session.remember_browser('safari', 'PAGEID')
+    synclog.record({'bound': [], 'reconciled': [], 'pushed': []})
+
+    output = runner.invoke(app, []).output
+    assert 'Signed in       yes' in output
+    assert 'ypl auth' not in output
