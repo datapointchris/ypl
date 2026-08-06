@@ -541,3 +541,33 @@ def test_the_request_body_is_json_youtube_would_accept():
     writer = backend()
     writer.rename_playlist('PL1', 'Monday')
     assert json.dumps(writer.client.requests[0]['body'])
+
+
+def test_a_run_stops_itself_before_youtube_has_to():
+    """The one bound nothing can be configured past.
+
+    The throttle is a rate rather than a total, and the sync budget is only
+    checked between work items — so a single playlist paging through thousands
+    of videos never reaches a check. This is the backstop for both.
+    """
+    reader = backend([(200, browse_response([video('a', 'h1')]))] * 10, page_id='P')
+    reader.max_requests = 3
+
+    with pytest.raises(youtubei.RemoteSelfLimitedError, match="ypl's own ceiling"):
+        for _ in range(10):
+            reader.playlist_items('PL1')
+    assert reader.requests_made == 3
+
+
+def test_the_ceiling_counts_the_bootstrap_too():
+    """It is a request to YouTube like any other, so it is spent like one."""
+    reader = backend(page=bootstrap_page())
+    reader.max_requests = 1
+    with pytest.raises(youtubei.RemoteSelfLimitedError):
+        reader.playlist_items('PL1')
+    assert reader.client.gets and reader.client.requests == []
+
+
+def test_stopping_ourselves_reads_as_a_rate_limit_to_every_caller():
+    """So the run stops and leaves the rest, rather than recording failures."""
+    assert issubclass(youtubei.RemoteSelfLimitedError, RemoteRateLimitedError)

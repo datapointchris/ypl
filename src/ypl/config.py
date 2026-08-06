@@ -21,7 +21,8 @@ enrich_batch_size = 50
 # `enrich --all` over a library, or a bare `sync` over every playlist. Reads
 # cost no API quota, but thousands of back-to-back extractions carrying your
 # cookies is a burst, and a burst is the shape that gets an account looked at.
-# Lower it if you are impatient and signed out; raise it if YouTube complains.
+# Raise it if YouTube complains. Lowering it below 1 second does nothing —
+# pacing is what keeps this at human scale, so there is a floor under it.
 request_interval_seconds = 2.0
 
 # Whether the first `ypl sync` on a machine sets itself up to keep running —
@@ -43,6 +44,13 @@ sync_minutes = 15
 """
 
 
+# A floor on the gap between requests, below which no config may go. The
+# credential is a Google account cookie and the Terms prohibit automated
+# access; pacing is the whole of what keeps this at human scale, so it is not
+# something a config file gets to switch off.
+MINIMUM_INTERVAL_SECONDS = 1.0
+
+
 @dataclass
 class Config:
     cookies_from_browser: str | None = None
@@ -54,8 +62,25 @@ class Config:
     mpv_arguments: list[str] = field(default_factory=list)
 
     @property
+    def request_pace_seconds(self) -> float:
+        """The gap between requests, floored so it cannot be configured away.
+
+        `request_interval_seconds = 0` parsed fine and removed the pacing
+        entirely, which is the one setting in this file that can turn a personal
+        tool into something that looks like a scraper. The value is a floor on
+        how *slow* to go, so raising it is always allowed and lowering it past
+        the floor is not.
+        """
+        return max(self.request_interval_seconds, MINIMUM_INTERVAL_SECONDS)
+
+    @property
     def sync_seconds(self) -> float | None:
-        """The ceiling as `Budget` wants it — None rather than zero for no limit."""
+        """The ceiling as `Budget` wants it — None rather than zero for no limit.
+
+        None here is not unbounded in practice: the write path carries its own
+        request ceiling — `youtubei.MAX_REQUESTS_PER_RUN` — which no config
+        reaches. This one only decides how long a run may spend.
+        """
         return self.sync_minutes * 60 if self.sync_minutes else None
 
 

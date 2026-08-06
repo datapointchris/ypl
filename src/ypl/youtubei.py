@@ -93,6 +93,31 @@ YTCFG_PATTERN = re.compile(r'ytcfg\.set\s*\(\s*(\{.+?\})\s*\)\s*;')
 
 REQUEST_TIMEOUT_SECONDS = 30.0
 
+# The hard ceiling on what one backend may ask YouTube for, whatever the config
+# says and whatever the caller passes.
+#
+# Every other bound is advisory in a way this one is not. The throttle is a rate
+# and not a total; the sync budget is checked *between* work items, so a single
+# playlist paging through ten thousand videos never reaches a check; and both
+# are read from a config file where `request_interval_seconds = 0` and
+# `sync_minutes = 0` were each accepted and each removed the limit entirely.
+#
+# So the count lives here, at the one place every request passes through, and
+# nothing can be configured past it. Generous enough that no honest run meets
+# it — a first sync over forty playlists is a couple of hundred — and low enough
+# that a loop which should have stopped stops.
+MAX_REQUESTS_PER_RUN = 400
+
+
+class RemoteSelfLimitedError(RemoteRateLimitedError):
+    """We stopped ourselves before YouTube had to.
+
+    A `RemoteRateLimitedError` so that every caller already treats it right: the
+    run stops and leaves the rest for the next one, rather than recording forty
+    failures or retrying into a wall. The distinct type is so the message can
+    say honestly that this ceiling is ours and not YouTube's.
+    """
+
 
 class YouTubeiError(RemoteError):
     """A youtubei response that could not be read as the thing it should be.
@@ -359,6 +384,7 @@ class YouTubeiBackend:
         throttle: Throttle | None = None,
         create_throttle: Throttle | None = None,
         client: httpx.Client | None = None,
+        max_requests: int = MAX_REQUESTS_PER_RUN,
     ):
         if not cookies.get(LOGIN_COOKIE):
             raise RemoteAuthError('that browser has no YouTube session — sign in and run `ypl auth` again')
@@ -370,12 +396,27 @@ class YouTubeiBackend:
         self.visitor_id = ''
         self.client_version = CLIENT_VERSION
         self.bootstrapped = False
+        self.requests_made = 0
+        self.max_requests = max_requests
         self.throttle = throttle or Throttle()
         # Separate, because creation is the only endpoint with a measured limit
         # and sharing one floor would either crawl every add or outrun the one
         # limit we know about.
         self.create_throttle = create_throttle or Throttle(CREATE_INTERVAL_SECONDS)
         self.client = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+
+    def spend(self) -> None:
+        """Account for one request, and refuse to make it past the ceiling.
+
+        Counted before the request rather than after, so the ceiling is the
+        number of requests made and not the number that succeeded.
+        """
+        if self.requests_made >= self.max_requests:
+            raise RemoteSelfLimitedError(
+                f"stopping at {self.max_requests} requests to YouTube in one run — this is ypl's own ceiling, not YouTube's. "
+                'Everything done so far is recorded and the next run picks up the rest.'
+            )
+        self.requests_made += 1
 
     def bootstrap(self) -> None:
         """Learn the client version and visitor id from one page load.
@@ -392,6 +433,7 @@ class YouTubeiBackend:
         if self.bootstrapped:
             return
         self.bootstrapped = True
+        self.spend()
         self.throttle.wait()
         try:
             response = self.client.get(ORIGIN, headers=page_headers(self.cookies), follow_redirects=True)
@@ -416,6 +458,7 @@ class YouTubeiBackend:
         never does.
         """
         self.bootstrap()
+        self.spend()
         (throttle or self.throttle).wait()
         payload = {'context': request_context(self.client_version, self.visitor_id), **body}
         try:

@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 
+from ypl import config
 from ypl import db
 from ypl import history
 from ypl import service
@@ -440,3 +441,16 @@ def test_the_mirror_lets_a_reader_in_while_a_writer_holds_it(tmp_path):
     writer.execute('BEGIN')
     writer.execute("INSERT INTO videos (video_id, title) VALUES ('a', 'A Mix')")
     assert reader.execute('SELECT COUNT(*) FROM videos').fetchone()[0] == 0
+
+
+def test_the_request_pace_has_a_floor_no_config_can_go_under():
+    """`request_interval_seconds = 0` parsed fine and removed the pacing entirely.
+
+    It is the one setting that can turn a personal tool into something shaped
+    like a scraper, so the value is a floor on how slow to go rather than a free
+    choice of how fast.
+    """
+    assert config.Config(request_interval_seconds=0).request_pace_seconds == config.MINIMUM_INTERVAL_SECONDS
+    assert config.Config(request_interval_seconds=0.01).request_pace_seconds == config.MINIMUM_INTERVAL_SECONDS
+    # Slower is always allowed.
+    assert config.Config(request_interval_seconds=30).request_pace_seconds == 30

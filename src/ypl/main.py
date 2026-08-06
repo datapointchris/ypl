@@ -440,7 +440,7 @@ def sync_everything_or_exit(connection: sqlite3.Connection, browser: str, limit:
             limit=limit,
             on_playlist=announce,
             on_video=announce_video,
-            pace=throttle.Throttle(settings.request_interval_seconds),
+            pace=throttle.Throttle(settings.request_pace_seconds),
             budget=throttle.Budget(seconds=settings.sync_seconds),
         )
     except ytdlp.YtdlpUnavailableError as error:
@@ -623,7 +623,7 @@ def enrich(
     # Paced, because this is the one command that makes thousands of requests
     # in a row. A rate limit ends the run rather than being retried into: every
     # video already enriched is stored, so stopping costs nothing but time.
-    pace = throttle.Throttle(settings.request_interval_seconds)
+    pace = throttle.Throttle(settings.request_pace_seconds)
     with messages.status(f'Enriching {len(video_ids)} videos...') as status:
         for index, video_id in enumerate(video_ids, start=1):
             status.update(f'[{index}/{len(video_ids)}] {video_id}')
@@ -1578,7 +1578,7 @@ def backend_for_browser(browser: str, page_id: str) -> youtubei.YouTubeiBackend:
     return youtubei.YouTubeiBackend(
         ytdlp.browser_cookies(browser),
         page_id=page_id,
-        throttle=throttle.Throttle(settings.request_interval_seconds),
+        throttle=throttle.Throttle(settings.request_pace_seconds),
     )
 
 
