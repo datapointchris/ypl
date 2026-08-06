@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v0.12.7 (2026-08-06)
+
+### Bug Fixes
+
+- **sync**: Count only the playlists you could make public
+  ([`c5c9157`](https://github.com/datapointchris/ypl/commit/c5c91578d79e8b3248962548787a7efd4145a4d0))
+
+`Not public 23` on an account where twenty-one is the number that means anything: `Liked videos` and
+  `Watch later` are in the playlists feed, report no availability like every private playlist does,
+  and have no privacy setting to change. They were being named under a heading whose whole purpose
+  is to say what to go and fix.
+
+Left out of the report rather than out of `not_public`, which is the filter: Music serves them no
+  better for being YouTube's own, and the reconcile and push paths still need to skip them. Same
+  reason a saved playlist is left out of the sweep silently — a standing property of the thing is
+  not news, and repeating it every half hour is how the counts `ypl status` exists to show got
+  buried in the first place.
+
+
 ## v0.12.6 (2026-08-06)
 
 ### Bug Fixes
