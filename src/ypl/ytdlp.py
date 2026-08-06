@@ -36,6 +36,10 @@ UNRESOLVABLE_URL = 'https://cookies.invalid/'
 # different list — see `fetch_account_playlists`.
 ACCOUNT_PLAYLISTS_URL = 'https://www.youtube.com/feed/playlists'
 
+# The signed-in account's own Liked videos. Read for the channel it reports
+# rather than for its contents — see `fetch_account_channel_id`.
+ACCOUNT_CHANNEL_URL = 'https://www.youtube.com/playlist?list=LL'
+
 
 class YtdlpUnavailableError(RuntimeError):
     pass
@@ -180,6 +184,33 @@ def fetch_account_playlists(cookies_from_browser: str, timeout_seconds: int = 30
     ]
 
 
+def fetch_account_channel_id(cookies_from_browser: str, timeout_seconds: int = 120) -> str:
+    """Which channel this browser is signed in as, by id.
+
+    Read off `LL` — the account's own Liked videos — because it is the one list
+    guaranteed to exist and to belong to whoever is signed in, and it reports
+    the channel on the same flat request everything else here uses.
+    `--playlist-items 0` asks for none of its several thousand videos, so this
+    is one cheap request for one fact.
+
+    An id rather than a name, and read here rather than from the account menu,
+    because the name was the whole problem: the menu answers with the *Google
+    account* — `Chris Birch` — for a channel called `iChrisBirch`, so comparing
+    them judged every playlist this account owns to belong to somebody else.
+    Ids are what the two reads agree on.
+    """
+    arguments = [
+        '--flat-playlist',
+        '--playlist-items',
+        '0',
+        '--dump-single-json',
+        *cookie_arguments(cookies_from_browser),
+        ACCOUNT_CHANNEL_URL,
+    ]
+    payload = json.loads(run(arguments, timeout_seconds))
+    return payload.get('channel_id') or ''
+
+
 def fetch_playlist(url: str, cookies_from_browser: str | None = None, timeout_seconds: int = 600) -> RemotePlaylist:
     """List a playlist's videos without fetching each one.
 
@@ -199,6 +230,7 @@ def fetch_playlist(url: str, cookies_from_browser: str | None = None, timeout_se
         title=payload.get('title') or payload['id'],
         description=payload.get('description') or '',
         channel=payload.get('channel') or payload.get('uploader') or '',
+        channel_id=payload.get('channel_id') or '',
         videos=[flat_entry_to_video(entry) for entry in payload.get('entries') or []],
     )
 

@@ -18,7 +18,6 @@ from datetime import datetime
 from functools import partial
 
 from ypl import basestore
-from ypl import declined
 from ypl import history
 from ypl import local
 from ypl import m3u
@@ -49,8 +48,8 @@ class PlaylistNotFoundError(LookupError):
     pass
 
 
-class AdoptionError(RuntimeError):
-    """A mirrored playlist that cannot be bound to a local file."""
+class BindError(RuntimeError):
+    """A mirrored playlist that cannot be given a local file."""
 
 
 class AmbiguousPlaylistError(LookupError):
@@ -146,6 +145,9 @@ class AccountSync:
 
     synced: list[RemotePlaylist] = field(default_factory=list)
     failures: list[tuple[PlaylistRef, str]] = field(default_factory=list)
+    # The channel these cookies are signed in as, so ownership is an id match
+    # rather than a comparison of two names that never agreed.
+    channel_id: str = ''
 
     @property
     def video_count(self) -> int:
@@ -170,7 +172,7 @@ def sync_account(
     back-to-back requests carrying your cookies, and a rate limit stops the run
     rather than being retried into, exactly as on the write side.
     """
-    result = AccountSync()
+    result = AccountSync(channel_id=ytdlp.fetch_account_channel_id(cookies_from_browser))
     pace = pace or Throttle()
     references = ytdlp.fetch_account_playlists(cookies_from_browser)
     for reference in references[:limit] if limit else references:
@@ -572,95 +574,91 @@ def brief(error: Exception, limit: int = 160) -> str:
     return message if len(message) <= limit else f'{message[:limit]}...'
 
 
-def owned_by(account: remote.RemoteAccount, channel: str) -> bool:
-    """Whether a mirrored playlist belongs to the account we are signed in as.
+def owned_by(account_channel_id: str, playlist_channel_id: str) -> bool:
+    """Whether a mirrored playlist belongs to the channel we are signed in as.
 
-    Compared through the slug, because the two names come from different reads
-    of different services and agree on nothing else: yt-dlp reports the channel
-    as `iChrisBirch` and YouTube Music reports the same account as a name and a
-    `@ichrisbirch` handle. Casing and the `@` are the only differences, and both
-    are exactly what slugifying removes.
+    Compared by id, which is the only thing the two reads agree on. This was a
+    comparison of *names* — the account menu's against yt-dlp's — and they never
+    matched: the menu answers with the Google account, `Chris Birch`, for a
+    channel called `iChrisBirch`. Every playlist this account owns was judged to
+    be somebody else's, which is the misreading the whole rebuild is downstream
+    of.
+
+    An unknown channel on either side is not ownership. Guessing yes would push
+    to a playlist that is not ours; guessing no only marks a file unsynced,
+    which is the safe direction to be wrong in.
     """
-    known = {local.slugify(account.name), local.slugify(account.handle)} - {''}
-    return local.slugify(channel) in known
+    return bool(account_channel_id) and account_channel_id == playlist_channel_id
 
 
-def adoptable_playlists(connection: sqlite3.Connection, account: remote.RemoteAccount) -> list[ResolvedPlaylist]:
-    """The mirrored playlists a bare `remote adopt` covers.
+def bind_remote_playlist(
+    connection: sqlite3.Connection, playlist: ResolvedPlaylist, backend: Backend, synced: bool = True
+) -> LocalPlaylist:
+    """Give a playlist YouTube already holds its file here.
 
-    The account's own, minus YouTube's system lists. Already-adopted ones are
-    not here to be excluded — `known_playlists` has resolved them to their local
-    files already.
+    Every playlist YouTube holds is a file here, so this runs for all of them
+    rather than being asked for. What it produces differs by whether the file
+    can ever be pushed back:
 
-    A playlist mirrored from someone else's channel is deliberately left out of
-    the sweep. It is readable and worth copying from, but binding it to the sync
-    layer would set up pushes against a playlist this account cannot write to,
-    and the failure would arrive at the first edit rather than here. Naming one
-    still adopts it, because a collaborative playlist is a real case and the
-    check cannot tell it apart from someone else's.
-    """
-    return [
-        candidate
-        for candidate in known_playlists(connection, REMOTE)
-        if candidate.identifier not in SYSTEM_PLAYLIST_IDS and owned_by(account, candidate.remote['channel'] if candidate.remote else '')
-    ]
+    A playlist this channel owns is read through the write backend and gets a
+    merge base. The base has to come from that read rather than from the mirror
+    twice over — it needs each slot's `setVideoId`, which yt-dlp does not
+    return, and a mirror hours old would record videos YouTube no longer holds,
+    which the first push would faithfully put back.
 
-
-def adopt_playlist(connection: sqlite3.Connection, playlist: ResolvedPlaylist, backend: Backend) -> LocalPlaylist:
-    """Bind a local file to a playlist YouTube already holds.
-
-    The other end of the reconcile from `apply_push`'s creation: `pull` only
-    reaches files carrying a remote id, and that id was only ever written by a
-    creation ypl performed — so a playlist made in the web player could be read
-    and copied from, and never edited here and pushed back.
-
-    Written from the write backend's own read rather than from the mirror, which
-    it has to be twice over: the base needs each slot's `setVideoId`, which
-    yt-dlp does not return, and a mirror hours old would record videos YouTube
-    no longer holds — which the first push would then faithfully put back.
+    A playlist on someone else's channel is written `#YPL-SYNCED:no` and built
+    from the mirror instead. Nothing here can write to it, so there is no base
+    to record and no push to prepare; the file exists to be read, played and
+    copied from. That is a rule rather than a flag to set afterwards, which is
+    what makes it impossible to end up with a file that quietly queues pushes
+    against a playlist that will refuse them.
 
     The name is the remote title exactly as YouTube has it, never
-    `local.authored_name`. What separates an adoption from a copy of the same
-    playlist is not the name but the id: both carry `#YPL-SOURCE:remote PL1`,
-    and only the adoption is itself PL1.
+    `local.authored_name`. What separates this from a copy of the same playlist
+    is not the name but the id: both carry `#YPL-SOURCE:remote PL1`, and only
+    this one is itself PL1.
     """
     if playlist.kind != REMOTE:
-        raise AdoptionError(f'{playlist.title} is already a playlist here')
+        raise BindError(f'{playlist.title} is already a playlist here')
     if playlist.identifier in SYSTEM_PLAYLIST_IDS:
-        raise AdoptionError(f"{playlist.title} is one of YouTube's own lists rather than a playlist it hands over")
-    if playlist.identifier in adopted_remote_ids(local.list_playlists().playlists):
-        raise AdoptionError(f'{playlist.title} is already bound to a file here')
+        raise BindError(f"{playlist.title} is one of YouTube's own lists rather than a playlist it hands over")
+    if playlist.identifier in bound_remote_ids(local.list_playlists().playlists):
+        raise BindError(f'{playlist.title} is already bound to a file here')
     path = local.path_for(playlist.title)
     if path.exists():
         # Checked before the read rather than left to `local.save`, so a sweep
         # spends no request on a playlist it is about to refuse.
         raise local.LocalPlaylistExistsError(path)
 
-    items = backend.playlist_items(playlist.identifier)
-    if items and not any(item.set_video_id for item in items):
-        # The shape a signed-out read takes: the playlist comes back, every
-        # slot handle is empty. Binding to that records a playlist that looks
-        # adopted and can never be pushed, so refuse before anything is written.
-        raise AdoptionError(f'{playlist.title} read back with no slot handles — this session is not signed in')
+    items: list[RemoteItem] = []
+    if synced:
+        items = backend.playlist_items(playlist.identifier)
+        if items and not any(item.set_video_id for item in items):
+            # The shape a signed-out read takes: the playlist comes back, every
+            # slot handle is empty. Recording that produces a file that looks
+            # bound and can never be pushed, so refuse before anything is
+            # written.
+            raise BindError(f'{playlist.title} read back with no slot handles — this session is not signed in')
+        video_ids = [item.video_id for item in items]
+    else:
+        video_ids = mirrored_video_ids(connection, playlist.identifier)
 
-    adopted = LocalPlaylist(
+    bound = LocalPlaylist(
         name=playlist.title,
         path=path,
-        entries=merged_entries(connection, [item.video_id for item in items], items),
+        entries=merged_entries(connection, video_ids, items),
         created_ts=now_ts(),
         source=f'{REMOTE} {playlist.identifier}',
         remote_id=playlist.identifier,
+        synced=synced,
     )
-    local.save(adopted)
-    # File before base, for the reason `pull_playlist` gives at length: a base
-    # left behind by a file that failed to save is a record of a remote state
-    # nothing was merged against.
-    basestore.save(basestore.Base(slug=adopted.slug, playlist_id=adopted.remote_id, items=items))
-    # Adopting on purpose is the reversal of having declined it, and leaving the
-    # claim behind would let a later delete-and-restore cycle look like it
-    # worked while the next sync quietly refused to bring it back.
-    declined.remove(playlist.identifier)
-    return adopted
+    local.save(bound)
+    if synced:
+        # File before base, for the reason `pull_playlist` gives at length: a
+        # base left behind by a file that failed to save is a record of a remote
+        # state nothing was merged against.
+        basestore.save(basestore.Base(slug=bound.slug, playlist_id=bound.remote_id, items=items))
+    return bound
 
 
 def pull_playlist(connection: sqlite3.Connection, playlist: LocalPlaylist, backend: Backend) -> Pull:
@@ -868,7 +866,7 @@ class SyncRun:
 
     mirrored: int = 0
     videos: int = 0
-    adopted: list[str] = field(default_factory=list)
+    bound: list[str] = field(default_factory=list)
     reconciled: list[Pull] = field(default_factory=list)
     pushed: list[Push] = field(default_factory=list)
     unchanged: int = 0
@@ -886,14 +884,14 @@ class SyncRun:
 
     @property
     def changed(self) -> bool:
-        return bool(self.adopted or self.reconciled or self.pushed or self.enriched)
+        return bool(self.bound or self.reconciled or self.pushed or self.enriched)
 
     def payload(self) -> dict:
         """The line this run leaves in the log."""
         return {
             'mirrored': self.mirrored,
             'videos': self.videos,
-            'adopted': self.adopted,
+            'bound': self.bound,
             'reconciled': [pull.playlist.name for pull in self.reconciled],
             'pulled_in': sum(len(pull.result.pulled_in) for pull in self.reconciled),
             'pulled_out': sum(len(pull.result.pulled_out) for pull in self.reconciled),
@@ -965,17 +963,18 @@ def sync_everything(
         # YouTube's JSON each, and the one fact that explains all of it — sign
         # in again — appears nowhere.
         try:
-            # Kept rather than discarded: the sweep needs to know whose account
-            # this is to tell the playlists it owns from the ones it merely saved.
-            identity = backend.account()
+            # Called for its answer rather than for its value: whose channel
+            # this is comes from the mirror sweep, by id. This is the one call
+            # that proves the cookies still work.
+            backend.account()
             run.signed_in = True
         except remote.RemoteAuthError as error:
-            run.failures.append(('signed in', f'{error} — run `ypl remote auth --replace`'))
+            run.failures.append(('signed in', f'{error} — run `ypl remote auth --browser safari`'))
         except remote.RemoteError as error:
             run.failures.append(('signed in', brief(error)))
 
     if run.signed_in and backend is not None:
-        for item in queued_work(connection, account, backend, identity):
+        for item in queued_work(connection, account, backend):
             if budget.exhausted:
                 run.stopped = 'budget'
                 break
@@ -986,7 +985,7 @@ def sync_everything(
                 run.failures.append((item.label, brief(error)))
                 run.stopped = 'rate limit'
                 break
-            except (AdoptionError, local.LocalPlaylistExistsError, remote.RemoteError, basestore.BaseStoreError, OSError) as error:
+            except (BindError, local.LocalPlaylistExistsError, remote.RemoteError, basestore.BaseStoreError, OSError) as error:
                 run.failures.append((item.label, brief(error)))
 
     if not run.stopped:
@@ -1000,7 +999,6 @@ def queued_work(
     connection: sqlite3.Connection,
     account: AccountSync,
     backend: Backend,
-    identity: remote.RemoteAccount,
 ) -> list[Work]:
     """Everything the account is owed, most valuable first.
 
@@ -1013,10 +1011,10 @@ def queued_work(
     Reconciling comes first because a wrong local file is the one failure you
     would act on — you would play the wrong thing, or edit against something
     that has moved. Pushing is second: an edit made here is already visible
-    here, so it is late rather than wrong until it lands. Adopting is third,
-    because a playlist that has never been here is not yet part of anything.
-    Enrichment is not in this list at all — it is the tail, it is thousands of
-    requests, and it runs on whatever budget survives the rest.
+    here, so it is late rather than wrong until it lands. Giving a playlist its
+    file is third, because one that has never been here is not yet part of
+    anything. Enrichment is not in this list at all — it is the tail, it is
+    thousands of requests, and it runs on whatever budget survives the rest.
     """
 
     def reconcile_one(run: SyncRun, playlist: LocalPlaylist) -> None:
@@ -1029,8 +1027,8 @@ def queued_work(
         elif not push.empty:
             run.pushed.append(apply_push(push, backend))
 
-    def adopt_one(run: SyncRun, candidate: ResolvedPlaylist) -> None:
-        run.adopted.append(adopt_playlist(connection, candidate, backend).name)
+    def bind_one(run: SyncRun, candidate: ResolvedPlaylist, synced: bool) -> None:
+        run.bound.append(bind_remote_playlist(connection, candidate, backend, synced=synced).name)
 
     work: list[Work] = []
     for playlist in pullable_playlists():
@@ -1057,21 +1055,26 @@ def queued_work(
                 )
             )
 
-    # The feed is not the authority on ownership, which is what it was taken for:
-    # a playlist saved from someone else's channel is in it too, and two of them
-    # were — a lecture series and a podcast, queued for adoption on every run and
-    # refused by YouTube Music on every run, because nothing here can write to a
-    # playlist it does not own. `remote adopt` with no name has always applied
-    # this rule through `adoptable_playlists`; the sweep is the path that did not.
-    bound = adopted_remote_ids(local.list_playlists().playlists)
-    refused = declined.load()
+    # Every playlist YouTube holds gets a file, so there is nothing to opt into
+    # and no declined list to keep. What ownership decides is not whether the
+    # file is written but whether it is synced: the feed lists playlists saved
+    # from other channels too, and nothing here can write to those, so they are
+    # marked `#YPL-SYNCED:no` at the moment they are created rather than by a
+    # sweep that has to be run afterwards.
+    bound = bound_remote_ids(local.list_playlists().playlists)
     for mirrored in account.synced:
-        if mirrored.playlist_id in bound or mirrored.playlist_id in refused or mirrored.playlist_id in SYSTEM_PLAYLIST_IDS:
-            continue
-        if not owned_by(identity, mirrored.channel):
+        if mirrored.playlist_id in bound or mirrored.playlist_id in SYSTEM_PLAYLIST_IDS:
             continue
         candidate = ResolvedPlaylist(kind=REMOTE, title=mirrored.title, identifier=mirrored.playlist_id)
-        work.append(Work(kind='adopt', label=mirrored.title, cost=READ_COST, perform=partial(adopt_one, candidate=candidate)))
+        synced = owned_by(account.channel_id, mirrored.channel_id)
+        work.append(
+            Work(
+                kind='bind',
+                label=mirrored.title,
+                cost=READ_COST if synced else 0,
+                perform=partial(bind_one, candidate=candidate, synced=synced),
+            )
+        )
     return work
 
 
@@ -1245,21 +1248,17 @@ def delete_local_playlist(playlist: LocalPlaylist) -> None:
     """Delete a playlist file, the merge base that described it, and its claim.
 
     The base always: one left behind outlives the playlist it belongs to, and
-    the next playlist to slug the same way would adopt it and read as having
+    the next playlist to slug the same way would inherit it and read as having
     had every one of those videos deleted here — which the push would then
     carry out on YouTube.
 
-    The decline for the same reason in the other direction. `sync` adopts every
-    playlist the account owns, so deleting one that is still on YouTube without
-    saying so would last exactly until the next run put it back. Deleting it
-    here is a statement about wanting it *here*, and that is what is recorded —
-    the playlist itself stays on YouTube, which is what `playlists delete`
-    already says it does.
+    A file deleted here and still on YouTube comes back on the next sync, and
+    that is the model rather than a gap in it: the two are one playlist, so
+    `ypl playlists delete` deletes both. Nothing records an intention to be rid
+    of a playlist here but not there, because there is no such state to be in.
     """
     local.delete(playlist)
     basestore.delete(playlist.slug)
-    if playlist.remote_id:
-        declined.add(playlist.remote_id)
 
 
 def set_synced(playlist: LocalPlaylist, synced: bool) -> LocalPlaylist:
@@ -1409,7 +1408,7 @@ def order_local_playlist(
     return ordered
 
 
-def adopted_remote_ids(playlists: list[LocalPlaylist]) -> set[str]:
+def bound_remote_ids(playlists: list[LocalPlaylist]) -> set[str]:
     """The YouTube playlists a local file is already bound to."""
     return {playlist.remote_id for playlist in playlists if playlist.remote_id}
 
@@ -1421,16 +1420,16 @@ def known_playlists(connection: sqlite3.Connection, kind: str | None = None) -> 
     keeps its row — it is where the videos and their tracklists are read from —
     but as a *name* it is not a second candidate, because it is not a second
     playlist. Leaving both in would make every playlist ambiguous the moment it
-    was adopted, and the file is the half that can be edited either way.
+    was given its file, and the file is the half that can be edited either way.
     """
     playlists = local.list_playlists().playlists
-    adopted = adopted_remote_ids(playlists)
+    bound = bound_remote_ids(playlists)
     found = []
     if kind in (None, REMOTE):
         found += [
             ResolvedPlaylist(kind=REMOTE, title=row['title'], identifier=row['playlist_id'], remote=row)
             for row in connection.execute('SELECT * FROM playlists ORDER BY title')
-            if row['playlist_id'] not in adopted
+            if row['playlist_id'] not in bound
         ]
     if kind in (None, LOCAL):
         found += [ResolvedPlaylist(kind=LOCAL, title=playlist.name, identifier=playlist.slug, local=playlist) for playlist in playlists]

@@ -63,6 +63,11 @@ class RemotePlaylist:
     title: str
     description: str = ''
     channel: str = ''
+    # Who owns it, as an id rather than as a name. The name is what ownership
+    # used to be decided on, and the two reads it compared never agreed: yt-dlp
+    # says `iChrisBirch` where the account menu said `Chris Birch`, so every one
+    # of this account's own playlists read as somebody else's.
+    channel_id: str = ''
     videos: list[RemoteVideo] = field(default_factory=list)
 
     @property

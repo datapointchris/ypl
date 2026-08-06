@@ -955,6 +955,11 @@ def test_a_video_reachable_only_through_a_local_playlist_can_still_be_enriched(m
 # a live session from a browser that merely still holds one.
 BROWSER_COOKIES = {'__Secure-3PAPISID': 'aaa', 'SID': 'bbb', 'LOGIN_INFO': 'ccc'}
 
+# Ownership is an id match now, so the fixtures need the account to *be* a
+# channel rather than to have a name that happens to agree with one.
+ACCOUNT_CHANNEL_ID = 'UCownchannel'
+OTHER_CHANNEL_ID = 'UCsomebodyelse'
+
 
 class FakeBackend:
     """A YouTube that actually holds a playlist, so writes can be observed.
@@ -1121,7 +1126,7 @@ def test_a_session_that_could_not_be_checked_leaves_an_existing_sign_in_alone(si
 def test_deleting_a_playlist_takes_its_merge_base_with_it(synced):
     """A base that outlives its playlist reads as a pile of local deletions.
 
-    The next playlist to slug the same way would adopt it, and the queue would
+    The next playlist to slug the same way would inherit it, and the queue would
     carry those deletions out on YouTube.
     """
     runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'Get Insights'])
@@ -1271,119 +1276,132 @@ def library(monkeypatch, signed_in):
             playlist_id='PLMINE',
             title='DRIVE TIME',
             channel='iChrisBirch',
+            channel_id=ACCOUNT_CHANNEL_ID,
             videos=[RemoteVideo(video_id='vid1', title='A Talk'), RemoteVideo(video_id='vid2', title='Another')],
         ),
         'PLTHEIRS': RemotePlaylist(
-            playlist_id='PLTHEIRS', title='Their Mix', channel='Robert Greene', videos=[RemoteVideo(video_id='vid3', title='Theirs')]
+            playlist_id='PLTHEIRS',
+            title='Their Mix',
+            channel='Robert Greene',
+            channel_id=OTHER_CHANNEL_ID,
+            videos=[RemoteVideo(video_id='vid3', title='Theirs')],
         ),
         'LL': RemotePlaylist(
-            playlist_id='LL', title='Liked videos', channel='iChrisBirch', videos=[RemoteVideo(video_id='vid4', title='Liked')]
+            playlist_id='LL',
+            title='Liked videos',
+            channel='iChrisBirch',
+            channel_id=ACCOUNT_CHANNEL_ID,
+            videos=[RemoteVideo(video_id='vid4', title='Liked')],
         ),
     }
     monkeypatch.setattr(ytdlp, 'fetch_playlist', lambda url, **kwargs: playlists[url.rsplit('/', 1)[-1]])
+    monkeypatch.setattr(ytdlp, 'fetch_account_channel_id', lambda browser, **kwargs: ACCOUNT_CHANNEL_ID)
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_account_playlists',
+        lambda browser, **kwargs: [PlaylistRef(playlist_id=key, title=value.title) for key, value in playlists.items()],
+    )
+    monkeypatch.setattr(ytdlp, 'fetch_video', lambda video_id, **kwargs: RemoteVideo(video_id=video_id, title='A Mix', channel='Someone'))
     for playlist_id in playlists:
         runner.invoke(app, ['sync', f'https://example.invalid/{playlist_id}'])
     signed_in.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
     return signed_in
 
 
-def test_adopting_binds_a_local_file_to_the_playlist_youtube_holds(library):
-    result = runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME', '--json'])
-    assert result.exit_code == 0
+def test_every_playlist_youtube_holds_becomes_a_file_here(library):
+    """One sync. Two stores. No opt-in anywhere.
 
-    adopted = local.load(local.path_for('DRIVE TIME'))
-    assert json.loads(result.stdout) == [{'name': 'DRIVE TIME', 'slug': 'drive-time', 'remote_id': 'PLMINE', 'video_count': 2}]
-    assert adopted.remote_id == 'PLMINE'
-    assert adopted.video_ids == ['vid1', 'vid2']
-    assert adopted.synced
+    There is nothing to adopt and nothing to decline: a playlist YouTube holds
+    is a playlist here, and the sync is what makes that true.
+    """
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+
+    mine = local.load(local.path_for('DRIVE TIME'))
+    assert mine.remote_id == 'PLMINE'
+    assert mine.video_ids == ['vid1', 'vid2']
+    assert mine.synced
 
 
-def test_an_adopted_playlist_keeps_the_name_youtube_gave_it(library):
+def test_a_playlist_on_someone_elses_channel_is_mirrored_but_not_synced(library):
+    """Nothing here can write to it, so the file is marked unsynced on creation.
+
+    One rule, applied where the file is made, rather than a flag to set
+    afterwards or a sweep to remember to run. The file still exists — it is
+    readable, playable and worth copying from.
+    """
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+
+    theirs = local.load(local.path_for('Their Mix'))
+    assert theirs.remote_id == 'PLTHEIRS'
+    assert not theirs.synced
+    # From the mirror rather than the write backend, which cannot read it.
+    assert theirs.video_ids == ['vid3']
+    # And no base, because there is no push to prepare.
+    assert basestore.load(theirs.slug) is None
+
+
+def test_youtubes_own_lists_never_become_files(library):
+    """`Liked videos` is not a playlist YouTube hands over."""
+    runner.invoke(app, ['sync', '--browser', 'safari'])
+    assert not local.path_for('Liked videos').exists()
+
+
+def test_a_playlist_given_a_file_keeps_the_name_youtube_gave_it(library):
     """The other half of the naming rule — what ypl makes is kebab, what it takes over is not."""
-    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    runner.invoke(app, ['sync', '--browser', 'safari'])
     assert local.load(local.path_for('DRIVE TIME')).name == 'DRIVE TIME'
 
 
-def test_adopting_records_what_youtube_held_so_the_first_push_has_nothing_to_do(library):
-    """The base is the point of adopting rather than copying.
+def test_the_first_file_records_what_youtube_held_so_the_first_push_does_nothing(library):
+    """The base is what separates this from a copy.
 
     Without it the first plan reads the whole playlist as added here — or, with
-    an unreadable base, refuses — and neither is what taking over a playlist
-    that is already correct should mean.
+    an unreadable base, refuses — and neither is what a playlist that is already
+    correct should mean.
     """
-    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    runner.invoke(app, ['sync', '--browser', 'safari'])
 
     assert [item.set_video_id for item in basestore.load('drive-time').items] == ['h1', 'h2']
     plan = json.loads(runner.invoke(app, ['remote', 'plan', '--json']).stdout)
     assert [(push['stale'], push['add'], push['remove'], push['moves']) for push in plan] == [(False, [], 0, 0)]
 
 
-def test_an_adopted_playlist_is_one_playlist_rather_than_two(library):
+def test_a_playlist_with_a_file_is_one_playlist_rather_than_two(library):
     """Both stores hold it now, and a name that matched both would be ambiguous."""
-    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    runner.invoke(app, ['sync', '--browser', 'safari'])
 
     listed = json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)
     assert [(row['title'], row['kind']) for row in listed if row['title'] == 'DRIVE TIME'] == [('DRIVE TIME', 'local')]
     assert runner.invoke(app, ['playlists', 'show', 'DRIVE TIME']).exit_code == 0
 
 
-def test_a_bare_adopt_takes_over_what_the_account_owns_and_nothing_else(library):
-    """Someone else's playlist would queue writes against a playlist we cannot write to,
-    and YouTube's own lists are not playlists it hands over."""
-    result = runner.invoke(app, ['remote', 'adopt', '--json'])
-    assert result.exit_code == 0
-
-    assert [row['remote_id'] for row in json.loads(result.stdout)] == ['PLMINE']
-    assert not local.path_for('Their Mix').exists()
-    assert not local.path_for('Liked videos').exists()
-
-
-def test_a_playlist_someone_else_owns_is_still_adopted_when_it_is_named(library):
-    """A collaborative playlist is a real case, and the channel cannot tell it apart."""
-    library.items = [RemoteItem(video_id='vid3', set_video_id='h3')]
-    assert runner.invoke(app, ['remote', 'adopt', 'Their Mix']).exit_code == 0
-    assert local.load(local.path_for('Their Mix')).remote_id == 'PLTHEIRS'
-
-
-def test_youtubes_own_lists_are_refused_even_by_name(library):
-    result = runner.invoke(app, ['remote', 'adopt', 'Liked videos'])
-    assert result.exit_code == 1
-    assert not local.path_for('Liked videos').exists()
-
-
-def test_adopting_the_same_playlist_twice_changes_nothing_and_says_why(library):
-    """Resolution answers an adopted playlist with its file, so the second run
-    has to say it is already here rather than that no such playlist is mirrored."""
-    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+def test_syncing_twice_writes_the_file_once(library):
+    """The sweep is derived from what has no file yet, so it cannot double up."""
+    runner.invoke(app, ['sync', '--browser', 'safari'])
     before = local.path_for('DRIVE TIME').read_text()
 
-    result = runner.invoke(app, ['remote', 'adopt', 'PLMINE'])
-    assert result.exit_code == 1
-    assert 'already a playlist here' in result.output
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+    assert run['bound'] == []
     assert local.path_for('DRIVE TIME').read_text() == before
 
 
-def test_a_bare_adopt_with_everything_already_taken_over_succeeds_and_says_so(library):
-    runner.invoke(app, ['remote', 'adopt'])
-    result = runner.invoke(app, ['remote', 'adopt'])
-    assert result.exit_code == 0
-    assert 'Nothing to adopt' in result.output
-
-
-def test_adopting_refuses_to_write_over_a_playlist_made_here(library):
+def test_a_playlist_made_here_is_never_written_over(library):
     """A local playlist of the same name is authored data, not a copy to replace."""
     runner.invoke(app, ['playlists', 'create', 'drive time', '--from', 'DRIVE TIME'])
 
-    result = runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
-    assert result.exit_code == 1
-    assert local.load(local.path_for('DRIVE TIME')).remote_id == ''
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+    assert run['failures']
+    assert 'DRIVE TIME' not in run['bound']
+    # Still the playlist made here — the sweep refused rather than rebinding it
+    # to PLMINE and silently turning authored data into a mirror copy.
+    assert local.load(local.path_for('DRIVE TIME')).remote_id != 'PLMINE'
 
 
 def test_nothing_is_written_when_youtube_cannot_be_read(library):
     library.error = remote.RemoteError('network went away')
 
-    result = runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
-    assert result.exit_code == 1
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+    assert 'DRIVE TIME' not in run['bound']
     assert not local.path_for('DRIVE TIME').exists()
     assert basestore.load('drive-time') is None
 
@@ -1537,6 +1555,7 @@ def account(monkeypatch):
     whatever budget the rest of the run leaves — an unstubbed one would send the
     suite to the network.
     """
+    monkeypatch.setattr(ytdlp, 'fetch_account_channel_id', lambda browser, **kwargs: ACCOUNT_CHANNEL_ID)
     monkeypatch.setattr(
         ytdlp,
         'fetch_account_playlists',
@@ -1553,9 +1572,10 @@ def account(monkeypatch):
             # see: it answered with the *Google account* name, so every one of
             # this account's own playlists was judged to belong to somebody
             # else. Naming it `Chris Birch` here made the suite agree with the
-            # bug. The sweep only adopts what the account owns, and the feed
+            # bug. The sweep decides syncedness by ownership, and the feed
             # lists saved playlists too, so this is what the filter turns on.
             channel='iChrisBirch',
+            channel_id=ACCOUNT_CHANNEL_ID,
         ),
     )
     monkeypatch.setattr(
@@ -1587,11 +1607,12 @@ def test_a_bare_sync_with_no_browser_anywhere_says_what_to_do(account):
     assert '--browser' in result.output
 
 
-def test_a_saved_playlist_from_someone_elses_channel_is_not_adopted_by_the_sweep(account, signed_in, monkeypatch):
+def test_a_saved_playlist_from_someone_elses_channel_is_mirrored_but_unsynced(account, signed_in, monkeypatch):
     """Being in the playlists feed is not ownership, which is what it was taken
     for. Two of the real account's forty-two are a lecture series and a podcast
-    saved from other channels — queued every run, refused by YouTube Music every
-    run, because nothing here can write to a playlist it does not own."""
+    saved from other channels — queued every run, refused every run, because
+    nothing here can write to a playlist it does not own. They get a file now,
+    marked unsynced, rather than being left out."""
 
     def fetch(url, **kwargs):
         return RemotePlaylist(
@@ -1599,13 +1620,17 @@ def test_a_saved_playlist_from_someone_elses_channel_is_not_adopted_by_the_sweep
             title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
             channel='iChrisBirch' if url == 'PLa' else 'The Partially Examined Life',
+            channel_id=ACCOUNT_CHANNEL_ID if url == 'PLa' else OTHER_CHANNEL_ID,
         )
 
     monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
 
     run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
 
-    assert run['adopted'] == ['Deep Night']
+    # Both get a file. Ownership decides the flag inside it, not whether it exists.
+    assert sorted(run['bound']) == ['Art', 'Deep Night']
+    assert local.load(local.path_for('Deep Night')).synced
+    assert not local.load(local.path_for('Art')).synced
     assert run['failures'] == []
     # Still mirrored and still readable — it is worth copying from, which is why
     # it is in the feed at all.
@@ -1630,13 +1655,14 @@ def test_a_playlist_that_is_not_public_syncs_like_any_other(account, signed_in, 
             title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
             channel='iChrisBirch',
+            channel_id=ACCOUNT_CHANNEL_ID,
         )
 
     monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
 
     run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
 
-    assert sorted(run['adopted']) == ['Art', 'Deep Night']
+    assert sorted(run['bound']) == ['Art', 'Deep Night']
     assert run['failures'] == []
     assert 'withheld' not in run
     assert 'Not public' not in runner.invoke(app, ['status']).output
@@ -1680,11 +1706,11 @@ def signed_in(signing_in):
     return signing_in
 
 
-def test_one_sync_mirrors_adopts_and_enriches_with_nothing_else_typed(account, signed_in):
+def test_one_sync_mirrors_binds_and_enriches_with_nothing_else_typed(account, signed_in):
     """The whole point: after signing in, one command leaves nothing owed."""
     run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
 
-    assert (run['mirrored'], sorted(run['adopted']), run['enriched'], run['unenriched']) == (2, ['Art', 'Deep Night'], 2, 0)
+    assert (run['mirrored'], sorted(run['bound']), run['enriched'], run['unenriched']) == (2, ['Art', 'Deep Night'], 2, 0)
     assert local.load(local.path_for('Deep Night')).remote_id == 'PLa'
     assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['unenriched'] == 0
 
@@ -1695,7 +1721,7 @@ def test_a_sync_without_a_session_mirrors_and_says_so_rather_than_failing(accoun
     assert result.exit_code == 0
 
     run = json.loads(result.stdout)
-    assert (run['signed_in'], run['mirrored'], run['adopted']) == (False, 2, [])
+    assert (run['signed_in'], run['mirrored'], run['bound']) == (False, 2, [])
 
 
 def test_a_run_out_of_budget_stops_and_the_next_one_carries_on(account, signed_in):
@@ -1708,10 +1734,10 @@ def test_a_run_out_of_budget_stops_and_the_next_one_carries_on(account, signed_i
     """
     connection = db.connect()
     stopped = service.sync_everything(connection, 'safari', backend=signed_in(None), budget=throttle.Budget(requests=1))
-    assert (stopped.adopted, stopped.enriched, stopped.stopped) == ([], 0, 'budget')
+    assert (stopped.bound, stopped.enriched, stopped.stopped) == ([], 0, 'budget')
 
     finished = service.sync_everything(connection, 'safari', backend=signed_in(None), budget=throttle.Budget())
-    assert (sorted(finished.adopted), finished.unenriched) == (['Art', 'Deep Night'], 0)
+    assert (sorted(finished.bound), finished.unenriched) == (['Art', 'Deep Night'], 0)
 
 
 def test_a_video_that_will_never_read_is_marked_rather_than_retried_forever(account, signed_in, monkeypatch):
@@ -1734,22 +1760,21 @@ def test_a_video_that_might_read_next_time_is_left_in_the_queue(account, signed_
     assert (run['skipped'], run['unenriched']) == (2, 2)
 
 
-def test_a_deleted_playlist_is_not_dragged_back_by_the_next_sync(account, signed_in):
-    """Deleting one is a statement about wanting it here, and sync has to hear it."""
+def test_a_file_deleted_while_youtube_still_holds_it_comes_back(account, signed_in):
+    """Deleting is deleting, and half a deletion is not a state to be in.
+
+    The two are one playlist, so `ypl playlists delete` removes both. A file
+    that vanishes while YouTube still holds the playlist is a playlist without
+    its file, which the next sync corrects — there is no declined list, because
+    there is nothing to decline.
+    """
     runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert runner.invoke(app, ['playlists', 'delete', 'Deep Night', '--yes']).exit_code == 0
+    assert local.path_for('Deep Night').exists()
+    local.path_for('Deep Night').unlink()
 
     run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert run['adopted'] == []
-    assert not local.path_for('Deep Night').exists()
-
-
-def test_adopting_a_declined_playlist_by_name_undoes_the_refusal(account, signed_in):
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    runner.invoke(app, ['playlists', 'delete', 'Deep Night', '--yes'])
-
-    assert runner.invoke(app, ['remote', 'adopt', 'Deep Night']).exit_code == 0
-    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['declined'] == 0
+    assert run['bound'] == ['Deep Night']
+    assert local.path_for('Deep Night').exists()
 
 
 def test_an_edit_here_reaches_youtube_on_the_next_sync_with_nothing_else_typed(account, signed_in):
@@ -1767,7 +1792,7 @@ def test_the_run_a_timer_leaves_behind_is_readable_afterwards(account, signed_in
 
     status = json.loads(runner.invoke(app, ['status', '--json']).stdout)
     assert status['last_sync']
-    assert sorted(status['last_run']['adopted']) == ['Art', 'Deep Night']
+    assert sorted(status['last_run']['bound']) == ['Art', 'Deep Night']
 
 
 @pytest.fixture
@@ -1811,7 +1836,7 @@ def test_a_machine_that_will_not_take_a_timer_still_syncs(account, signed_in, mo
 
     result = runner.invoke(app, ['sync', '--browser', 'safari'])
     assert result.exit_code == 0
-    assert sorted(json.loads(runner.invoke(app, ['status', '--json']).stdout)['last_run']['adopted']) == ['Art', 'Deep Night']
+    assert sorted(json.loads(runner.invoke(app, ['status', '--json']).stdout)['last_run']['bound']) == ['Art', 'Deep Night']
 
 
 def test_a_macos_agent_runs_at_load_as_well_as_on_the_interval(tmp_path, monkeypatch):
@@ -2315,7 +2340,7 @@ def test_the_config_still_wins_over_what_was_remembered(monkeypatch):
 def test_a_second_sync_leaves_the_first_one_alone(account, signed_in, linux_timer):
     """A timer firing onto a run already going must not double it.
 
-    Two syncs at once would adopt the same playlists twice and write the same
+    Two syncs at once would bind the same playlists twice and write the same
     files from both, and the timer exists precisely to start runs nobody is
     watching for.
     """
@@ -2346,10 +2371,10 @@ def test_status_says_when_a_sync_is_going_on_right_now(account, signed_in):
 
 def test_status_counts_what_a_run_did_rather_than_listing_it():
     """Seventeen playlist names in a status line is a Python list on your screen."""
-    synclog.record({'adopted': ['BEST', 'Art', 'Trip'], 'reconciled': [], 'pushed': ['Deep Night']})
+    synclog.record({'bound': ['BEST', 'Art', 'Trip'], 'reconciled': [], 'pushed': ['Deep Night']})
 
     output = runner.invoke(app, ['status']).output
-    assert '3 adopted, 1 pushed' in output
+    assert '3 bound, 1 pushed' in output
 
 
 def test_status_stops_short_of_reprinting_a_whole_failed_run():
@@ -2370,29 +2395,29 @@ def test_a_signed_out_session_stops_the_remote_half_with_one_message(account, si
     signed_in.error = remote.RemoteAuthError('answered as a signed-out visitor')
 
     run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert (run['signed_in'], run['adopted']) == (False, [])
+    assert (run['signed_in'], run['bound']) == (False, [])
     assert len(run['failures']) == 1
-    assert 'ypl remote auth --replace' in run['failures'][0]
+    assert 'ypl remote auth --browser safari' in run['failures'][0]
 
 
-def test_a_read_with_no_slot_handles_is_not_adopted(library):
+def test_a_read_with_no_slot_handles_is_not_written_down(library):
     """A signed-out read returns the playlist and no handles for any of it.
 
-    Binding to that records a playlist that looks adopted and can never be
-    pushed, so it has to be refused before anything is written.
+    Recording that produces a file that looks bound and can never be pushed, so
+    it has to be refused before anything is written.
     """
     library.items = [RemoteItem(video_id='vid1', set_video_id=''), RemoteItem(video_id='vid2', set_video_id='')]
 
-    result = runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
-    assert result.exit_code == 1
-    assert 'not signed in' in result.output
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+    assert 'DRIVE TIME' not in run['bound']
+    assert any('not signed in' in failure for failure in run['failures'])
     assert not local.path_for('DRIVE TIME').exists()
 
 
 def test_a_base_with_no_handles_is_read_again_rather_than_trusted(library):
     """Self-repair for the bases a signed-out run already wrote: they match the
     mirror exactly, so nothing else would ever ask for them again."""
-    runner.invoke(app, ['remote', 'adopt', 'DRIVE TIME'])
+    runner.invoke(app, ['sync', '--browser', 'safari'])
     stored = basestore.load('drive-time')
     basestore.save(basestore.Base(slug='drive-time', playlist_id='PLMINE', items=[RemoteItem(v.video_id, '') for v in stored.items]))
 

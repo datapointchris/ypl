@@ -70,8 +70,8 @@ ypl videos show <id>                                   # its tracklist with time
 
 1. **Mirrors** the account through yt-dlp — one request to list your playlists, one per playlist.
    No API quota, and it doubles as the change detector for everything below.
-2. **Adopts** playlists the account owns that have no file here yet, so a playlist made in the web
-   player becomes one this tool can edit.
+2. **Writes a file** for every playlist that has none yet, so a playlist made in the web player
+   becomes one this tool can edit.
 3. **Reconciles** the playlists whose mirror no longer matches their file, letting YouTube win.
 4. **Pushes** the files that have moved away from what YouTube was last told.
 5. **Enriches** with whatever budget is left — one request per video, most-listened playlists first.
@@ -385,30 +385,34 @@ come back owned by somebody else, with no item handles and no write that succeed
 auth` asks YouTube which identities the cookies reach, takes the one that owns a channel, and
 records its page id for every later request to send.
 
-### Taking over what YouTube already holds
+### One sync, two stores
 
-A reconcile only reaches a local file bound to a YouTube playlist, and until it is adopted, a
-playlist made in the web player is not one. `ypl remote adopt` writes the file, binds it, and
-records what it read as the base — after which it is an ordinary local playlist that happens to
-already exist on YouTube.
+**Every playlist YouTube holds is a file here. Every synced file here is a playlist on YouTube.**
+There is nothing to adopt, nothing to decline and no opt-in anywhere: `ypl sync` writes a file for
+every mirrored playlist that has none, and changes flow both ways through the merge from then on.
 
-```bash
-ypl remote adopt                   # every playlist this account owns
-ypl remote adopt 'DRIVE TIME'      # one of them
-```
+A file is written from the write backend's own read rather than from the mirror, because the base
+needs each slot's `setVideoId` — which yt-dlp does not return — and a mirror read hours old would
+record videos YouTube no longer holds, which the first push would then put back. Its name is kept
+exactly as YouTube has it.
 
-Its name is kept exactly as YouTube has it. The file is written from the write backend's own read
-rather than from the mirror, because the base needs each slot's `setVideoId` — which yt-dlp does
-not return — and a mirror read hours old would record videos YouTube no longer holds, which the
-first push would then put back.
+**A playlist on someone else's channel is mirrored but not synced.** Nothing here can write to it,
+so its file is marked `#YPL-SYNCED:no` when it is created and built from the mirror instead, with
+no base and no push to prepare. That is a rule applied where the file is made rather than a flag to
+set afterwards, so there is no way to end up with a file quietly queuing pushes that will be
+refused. It is still readable, playable and worth copying from.
 
-The sweep covers what the signed-in account owns. A playlist mirrored from someone else's channel
-is left out, since binding it would set up pushes against a playlist nothing here can write to;
-naming one adopts it anyway, because a collaborative playlist is a real case that the channel
-cannot be told apart from. `Liked videos` and `Watch later` are YouTube's own lists rather than
-playlists it hands over, and are refused either way.
+Ownership is decided by channel id, not by name. Comparing names is what the old code did, and the
+two reads never agreed: yt-dlp reports the channel as `iChrisBirch` where the account menu reported
+the Google account behind it as `Chris Birch`, so every playlist this account owns was judged to be
+somebody else's. `Liked videos` and `Watch later` are YouTube's own lists rather than playlists it
+hands over, and never get a file.
 
-An adopted playlist then resolves to its file rather than to both stores — it is one playlist, and
+**Deleting is deleting.** `ypl playlists delete` removes the file and the YouTube playlist, because
+they are one playlist. A file that vanishes some other way is treated as a playlist missing its
+file, so the next sync writes it again — a merge never deletes on the strength of an absence.
+
+A playlist with a file resolves to that file rather than to both stores — it is one playlist, and
 the file is the half that can be edited.
 
 **Privacy is not ypl's business.** New playlists are created private, and nothing else here reads,

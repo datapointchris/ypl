@@ -18,7 +18,6 @@ from rich.table import Table
 from ypl import basestore
 from ypl import config
 from ypl import db
-from ypl import declined
 from ypl import editbuffer
 from ypl import history
 from ypl import local
@@ -483,8 +482,8 @@ def report_sync(run: service.SyncRun) -> None:
         report_pull(pull)
     for push in run.pushed:
         messages.print(f'[bold]{push.playlist.name}[/bold] — pushed: {describe_push(push)}')
-    for name in run.adopted:
-        messages.print(f'[bold]{name}[/bold] — adopted from YouTube')
+    for name in run.bound:
+        messages.print(f'[bold]{name}[/bold] — now a file here')
     if run.enriched:
         messages.print(f'Enriched [bold]{run.enriched}[/bold] videos, found {run.tracks_found} tracks')
     if run.skipped:
@@ -1664,7 +1663,7 @@ def bound_playlist_named(name: str) -> local.LocalPlaylist | None:
     """The local playlist bound to a YouTube one this name could mean.
 
     Wanted only for the error message, and only because resolution now answers
-    an adopted playlist with its file: the mirrored candidate is gone by the
+    a bound playlist with its file: the mirrored candidate is gone by the
     time the name fails to match one, and "no mirrored playlist matching
     DRIVE TIME" would be a lie about the single case where it worked already.
     """
@@ -1702,75 +1701,6 @@ def account_or_exit(backend: youtubei.YouTubeiBackend) -> remote.RemoteAccount:
     except remote.RemoteError as error:
         messages.print(f'[red]{error}[/red]')
         raise typer.Exit(1) from error
-
-
-@remote_app.command('adopt')
-def remote_adopt(
-    name: str = typer.Argument(
-        None, help='Mirrored playlist to take over. Every one this account owns when omitted.', autocompletion=complete_playlist
-    ),
-    limit: int = typer.Option(None, '--limit', '-n', help='Adopt at most this many playlists.'),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Take over a playlist YouTube already holds.
-
-    Writes the local file, binds it to the YouTube playlist and records what it
-    read as the base — so a playlist made in the web player years ago can now be
-    edited here and pushed back. Its name is kept exactly as YouTube has it.
-
-    Bare, this covers every mirrored playlist the signed-in account owns.
-    Playlists mirrored from someone else's channel are left out, since nothing
-    here could write to them, but naming one adopts it anyway.
-    """
-    connection = db.connect()
-    backend = backend_or_exit()
-    if name is None:
-        targets = service.adoptable_playlists(connection, account_or_exit(backend))
-    else:
-        targets = [mirrored_or_exit(connection, name)]
-    if not targets:
-        messages.print('Nothing to adopt — every playlist this account owns is already bound to a file here.')
-        messages.print('Run [bold]ypl sync[/bold] first if YouTube has playlists this mirror has not seen.')
-        return
-    if limit and len(targets) > limit:
-        # Named rather than silent, as in `plan`: a run that covered half of
-        # them and said nothing reads as the whole library being adopted.
-        messages.print(f'Adopting {limit} of {len(targets)} playlists — run again for the rest.')
-        targets = targets[:limit]
-
-    adopted: list[local.LocalPlaylist] = []
-    refused: list[tuple[service.ResolvedPlaylist, str]] = []
-    failure: Exception | None = None
-    for target in targets:
-        try:
-            adopted.append(service.adopt_playlist(connection, target, backend))
-        except (service.AdoptionError, local.LocalPlaylistExistsError) as error:
-            refused.append((target, str(error)))
-        except remote.RemoteError as error:
-            # Including the rate limit: it clears in hours, and everything
-            # adopted so far is already written down.
-            failure = error
-            break
-
-    if as_json:
-        print_json(
-            [
-                {'name': playlist.name, 'slug': playlist.slug, 'remote_id': playlist.remote_id, 'video_count': len(playlist.entries)}
-                for playlist in adopted
-            ]
-        )
-    else:
-        for playlist in adopted:
-            messages.print(f'[bold]{playlist.name}[/bold] — adopted, {len(playlist.entries)} videos')
-        for target, reason in refused:
-            messages.print(f'[bold]{target.title}[/bold] — [yellow]skipped[/yellow]: {reason}')
-
-    if failure:
-        messages.print(f'[red]{failure}[/red]')
-        messages.print(f'Stopped after {len(adopted)} of {len(targets)} — everything adopted is already recorded.')
-        raise typer.Exit(1)
-    if refused:
-        raise typer.Exit(1)
 
 
 def pull_targets_or_exit(connection: sqlite3.Connection, name: str | None) -> list[local.LocalPlaylist]:
@@ -2043,7 +1973,6 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
         'unenriched': len(service.unenriched_everywhere(connection)),
         'unreadable': len(service.unreadable_video_ids(connection)),
         'pending_push': pending,
-        'declined': len(declined.load()),
     }
     if as_json:
         print_json(payload)
@@ -2054,7 +1983,7 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
     messages.print(f'Scheduled       {f"every {timer.interval_minutes} min ({timer.manager})" if timer else "no — run ypl sync once"}')
     messages.print(f'Last sync       {payload["last_sync"] or "never"}')
     if last:
-        done = [f'{len(last[key])} {key}' for key in ('adopted', 'reconciled', 'pushed') if last.get(key)]
+        done = [f'{len(last[key])} {key}' for key in ('bound', 'reconciled', 'pushed') if last.get(key)]
         messages.print(f'                {", ".join(done) if done else "nothing to do"}')
         failures = last.get('failures') or []
         for failure in failures[:STATUS_FAILURES_SHOWN]:
@@ -2063,7 +1992,7 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
             # The command rather than the count, per the no-remainder-counts rule
             # in `~/dev/standards/cli-design.md`.
             messages.print(f'                [yellow]and {len(failures) - STATUS_FAILURES_SHOWN} more — ypl status --json[/yellow]')
-    messages.print(f'Playlists       {payload["playlists"]} here, {payload["declined"]} declined')
+    messages.print(f'Playlists       {payload["playlists"]} here')
     messages.print(f'Unenriched      {payload["unenriched"]} videos, {payload["unreadable"]} unreadable')
     if pending:
         messages.print(f'Waiting to push {", ".join(pending)}')

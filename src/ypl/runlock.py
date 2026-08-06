@@ -2,7 +2,7 @@
 
 Only a concern because the sync runs itself now. A timer firing while a run is
 still going — a slow run, a laptop waking, a foreground run started by hand —
-would put two processes through the same playlists at once: both adopting,
+would put two processes through the same playlists at once: both binding,
 both writing the same M3U files and bases, both reading YouTube for the same
 answers. SQLite survives that (the mirror is WAL); the files and the request
 budget do not.

@@ -75,17 +75,6 @@ def remote_dir() -> Path:
     return data_dir() / 'remote'
 
 
-def declined_file() -> Path:
-    """Playlists that must not be adopted, however often the sync runs.
-
-    Data, by the same rule as the playlists beside it: nothing can rebuild the
-    fact that a playlist was deleted here on purpose. Without it an automatic
-    sync would adopt it again on the next run, which is the one way automatic
-    can be worse than manual — it would argue with you.
-    """
-    return data_dir() / 'declined.json'
-
-
 def sync_log_file() -> Path:
     """One line per sync run.
 
