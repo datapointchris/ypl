@@ -1,6 +1,34 @@
 # CHANGELOG
 
 
+## v0.12.6 (2026-08-06)
+
+### Bug Fixes
+
+- **sync**: The feed lists saved playlists, so check ownership
+  ([`3f5b5d8`](https://github.com/datapointchris/ypl/commit/3f5b5d8cb343073d8c48a40460d7860f0d4be01f))
+
+The two failures left after the privacy fix, refused by YouTube Music on every run: `Rick Roderick:
+  Nietzsche and the Postmodern Condition` and `The Robert Greene Podcast`. Their channels are `The
+  Partially Examined Life` and `Robert Greene` — playlists saved from other people's channels, not
+  this account's. Their ids do not even carry this channel's prefix.
+
+The sweep's comment claimed the feed was the authority on ownership because a playlist is in it
+  "because this account has it". Has, not owns. Binding one queues pushes nothing here can perform,
+  which is exactly why `remote adopt` with no name has always filtered on `owned_by` through
+  `adoptable_playlists` — the sweep is the path that never did, so the two disagreed and the
+  automatic one was wrong.
+
+The account identity was already being read to test the session and then thrown away; it is kept and
+  passed to the queue now. Left out silently, like the system lists and for the same reason: it is a
+  standing property of somebody else's playlist rather than news. They stay mirrored and readable,
+  which is the whole reason to have them.
+
+That was also the last thing making a scheduled run exit 1 — a timer draining a queue that could
+  never empty, reporting failure every half hour for two playlists nothing was ever going to write
+  to.
+
+
 ## v0.12.5 (2026-08-06)
 
 ### Bug Fixes
