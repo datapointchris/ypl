@@ -414,7 +414,9 @@ session, and with `logged_in: 1` in the response it does return — so it cannot
 adopted playlist made private afterwards can no longer be reconciled or pushed either. `ypl sync`
 leaves them out and says how many, rather than spending a request each to fail the same way every
 half hour. They are still mirrored and still readable here; making one public on YouTube brings it
-back into the sync on the next run, with nothing to re-run by hand. yt-dlp reports the privacy on
+back into the sync on the next run, with nothing to re-run by hand. The count names only playlists
+you could act on — `Liked videos` and `Watch later` are not public either and never can be, so they
+are left out of it rather than reported every run as something to fix. yt-dlp reports the privacy on
 the same free read the mirror already makes, which is why this costs no request and needs nothing
 stored.
 

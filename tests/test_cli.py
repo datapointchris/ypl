@@ -1606,6 +1606,39 @@ def test_a_playlist_that_is_not_public_is_left_out_of_the_remote_half(account, s
     assert '1 playlist YouTube Music will not serve' in runner.invoke(app, ['status']).output
 
 
+def test_the_system_lists_are_not_named_among_the_playlists_that_are_not_public(account, signed_in, monkeypatch):
+    """`Liked videos` and `Watch later` are in the feed, are never public, and
+    have no privacy setting to change. Counting them told the real account 23
+    playlists were withheld when only 21 of them could ever be acted on."""
+    monkeypatch.setattr(
+        ytdlp,
+        'fetch_account_playlists',
+        lambda browser, **kwargs: [
+            PlaylistRef(playlist_id='PLa', title='Deep Night'),
+            PlaylistRef(playlist_id='LL', title='Liked videos'),
+        ],
+    )
+
+    def fetch(url, **kwargs):
+        return RemotePlaylist(
+            playlist_id=url,
+            title={'PLa': 'Deep Night', 'LL': 'Liked videos'}[url],
+            videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
+            availability='public' if url == 'PLa' else '',
+            channel='Chris Birch',
+        )
+
+    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
+
+    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
+
+    assert run['withheld'] == []
+    assert run['failures'] == []
+    # Mirrored and readable like any other — left out of the count, not the sync.
+    assert 'Liked videos' in [row['title'] for row in json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)]
+    assert 'Not public' not in runner.invoke(app, ['status']).output
+
+
 def test_an_adopted_playlist_gone_private_stops_being_reconciled(account, signed_in, monkeypatch):
     """The other direction, and why this filters more than the sweep."""
     runner.invoke(app, ['sync', '--browser', 'safari'])

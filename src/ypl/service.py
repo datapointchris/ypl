@@ -981,7 +981,13 @@ def sync_everything(
             run.failures.append(('signed in', brief(error)))
 
     if run.signed_in and backend is not None:
-        run.withheld = sorted(not_public(account).values())
+        # The system lists are left out of the report the way a saved playlist is
+        # left out of the sweep: `Liked videos` and `Watch later` have no privacy
+        # setting to change, so listing them under a heading that invites an
+        # action is a standing fact reported as news. They stay in `not_public`,
+        # which is the filter rather than the report — Music serves them no
+        # better for being YouTube's own.
+        run.withheld = sorted(title for playlist_id, title in not_public(account).items() if playlist_id not in SYSTEM_PLAYLIST_IDS)
         for item in queued_work(connection, account, backend, identity):
             if budget.exhausted:
                 run.stopped = 'budget'
