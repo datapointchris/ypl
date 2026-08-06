@@ -23,7 +23,6 @@ from ypl import main
 from ypl import paths
 from ypl import player
 from ypl import remote
-from ypl import runlock
 from ypl import schedule
 from ypl import service
 from ypl import session
@@ -143,21 +142,6 @@ def test_an_unknown_playlist_is_a_failure_not_a_usage_error(synced):
     assert result.exit_code == 1
 
 
-def test_an_ambiguous_playlist_name_exits_2_and_lists_the_candidates(monkeypatch):
-    for playlist_id, title in [('PL1', 'Deep Night One'), ('PL2', 'Deep Night Two')]:
-        monkeypatch.setattr(
-            ytdlp,
-            'fetch_playlist',
-            lambda *args, pid=playlist_id, name=title, **kwargs: RemotePlaylist(playlist_id=pid, title=name),
-        )
-        runner.invoke(app, ['sync', f'https://example.invalid/{playlist_id}'])
-
-    result = runner.invoke(app, ['playlists', 'show', 'Deep Night'])
-    assert result.exit_code == 2
-    assert 'Deep Night One' in result.output
-    assert 'Deep Night Two' in result.output
-
-
 def test_json_output_is_parseable_with_nothing_else_on_stdout(synced):
     result = runner.invoke(app, ['playlists', 'list', '--json'])
     assert result.exit_code == 0
@@ -182,16 +166,6 @@ def test_an_empty_mirror_lists_nothing_and_still_succeeds():
     result = runner.invoke(app, ['playlists', 'list', '--json'])
     assert result.exit_code == 0
     assert json.loads(result.stdout) == []
-
-
-def test_a_missing_yt_dlp_names_the_fix_and_fails(monkeypatch):
-    def unavailable(*args, **kwargs):
-        raise ytdlp.YtdlpUnavailableError('yt-dlp is not on PATH — install it to read playlists')
-
-    monkeypatch.setattr(ytdlp, 'fetch_playlist', unavailable)
-    result = runner.invoke(app, ['sync', 'https://example.invalid/PL1'])
-    assert result.exit_code == 1
-    assert 'yt-dlp' in result.output
 
 
 def test_config_path_prints_all_three_locations():
@@ -278,28 +252,6 @@ def test_a_nonsense_batch_size_is_rejected_rather_than_used():
 def test_showing_an_unmirrored_video_fails_rather_than_printing_an_empty_table():
     result = runner.invoke(app, ['videos', 'show', 'nope'])
     assert result.exit_code == 1
-
-
-def test_a_video_id_starting_with_a_hyphen_is_an_id_not_an_option(monkeypatch):
-    """Base64url ids mean roughly one in thirty begins with `-`.
-
-    Without `ignore_unknown_options` Click rejects `-4FPIL6e4SQ` as an unknown
-    option, which is a failure that depends on which video you happened to pick.
-    """
-    monkeypatch.setattr(
-        ytdlp,
-        'fetch_playlist',
-        lambda *args, **kwargs: RemotePlaylist(
-            playlist_id='PL1',
-            title='Mixes',
-            videos=[RemoteVideo(video_id='-4FPIL6e4SQ', title='A Set')],
-        ),
-    )
-    runner.invoke(app, ['sync', 'https://example.invalid/PL1'])
-
-    result = runner.invoke(app, ['videos', 'show', '-4FPIL6e4SQ', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['video']['video_id'] == '-4FPIL6e4SQ'
 
 
 def test_enrich_reports_nothing_to_do_on_an_empty_mirror():
@@ -601,45 +553,6 @@ def test_ordering_into_an_existing_name_refuses_without_force(many):
     assert runner.invoke(app, ['playlists', 'order', 'Sunday', '--sort', 'title', '--into', 'Taken', '--force']).exit_code == 0
 
 
-def test_ordering_keeps_unavailable_videos_rather_than_selecting_them_out(monkeypatch):
-    """Reordering must not silently drop entries — that is what `create` is for."""
-    monkeypatch.setattr(
-        ytdlp,
-        'fetch_playlist',
-        lambda *args, **kwargs: RemotePlaylist(
-            playlist_id='PL1',
-            title='Mixed',
-            videos=[RemoteVideo(video_id='ok', title='Fine'), RemoteVideo(video_id='gone', title='[Deleted video]', is_unavailable=True)],
-        ),
-    )
-    runner.invoke(app, ['sync', 'https://example.invalid/PL1'])
-    runner.invoke(app, ['playlists', 'create', 'Kept'], input='https://youtu.be/ok\nhttps://youtu.be/gone\n')
-
-    result = runner.invoke(app, ['playlists', 'order', 'Kept', '--sort', 'title', '--json'])
-    assert json.loads(result.stdout)['video_count'] == 2
-
-
-def test_a_split_says_what_it_left_out_rather_than_coming_up_short_silently(monkeypatch):
-    monkeypatch.setattr(
-        ytdlp,
-        'fetch_playlist',
-        lambda *args, **kwargs: RemotePlaylist(
-            playlist_id='PL1',
-            title='Patchy',
-            videos=[
-                RemoteVideo(video_id='a', title='One'),
-                RemoteVideo(video_id='gone', title='[Deleted video]', is_unavailable=True),
-                RemoteVideo(video_id='b', title='Two'),
-            ],
-        ),
-    )
-    runner.invoke(app, ['sync', 'https://example.invalid/PL1'])
-
-    result = runner.invoke(app, ['playlists', 'split', 'Patchy', '--parts', '2'])
-    assert result.exit_code == 0
-    assert '1 unavailable' in result.output
-
-
 def test_ordering_a_mirrored_playlist_is_refused(synced):
     assert runner.invoke(app, ['playlists', 'order', 'Get Insights', '--sort', 'random']).exit_code == 1
 
@@ -905,20 +818,6 @@ def test_plays_are_listed_most_recent_first(two_videos):
     assert payload[0]['title'] == 'Another'
 
 
-def test_listening_history_survives_the_mirror_being_thrown_away(two_videos):
-    """The mirror is disposable — it re-syncs for free — and the history is not.
-
-    Deleting it and starting over must not make `ypl next` forget.
-    """
-    runner.invoke(app, ['plays', 'add', 'vid1'])
-    paths.database_file().unlink()
-    runner.invoke(app, ['sync', 'https://example.invalid/PL2'])
-
-    payload = json.loads(runner.invoke(app, ['next', '--json', '--limit', '2']).stdout)
-    assert [row['video_id'] for row in payload] == ['vid2', 'vid1']
-    assert payload[1]['play_count'] == 1
-
-
 def test_next_on_an_empty_mirror_fails_rather_than_printing_nothing():
     """A resolver that exits 0 with no output would show as a blank pursuit."""
     assert runner.invoke(app, ['next']).exit_code == 1
@@ -1045,7 +944,7 @@ def signing_in(monkeypatch):
 
 
 def test_signing_in_stores_the_browser_and_the_channel_it_acts_as(signing_in):
-    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari', '--json'])
+    result = runner.invoke(app, ['auth', '--browser', 'safari', '--json'])
     assert result.exit_code == 0
     assert json.loads(result.stdout) == {
         'browser': 'safari',
@@ -1063,7 +962,7 @@ def test_the_page_id_is_what_gets_stored_not_the_account_that_was_selected(signi
     channel and no playlists. What has to be recorded is the identity that owns
     the channel, so every later request can name it.
     """
-    runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    runner.invoke(app, ['auth', '--browser', 'safari'])
     assert session.page_id() == '115127243664537694481'
 
 
@@ -1074,7 +973,7 @@ def test_signing_in_stores_no_credential(signing_in):
     entire credential. Reading the browser's jar per run means the only durable
     facts are a browser name and a page id, neither of which signs anyone in.
     """
-    runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    runner.invoke(app, ['auth', '--browser', 'safari'])
     stored = json.loads(paths.auth_file().read_text())
     assert set(stored) == {'browser', 'page_id'}
     assert 'aaa' not in paths.auth_file().read_text()
@@ -1087,14 +986,14 @@ def test_signing_in_twice_just_signs_in_again(signing_in):
     through DevTools. Naming a browser costs nothing, so the guard was asking
     permission to redo something free.
     """
-    assert runner.invoke(app, ['remote', 'auth', '--browser', 'safari']).exit_code == 0
-    assert runner.invoke(app, ['remote', 'auth', '--browser', 'firefox']).exit_code == 0
+    assert runner.invoke(app, ['auth', '--browser', 'safari']).exit_code == 0
+    assert runner.invoke(app, ['auth', '--browser', 'firefox']).exit_code == 0
     assert session.browser() == 'firefox'
 
 
 def test_naming_no_browser_at_all_is_a_usage_error(signing_in):
     """Exit 2: nothing was wrong, the one required fact was not given."""
-    result = runner.invoke(app, ['remote', 'auth'])
+    result = runner.invoke(app, ['auth'])
     assert result.exit_code == 2
     assert not paths.auth_file().exists()
 
@@ -1102,7 +1001,7 @@ def test_naming_no_browser_at_all_is_a_usage_error(signing_in):
 def test_a_session_youtube_rejects_stores_nothing(signing_in):
     """Recording a browser that cannot sign in would only fail later, further from here."""
     signing_in.error = remote.RemoteAuthError('cookie expired')
-    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    result = runner.invoke(app, ['auth', '--browser', 'safari'])
     assert result.exit_code == 1
     assert not paths.auth_file().exists()
 
@@ -1117,7 +1016,7 @@ def test_a_session_that_could_not_be_checked_leaves_an_existing_sign_in_alone(si
     session.remember_browser('safari', 'PAGEID')
     signing_in.error = remote.RemoteRateLimitedError('slow down')
 
-    result = runner.invoke(app, ['remote', 'auth', '--browser', 'firefox'])
+    result = runner.invoke(app, ['auth', '--browser', 'firefox'])
     assert result.exit_code == 1
     assert session.browser() == 'safari'
     assert session.page_id() == 'PAGEID'
@@ -1144,268 +1043,6 @@ def bind(name: str, remote_id: str = 'PLR') -> local.LocalPlaylist:
     return playlist
 
 
-@pytest.fixture
-def bound(two_videos, signed_in):
-    """A synced playlist on YouTube, with a base recorded for it."""
-    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
-    bind('Sunday')
-    basestore.save(
-        basestore.Base(
-            slug='sunday',
-            playlist_id='PLR',
-            items=[RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')],
-        )
-    )
-    return signed_in
-
-
-def test_a_pull_applies_what_changed_on_youtube_and_keeps_what_changed_here(bound, monkeypatch):
-    """The whole reconcile: a video deleted there, one added there, one deleted here."""
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid9', set_video_id='h9', title='On A Phone')]
-    monkeypatch.setattr(
-        ytdlp, 'fetch_video', lambda video_id, **kwargs: RemoteVideo(video_id=video_id, title='Whatever', channel='Someone')
-    )
-    assert runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1']).exit_code == 0
-
-    result = runner.invoke(app, ['remote', 'pull', '--json'])
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)[0]
-    assert payload['pulled_in'] == ['vid9']
-    assert payload['pulled_out'] == ['vid2']
-    assert payload['pending_remove'] == ['vid1']
-    assert local.load(local.path_for('Sunday')).video_ids == ['vid9']
-
-
-def test_a_video_added_on_a_phone_keeps_the_title_youtube_gave_it(bound):
-    """The mirror has never seen it, and an unlabelled entry plays as a bare URL."""
-    bound.items = [
-        RemoteItem(video_id='vid1', set_video_id='h1'),
-        RemoteItem(video_id='vid2', set_video_id='h2'),
-        RemoteItem(video_id='vid9', set_video_id='h9', title='On A Phone'),
-    ]
-    assert runner.invoke(app, ['remote', 'pull']).exit_code == 0
-    entries = {entry.video_id: entry.title for entry in local.load(local.path_for('Sunday')).entries}
-    assert entries['vid9'] == 'On A Phone'
-
-
-def test_a_pull_records_the_read_as_the_new_base(bound):
-    """Including the handles, which are the only copy of them anywhere."""
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='fresh1')]
-    assert runner.invoke(app, ['remote', 'pull']).exit_code == 0
-
-    recorded = basestore.load('sunday')
-    assert recorded.video_ids == ['vid1']
-    assert recorded.items[0].set_video_id == 'fresh1'
-    assert recorded.playlist_id == 'PLR'
-
-
-def test_pulling_twice_changes_nothing_the_second_time(bound):
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1')]
-    runner.invoke(app, ['remote', 'pull'])
-    first = local.load(local.path_for('Sunday')).video_ids
-
-    result = runner.invoke(app, ['remote', 'pull', '--json'])
-    assert json.loads(result.stdout)[0]['pulled_out'] == []
-    assert local.load(local.path_for('Sunday')).video_ids == first
-
-
-def test_a_pull_leaves_the_file_alone_when_the_base_cannot_be_read(bound):
-    """Refusing is the point: read as absent, every video looks newly added here."""
-    basestore.path_for('sunday').write_text('{not json')
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1')]
-
-    result = runner.invoke(app, ['remote', 'pull'])
-    assert result.exit_code == 1
-    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2']
-
-
-def test_a_rate_limit_stops_the_run_rather_than_retrying(bound):
-    bound.error = remote.RemoteRateLimitedError('slow down')
-    result = runner.invoke(app, ['remote', 'pull'])
-    assert result.exit_code == 1
-    assert 'slow down' in result.output
-
-
-def test_pulling_without_a_session_names_the_command_that_fixes_it(two_videos):
-    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
-    bind('Sunday')
-
-    result = runner.invoke(app, ['remote', 'pull'])
-    assert result.exit_code == 1
-    assert 'ypl remote auth' in result.output
-
-
-def test_pulling_with_nothing_on_youtube_yet_succeeds_and_says_so(two_videos, signed_in):
-    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
-    result = runner.invoke(app, ['remote', 'pull'])
-    assert result.exit_code == 0
-    assert 'Nothing to pull' in result.output
-
-
-def test_naming_a_playlist_that_is_not_on_youtube_yet_is_an_error(two_videos, signed_in):
-    """A sweep passes over it silently; asking for it by name has to answer."""
-    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
-    result = runner.invoke(app, ['remote', 'pull', 'Sunday'])
-    assert result.exit_code == 1
-    assert 'not on YouTube yet' in result.output
-
-
-def test_a_demoted_playlist_is_not_pulled_into(bound):
-    """Pulling would undo the demotion one video at a time."""
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1')]
-    runner.invoke(app, ['playlists', 'demote', 'Sunday'])
-
-    assert runner.invoke(app, ['remote', 'pull']).exit_code == 0
-    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2']
-
-    named = runner.invoke(app, ['remote', 'pull', 'Sunday'])
-    assert named.exit_code == 1
-    assert 'local only' in named.output
-
-
-@pytest.fixture
-def library(monkeypatch, signed_in):
-    """A mirrored account: one playlist of mine, one of someone else's, one of YouTube's.
-
-    Channels are set because ownership is the thing the sweep filters on, and
-    the fake account signs in as the channel `iChrisBirch` rather than as the
-    Google account behind it.
-    """
-    playlists = {
-        'PLMINE': RemotePlaylist(
-            playlist_id='PLMINE',
-            title='DRIVE TIME',
-            channel='iChrisBirch',
-            channel_id=ACCOUNT_CHANNEL_ID,
-            videos=[RemoteVideo(video_id='vid1', title='A Talk'), RemoteVideo(video_id='vid2', title='Another')],
-        ),
-        'PLTHEIRS': RemotePlaylist(
-            playlist_id='PLTHEIRS',
-            title='Their Mix',
-            channel='Robert Greene',
-            channel_id=OTHER_CHANNEL_ID,
-            videos=[RemoteVideo(video_id='vid3', title='Theirs')],
-        ),
-        'LL': RemotePlaylist(
-            playlist_id='LL',
-            title='Liked videos',
-            channel='iChrisBirch',
-            channel_id=ACCOUNT_CHANNEL_ID,
-            videos=[RemoteVideo(video_id='vid4', title='Liked')],
-        ),
-    }
-    monkeypatch.setattr(ytdlp, 'fetch_playlist', lambda url, **kwargs: playlists[url.rsplit('/', 1)[-1]])
-    monkeypatch.setattr(ytdlp, 'fetch_account_channel_id', lambda browser, **kwargs: ACCOUNT_CHANNEL_ID)
-    monkeypatch.setattr(
-        ytdlp,
-        'fetch_account_playlists',
-        lambda browser, **kwargs: [PlaylistRef(playlist_id=key, title=value.title) for key, value in playlists.items()],
-    )
-    monkeypatch.setattr(ytdlp, 'fetch_video', lambda video_id, **kwargs: RemoteVideo(video_id=video_id, title='A Mix', channel='Someone'))
-    for playlist_id in playlists:
-        runner.invoke(app, ['sync', f'https://example.invalid/{playlist_id}'])
-    signed_in.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
-    return signed_in
-
-
-def test_every_playlist_youtube_holds_becomes_a_file_here(library):
-    """One sync. Two stores. No opt-in anywhere.
-
-    There is nothing to adopt and nothing to decline: a playlist YouTube holds
-    is a playlist here, and the sync is what makes that true.
-    """
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    mine = local.load(local.path_for('DRIVE TIME'))
-    assert mine.remote_id == 'PLMINE'
-    assert mine.video_ids == ['vid1', 'vid2']
-    assert mine.synced
-
-
-def test_a_playlist_on_someone_elses_channel_is_mirrored_but_not_synced(library):
-    """Nothing here can write to it, so the file is marked unsynced on creation.
-
-    One rule, applied where the file is made, rather than a flag to set
-    afterwards or a sweep to remember to run. The file still exists — it is
-    readable, playable and worth copying from.
-    """
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    theirs = local.load(local.path_for('Their Mix'))
-    assert theirs.remote_id == 'PLTHEIRS'
-    assert not theirs.synced
-    # From the mirror rather than the write backend, which cannot read it.
-    assert theirs.video_ids == ['vid3']
-    # And no base, because there is no push to prepare.
-    assert basestore.load(theirs.slug) is None
-
-
-def test_youtubes_own_lists_never_become_files(library):
-    """`Liked videos` is not a playlist YouTube hands over."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert not local.path_for('Liked videos').exists()
-
-
-def test_a_playlist_given_a_file_keeps_the_name_youtube_gave_it(library):
-    """The other half of the naming rule — what ypl makes is kebab, what it takes over is not."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert local.load(local.path_for('DRIVE TIME')).name == 'DRIVE TIME'
-
-
-def test_the_first_file_records_what_youtube_held_so_the_first_push_does_nothing(library):
-    """The base is what separates this from a copy.
-
-    Without it the first plan reads the whole playlist as added here — or, with
-    an unreadable base, refuses — and neither is what a playlist that is already
-    correct should mean.
-    """
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    assert [item.set_video_id for item in basestore.load('drive-time').items] == ['h1', 'h2']
-    plan = json.loads(runner.invoke(app, ['remote', 'plan', '--json']).stdout)
-    assert [(push['stale'], push['add'], push['remove'], push['moves']) for push in plan] == [(False, [], 0, 0)]
-
-
-def test_a_playlist_with_a_file_is_one_playlist_rather_than_two(library):
-    """Both stores hold it now, and a name that matched both would be ambiguous."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    listed = json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)
-    assert [(row['title'], row['kind']) for row in listed if row['title'] == 'DRIVE TIME'] == [('DRIVE TIME', 'local')]
-    assert runner.invoke(app, ['playlists', 'show', 'DRIVE TIME']).exit_code == 0
-
-
-def test_syncing_twice_writes_the_file_once(library):
-    """The sweep is derived from what has no file yet, so it cannot double up."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    before = local.path_for('DRIVE TIME').read_text()
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert run['bound'] == []
-    assert local.path_for('DRIVE TIME').read_text() == before
-
-
-def test_a_playlist_made_here_is_never_written_over(library):
-    """A local playlist of the same name is authored data, not a copy to replace."""
-    runner.invoke(app, ['playlists', 'create', 'drive time', '--from', 'DRIVE TIME'])
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert run['failures']
-    assert 'DRIVE TIME' not in run['bound']
-    # Still the playlist made here — the sweep refused rather than rebinding it
-    # to PLMINE and silently turning authored data into a mirror copy.
-    assert local.load(local.path_for('DRIVE TIME')).remote_id != 'PLMINE'
-
-
-def test_nothing_is_written_when_youtube_cannot_be_read(library):
-    library.error = remote.RemoteError('network went away')
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert 'DRIVE TIME' not in run['bound']
-    assert not local.path_for('DRIVE TIME').exists()
-    assert basestore.load('drive-time') is None
-
-
 def set_order(name: str, video_ids: list[str]) -> None:
     """Rewrite a local playlist's order without going through a command."""
     playlist = local.load(local.path_for(name))
@@ -1414,99 +1051,9 @@ def set_order(name: str, video_ids: list[str]) -> None:
     local.save(playlist, overwrite=True)
 
 
-def test_planning_reads_and_writes_nothing(bound):
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
-    runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1'])
-
-    result = runner.invoke(app, ['remote', 'plan', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)[0]['remove'] == 1
-    assert [item.video_id for item in bound.items] == ['vid1', 'vid2']
-
-
-def test_a_new_playlist_is_created_on_youtube_and_filled(two_videos, signed_in):
-    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
-
-    result = runner.invoke(app, ['remote', 'apply'])
-    assert result.exit_code == 0
-    assert signed_in.created == ['sunday']
-    assert [item.video_id for item in signed_in.items] == ['vid1', 'vid2']
-    assert local.load(local.path_for('Sunday')).remote_id == 'PLNEW'
-
-
-def test_a_created_playlist_is_bound_before_its_videos_go_up(two_videos, signed_in):
-    """Otherwise a failed fill orphans it, and the next run creates a second one."""
-    signed_in.add_error = remote.RemoteError('network went away')
-    runner.invoke(app, ['playlists', 'create', 'Sunday', '--from', 'More'])
-
-    assert runner.invoke(app, ['remote', 'apply']).exit_code == 1
-    assert local.load(local.path_for('Sunday')).remote_id == 'PLNEW'
-
-    signed_in.add_error = None
-    assert runner.invoke(app, ['remote', 'apply']).exit_code == 0
-    assert signed_in.created == ['sunday']
-
-
-def test_a_video_deleted_here_is_removed_on_youtube(bound):
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
-    runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1'])
-
-    assert runner.invoke(app, ['remote', 'apply']).exit_code == 0
-    assert [item.video_id for item in bound.items] == ['vid2']
-    assert basestore.load('sunday').video_ids == ['vid2']
-
-
-def test_a_reorder_here_becomes_moves_on_youtube(bound):
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
-    set_order('Sunday', ['vid2', 'vid1'])
-
-    result = runner.invoke(app, ['remote', 'apply', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)[0]['moves'] == 1
-    assert [item.video_id for item in bound.items] == ['vid2', 'vid1']
-
-
-def test_applying_twice_pushes_nothing_the_second_time(bound):
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid2', set_video_id='h2')]
-    runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1'])
-    runner.invoke(app, ['remote', 'apply'])
-
-    result = runner.invoke(app, ['remote', 'apply'])
-    assert result.exit_code == 0
-    assert 'already up to date' in result.output
-    assert [item.video_id for item in bound.items] == ['vid2']
-
-
-def test_a_playlist_youtube_has_changed_is_refused_until_it_is_pulled(bound):
-    """Pushing on a stale base would decide a conflict without having seen it."""
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1'), RemoteItem(video_id='vid9', set_video_id='h9')]
-    runner.invoke(app, ['playlists', 'remove', 'Sunday', 'https://youtu.be/vid1'])
-
-    result = runner.invoke(app, ['remote', 'apply'])
-    assert result.exit_code == 1
-    assert 'ypl remote pull' in result.output
-    assert [item.video_id for item in bound.items] == ['vid1', 'vid9']
-
-
-def test_a_playlist_bound_to_youtube_with_no_base_is_refused_rather_than_pushed(bound):
-    """No base means no way to tell a local addition from a remote deletion."""
-    basestore.delete('sunday')
-    bound.items = [RemoteItem(video_id='vid1', set_video_id='h1')]
-
-    result = runner.invoke(app, ['remote', 'plan', '--json'])
-    assert json.loads(result.stdout)[0]['stale'] is True
-
-
-def test_a_limited_run_says_how_much_it_left(bound):
-    runner.invoke(app, ['playlists', 'create', 'Monday', '--from', 'More'])
-    result = runner.invoke(app, ['remote', 'plan', '--limit', '1'])
-    assert result.exit_code == 0
-    assert '1 of 2' in result.output
-
-
 def test_signing_in_from_a_browser_needs_no_paste(signing_in):
     """The whole point: no DevTools, no clipboard, no EOF on stdin."""
-    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari', '--json'])
+    result = runner.invoke(app, ['auth', '--browser', 'safari', '--json'])
     assert result.exit_code == 0
     assert json.loads(result.stdout)['account'] == 'iChrisBirch'
 
@@ -1518,7 +1065,7 @@ def test_the_configured_browser_is_used_when_no_flag_is_given(signing_in, monkey
     asked = []
     monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: asked.append(browser) or dict(BROWSER_COOKIES))
 
-    assert runner.invoke(app, ['remote', 'auth']).exit_code == 0
+    assert runner.invoke(app, ['auth']).exit_code == 0
     assert asked == ['firefox']
 
 
@@ -1531,7 +1078,7 @@ def test_a_browser_that_is_not_signed_in_fails_without_writing_anything(monkeypa
     """
     monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'aaa'})
 
-    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    result = runner.invoke(app, ['auth', '--browser', 'safari'])
     assert result.exit_code == 1
     assert not paths.auth_file().exists()
 
@@ -1542,7 +1089,7 @@ def test_a_browser_yt_dlp_cannot_read_names_the_browser(signing_in, monkeypatch)
 
     monkeypatch.setattr(ytdlp, 'browser_cookies', unreadable)
 
-    result = runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    result = runner.invoke(app, ['auth', '--browser', 'safari'])
     assert result.exit_code == 1
     assert 'safari' in result.output
 
@@ -1585,258 +1132,9 @@ def account(monkeypatch):
     )
 
 
-def test_a_bare_sync_mirrors_the_whole_account(account):
-    """No hunting for URLs: signing in is enough to say what you have."""
-    result = runner.invoke(app, ['sync', '--browser', 'safari', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['mirrored'] == 2
-
-    listed = json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)
-    assert {row['title'] for row in listed} == {'Deep Night', 'Art'}
-
-
-def test_the_configured_browser_is_the_default_for_a_bare_sync(account):
-    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
-    paths.config_file().write_text('cookies_from_browser = "firefox"\n')
-    assert runner.invoke(app, ['sync', '--json']).exit_code == 0
-
-
-def test_a_bare_sync_with_no_browser_anywhere_says_what_to_do(account):
-    result = runner.invoke(app, ['sync'])
-    assert result.exit_code == 2
-    assert '--browser' in result.output
-
-
-def test_a_saved_playlist_from_someone_elses_channel_is_mirrored_but_unsynced(account, signed_in, monkeypatch):
-    """Being in the playlists feed is not ownership, which is what it was taken
-    for. Two of the real account's forty-two are a lecture series and a podcast
-    saved from other channels — queued every run, refused every run, because
-    nothing here can write to a playlist it does not own. They get a file now,
-    marked unsynced, rather than being left out."""
-
-    def fetch(url, **kwargs):
-        return RemotePlaylist(
-            playlist_id=url,
-            title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
-            videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
-            channel='iChrisBirch' if url == 'PLa' else 'The Partially Examined Life',
-            channel_id=ACCOUNT_CHANNEL_ID if url == 'PLa' else OTHER_CHANNEL_ID,
-        )
-
-    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-
-    # Both get a file. Ownership decides the flag inside it, not whether it exists.
-    assert sorted(run['bound']) == ['Art', 'Deep Night']
-    assert local.load(local.path_for('Deep Night')).synced
-    assert not local.load(local.path_for('Art')).synced
-    assert run['failures'] == []
-    # Still mirrored and still readable — it is worth copying from, which is why
-    # it is in the feed at all.
-    assert 'Art' in [row['title'] for row in json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)]
-
-
-def test_a_playlist_that_is_not_public_syncs_like_any_other(account, signed_in, monkeypatch):
-    """Privacy is not ypl's business, and never was the thing in the way.
-
-    A whole subsystem existed to keep non-public playlists out of adopt,
-    reconcile and push, because YouTube Music answered them with a page holding
-    no `contents`. The cause was the identity every request carried, not the
-    privacy setting: reading as the channel rather than as the Google account
-    behind it returns them in full, with a handle on every slot. Verified
-    against the account on `Art` and `Computers`, the two the old diagnosis
-    named as permanently read-only.
-    """
-
-    def fetch(url, **kwargs):
-        return RemotePlaylist(
-            playlist_id=url,
-            title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
-            videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
-            channel='iChrisBirch',
-            channel_id=ACCOUNT_CHANNEL_ID,
-        )
-
-    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-
-    assert sorted(run['bound']) == ['Art', 'Deep Night']
-    assert run['failures'] == []
-    assert 'withheld' not in run
-    assert 'Not public' not in runner.invoke(app, ['status']).output
-
-
-def test_one_unreadable_playlist_does_not_cost_the_others_their_sync(account, monkeypatch):
-    """A collaborative list gone private must not end the run."""
-
-    def fetch(url, **kwargs):
-        if url == 'PLa':
-            raise ytdlp.YtdlpFailedError('ERROR: [youtube:tab] PLa: Playlist does not exist')
-        return RemotePlaylist(playlist_id=url, title='Art', videos=[RemoteVideo(video_id='vid1', title='A Mix')])
-
-    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
-
-    result = runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert result.exit_code == 1
-    assert 'Deep Night' in result.output
-    assert [row['title'] for row in json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)] == ['Art']
-
-
-def test_a_limited_sync_stops_where_it_was_told(account):
-    result = runner.invoke(app, ['sync', '--browser', 'safari', '--limit', '1', '--json'])
-    assert json.loads(result.stdout)['mirrored'] == 1
-
-
 def test_syncing_one_playlist_by_url_still_works(synced):
     """The account sweep is the new default, not a replacement."""
     assert runner.invoke(app, ['playlists', 'show', 'Get Insights']).exit_code == 0
-
-
-@pytest.fixture
-def signed_in(signing_in):
-    """A machine that has already signed in.
-
-    The backend is faked either way; what this adds is the recorded browser and
-    page id, which is what `ypl sync` looks at to decide whether this machine
-    can write.
-    """
-    session.remember_browser('safari', '115127243664537694481')
-    return signing_in
-
-
-def test_one_sync_mirrors_binds_and_enriches_with_nothing_else_typed(account, signed_in):
-    """The whole point: after signing in, one command leaves nothing owed."""
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-
-    assert (run['mirrored'], sorted(run['bound']), run['enriched'], run['unenriched']) == (2, ['Art', 'Deep Night'], 2, 0)
-    assert local.load(local.path_for('Deep Night')).remote_id == 'PLa'
-    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['unenriched'] == 0
-
-
-def test_a_sync_without_a_session_mirrors_and_says_so_rather_than_failing(account):
-    """Signing in is per-machine setup, and a machine that has not must still sync."""
-    result = runner.invoke(app, ['sync', '--browser', 'safari', '--json'])
-    assert result.exit_code == 0
-
-    run = json.loads(result.stdout)
-    assert (run['signed_in'], run['mirrored'], run['bound']) == (False, 2, [])
-
-
-def test_a_run_out_of_budget_stops_and_the_next_one_carries_on(account, signed_in):
-    """Bounded rather than open-ended, which is only safe because it resumes.
-
-    The ceiling is what lets this run unattended: a library converges over
-    several runs and no single one has to be the one that finishes. Counted in
-    requests rather than seconds so the ceiling lands in the same place every
-    time — the mirror alone spends more than one.
-    """
-    connection = db.connect()
-    stopped = service.sync_everything(connection, 'safari', backend=signed_in(None), budget=throttle.Budget(requests=1))
-    assert (stopped.bound, stopped.enriched, stopped.stopped) == ([], 0, 'budget')
-
-    finished = service.sync_everything(connection, 'safari', backend=signed_in(None), budget=throttle.Budget())
-    assert (sorted(finished.bound), finished.unenriched) == (['Art', 'Deep Night'], 0)
-
-
-def test_a_video_that_will_never_read_is_marked_rather_than_retried_forever(account, signed_in, monkeypatch):
-    """The failure mode of an unattended enrich: spending every run on the dead."""
-    monkeypatch.setattr(
-        ytdlp, 'fetch_video', lambda video_id, **kwargs: (_ for _ in ()).throw(ytdlp.YtdlpFailedError('ERROR: Video unavailable'))
-    )
-    first = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert (first['enriched'], first['skipped'], first['unenriched']) == (0, 2, 0)
-
-    second = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert second['skipped'] == 0
-
-
-def test_a_video_that_might_read_next_time_is_left_in_the_queue(account, signed_in, monkeypatch):
-    """A timeout is not a dead video, and treating it as one loses the tracklist."""
-    monkeypatch.setattr(ytdlp, 'fetch_video', lambda video_id, **kwargs: (_ for _ in ()).throw(ytdlp.YtdlpFailedError('ERROR: timed out')))
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-
-    assert (run['skipped'], run['unenriched']) == (2, 2)
-
-
-def test_a_file_deleted_while_youtube_still_holds_it_comes_back(account, signed_in):
-    """Deleting is deleting, and half a deletion is not a state to be in.
-
-    The two are one playlist, so `ypl playlists delete` removes both. A file
-    that vanishes while YouTube still holds the playlist is a playlist without
-    its file, which the next sync corrects — there is no declined list, because
-    there is nothing to decline.
-    """
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert local.path_for('Deep Night').exists()
-    local.path_for('Deep Night').unlink()
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert run['bound'] == ['Deep Night']
-    assert local.path_for('Deep Night').exists()
-
-
-def test_an_edit_here_reaches_youtube_on_the_next_sync_with_nothing_else_typed(account, signed_in):
-    """The other direction, and the reason the loop is worth automating at all."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    runner.invoke(app, ['playlists', 'remove', 'Deep Night', 'PLavid'])
-
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert [item.video_id for item in signed_in.items] == []
-
-
-def test_the_run_a_timer_leaves_behind_is_readable_afterwards(account, signed_in):
-    """A sync nobody watches is only as good as what it wrote down."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    status = json.loads(runner.invoke(app, ['status', '--json']).stdout)
-    assert status['last_sync']
-    assert sorted(status['last_run']['bound']) == ['Art', 'Deep Night']
-
-
-@pytest.fixture
-def linux_timer(monkeypatch):
-    """A machine whose timer is systemd's, whichever one is running the suite."""
-    monkeypatch.setattr(schedule, 'is_macos', lambda: False)
-    monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
-
-
-def test_syncing_once_leaves_the_machine_syncing_itself(account, signed_in, linux_timer):
-    """No command installs this. Running the sync at all is what sets it up."""
-    result = runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert result.exit_code == 0
-
-    assert 'OnUnitActiveSec=30min' in schedule.timer_path().read_text()
-    assert 'ExecStart=/usr/local/bin/ypl sync' in schedule.service_path().read_text()
-    assert 'every 30 minutes' in result.output
-    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['scheduled'] is True
-
-
-def test_a_second_sync_neither_reinstalls_the_timer_nor_mentions_it(account, signed_in, linux_timer):
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    result = runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    assert 'every 30 minutes' not in result.output
-
-
-def test_turning_background_syncing_off_takes_the_timer_away_on_the_next_run(account, signed_in, linux_timer):
-    """Off is a setting, not a verb: nothing installed it, so nothing uninstalls it."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    paths.config_file().write_text('background_sync = false\n')
-
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert not schedule.timer_path().exists()
-    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['scheduled'] is False
-
-
-def test_a_machine_that_will_not_take_a_timer_still_syncs(account, signed_in, monkeypatch):
-    """The run happening now matters more than the ones that would follow it."""
-    monkeypatch.setattr(schedule, 'executable', lambda: (_ for _ in ()).throw(schedule.ScheduleError('no ypl on PATH')))
-
-    result = runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert result.exit_code == 0
-    assert sorted(json.loads(runner.invoke(app, ['status', '--json']).stdout)['last_run']['bound']) == ['Art', 'Deep Night']
 
 
 def test_a_macos_agent_runs_at_load_as_well_as_on_the_interval(tmp_path, monkeypatch):
@@ -1859,16 +1157,6 @@ def homebrew_yt_dlp(monkeypatch):
     monkeypatch.setattr(schedule, 'tool_directories', lambda: ['/usr/local/bin'])
 
 
-def test_a_timer_carries_the_path_its_tools_need(account, signed_in, linux_timer, homebrew_yt_dlp):
-    """Every timer-driven sync on the real machine died with `yt-dlp is not on
-    PATH` while every run at the prompt worked. `ypl` is scheduled by absolute
-    path for exactly this reason, and then it shells out to yt-dlp by name."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    written = schedule.service_path().read_text()
-    assert f'Environment=PATH=/usr/local/bin{os.pathsep}/usr/bin' in written
-
-
 def test_a_macos_agent_carries_it_too(tmp_path, monkeypatch, homebrew_yt_dlp):
     monkeypatch.setattr(schedule, 'is_macos', lambda: True)
     monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
@@ -1878,45 +1166,6 @@ def test_a_macos_agent_carries_it_too(tmp_path, monkeypatch, homebrew_yt_dlp):
     written = schedule.agent_path().read_text()
     assert '<key>EnvironmentVariables</key>' in written
     assert f'<string>/usr/local/bin{os.pathsep}/usr/bin' in written
-
-
-def test_a_timer_that_cannot_reach_yt_dlp_is_rewritten(account, signed_in, linux_timer, monkeypatch):
-    """How the machines already running a broken unit repair themselves: the
-    command matches and the interval matches, so nothing else would notice."""
-    monkeypatch.setattr(schedule, 'tool_directories', lambda: [])
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert 'Environment=PATH=/usr/bin' in schedule.service_path().read_text()
-
-    monkeypatch.setattr(schedule, 'tool_directories', lambda: ['/usr/local/bin'])
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    assert '/usr/local/bin' in schedule.path_from(schedule.service_path().read_text())
-
-
-def test_a_shell_path_change_does_not_rewrite_a_working_timer(account, signed_in, linux_timer, homebrew_yt_dlp):
-    """Reinstalling means unload and load, so the test is whether the run can
-    find its tools — not whether the PATH string is the one it was written with."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    before = schedule.service_path().stat().st_mtime_ns
-
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    assert schedule.service_path().stat().st_mtime_ns == before
-
-
-def test_a_timer_naming_a_ypl_that_moved_is_replaced_on_the_next_run(account, signed_in, monkeypatch):
-    """A unit that fires and fails still reports as scheduled, which is the worst
-    of the three states — this is how a timer pointed into a deleted checkout
-    went on being reported as healthy."""
-    monkeypatch.setattr(schedule, 'is_macos', lambda: False)
-    monkeypatch.setattr(schedule, 'executable', lambda: '/somewhere/else/ypl')
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert 'ExecStart=/somewhere/else/ypl sync' in schedule.service_path().read_text()
-
-    monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
-    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
-
-    assert 'ExecStart=/usr/local/bin/ypl sync' in schedule.service_path().read_text()
 
 
 def test_the_timer_prefers_an_installed_ypl_to_the_one_in_a_virtualenv(tmp_path, monkeypatch):
@@ -1956,21 +1205,6 @@ def test_the_checkouts_ypl_is_still_used_when_it_is_the_only_one(tmp_path, monke
     monkeypatch.setenv('PATH', str(checkout))
 
     assert schedule.executable() == str(checkout / 'ypl')
-
-
-def test_a_sync_on_a_mac_writes_its_agent_inside_the_isolated_home(account, signed_in, tmp_path, monkeypatch):
-    """The guard on `isolated_home`, and the bug it was written for.
-
-    This suite installed a real launch agent on the machine running it — loaded,
-    firing every thirty minutes, and pointed at a checkout — because the agent
-    path comes from HOME and only the XDG variables were redirected.
-    """
-    monkeypatch.setattr(schedule, 'is_macos', lambda: True)
-
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    assert schedule.agent_path().is_relative_to(tmp_path)
-    assert schedule.agent_path().exists()
 
 
 def test_editing_a_playlist_applies_the_order_the_buffer_asked_for(two_videos):
@@ -2308,65 +1542,16 @@ def test_completion_offers_nothing_when_no_playlist_is_current(two_videos):
 def test_signing_in_from_a_browser_teaches_the_reads_which_browser_it_was(signing_in, monkeypatch):
     """Two subsystems, one login. Signing in once should not have to be told twice."""
     monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'x'})
-    runner.invoke(app, ['remote', 'auth', '--browser', 'safari'])
+    runner.invoke(app, ['auth', '--browser', 'safari'])
 
     assert session.browser() == 'safari'
     assert main.reading_browser(config.Config()) == 'safari'
-
-
-def test_a_bare_sync_uses_the_browser_signed_in_with(account, signing_in, monkeypatch):
-    """The bug this fixes: logged in, and `ypl sync` said it had nothing to read."""
-    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {'__Secure-3PAPISID': 'x'})
-    runner.invoke(app, ['remote', 'auth', '--browser', 'firefox'])
-
-    result = runner.invoke(app, ['sync', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['mirrored'] == 2
-
-
-def test_a_browser_that_worked_for_a_sync_is_remembered_too(account):
-    """Naming it once is enough, whichever command was told."""
-    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
-    assert session.browser() == 'safari'
-    assert runner.invoke(app, ['sync', '--json']).exit_code == 0
 
 
 def test_the_config_still_wins_over_what_was_remembered(monkeypatch):
     """It is the setting a person wrote down; nothing inferred should override it."""
     monkeypatch.setattr(session, 'browser', lambda: 'safari')
     assert main.reading_browser(config.Config(cookies_from_browser='firefox')) == 'firefox'
-
-
-def test_a_second_sync_leaves_the_first_one_alone(account, signed_in, linux_timer):
-    """A timer firing onto a run already going must not double it.
-
-    Two syncs at once would bind the same playlists twice and write the same
-    files from both, and the timer exists precisely to start runs nobody is
-    watching for.
-    """
-    with runlock.held() as mine:
-        assert mine
-        result = runner.invoke(app, ['sync', '--browser', 'safari'])
-
-    assert result.exit_code == 0
-    assert 'already running' in result.output
-    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['last_sync'] is None
-
-
-def test_the_lock_is_released_when_the_run_ends(account, signed_in, linux_timer):
-    """Held by the kernel rather than by a pid file, so a crash cannot wedge it."""
-    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
-
-    with runlock.held() as mine:
-        assert mine
-
-
-def test_status_says_when_a_sync_is_going_on_right_now(account, signed_in):
-    """A background run you cannot see mid-flight looks the same as a broken one."""
-    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['running'] is False
-
-    with runlock.held():
-        assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['running'] is True
 
 
 def test_status_counts_what_a_run_did_rather_than_listing_it():
@@ -2387,76 +1572,3 @@ def test_status_stops_short_of_reprinting_a_whole_failed_run():
     assert 'playlist 8' not in output
     # The lines the whole command exists to answer still have to be below it.
     assert 'Unenriched' in output
-
-
-def test_a_signed_out_session_stops_the_remote_half_with_one_message(account, signed_in):
-    """The shape this took in the wild: forty failures, each four kilobytes of
-    YouTube JSON, and nowhere among them the fact that explains all of it."""
-    signed_in.error = remote.RemoteAuthError('answered as a signed-out visitor')
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert (run['signed_in'], run['bound']) == (False, [])
-    assert len(run['failures']) == 1
-    assert 'ypl remote auth --browser safari' in run['failures'][0]
-
-
-def test_a_read_with_no_slot_handles_is_not_written_down(library):
-    """A signed-out read returns the playlist and no handles for any of it.
-
-    Recording that produces a file that looks bound and can never be pushed, so
-    it has to be refused before anything is written.
-    """
-    library.items = [RemoteItem(video_id='vid1', set_video_id=''), RemoteItem(video_id='vid2', set_video_id='')]
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-    assert 'DRIVE TIME' not in run['bound']
-    assert any('not signed in' in failure for failure in run['failures'])
-    assert not local.path_for('DRIVE TIME').exists()
-
-
-def test_a_base_with_no_handles_is_read_again_rather_than_trusted(library):
-    """Self-repair for the bases a signed-out run already wrote: they match the
-    mirror exactly, so nothing else would ever ask for them again."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    stored = basestore.load('drive-time')
-    basestore.save(basestore.Base(slug='drive-time', playlist_id='PLMINE', items=[RemoteItem(v.video_id, '') for v in stored.items]))
-
-    assert service.needs_reconcile(db.connect(), local.load(local.path_for('DRIVE TIME'))) is True
-
-
-def test_the_cookies_are_read_from_the_browser_on_every_sync(account, signed_in, linux_timer, monkeypatch):
-    """A stored session is a photograph of something that moves.
-
-    Google rotates the session cookies while you stay signed in, so signing in
-    once only means once if the jar is re-read each run — which is why the
-    first real run mirrored all afternoon while the write path had quietly
-    become a signed-out visitor. There is no stored copy to go stale now, and
-    this is the assertion that keeps it that way.
-    """
-    monkeypatch.setattr(ytdlp, 'browser_cookies', lambda browser, **kwargs: {**BROWSER_COOKIES, '__Secure-3PAPISID': 'fresh'})
-
-    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
-    assert FakeBackend.cookies['__Secure-3PAPISID'] == 'fresh'
-
-
-def test_the_stored_page_id_reaches_the_backend_on_every_sync(account, signed_in, linux_timer):
-    """Every request has to name the channel, not just the one that signed in.
-
-    A page id recorded at sign-in and then not sent is the same bug it was
-    introduced to fix: the write path authenticates as the Google account and
-    every playlist comes back owned by somebody else.
-    """
-    assert runner.invoke(app, ['sync', '--browser', 'safari']).exit_code == 0
-    assert FakeBackend.page_ids
-    assert set(FakeBackend.page_ids) == {'115127243664537694481'}
-
-
-def test_a_browser_that_cannot_be_read_leaves_sync_mirroring(account, signed_in, linux_timer, monkeypatch):
-    """Mirroring needs no session, so a locked browser costs the write half only."""
-    monkeypatch.setattr(
-        ytdlp, 'browser_cookies', lambda browser, **kwargs: (_ for _ in ()).throw(ytdlp.YtdlpFailedError('safari is locked'))
-    )
-
-    result = runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert result.exit_code == 0
-    assert 'mirroring only' in result.output

@@ -15,7 +15,6 @@ from pyselfupdate.typercmd import run_update
 from rich.console import Console
 from rich.table import Table
 
-from ypl import basestore
 from ypl import config
 from ypl import db
 from ypl import editbuffer
@@ -106,27 +105,10 @@ Examples:
   ypl config path                                 where it would be read from
 """
 
-REMOTE_HELP = """\
-Going back up to YouTube.
-
-Everything else in ypl reads or writes locally. These commands are the only
-ones that change anything on YouTube, and they are deliberately slow: every
-call is throttled, and a rate limit stops the run rather than being retried
-into.
-
-Examples:
-
-  ypl remote auth                                 sign in, once per machine
-  ypl remote pull                                 reconcile with YouTube
-  ypl remote plan                                 what would go up
-  ypl remote apply                                send it
-  ypl remote apply --limit 5                      a drain on a timer
-"""
 READING = 'Reading (the local mirror)'
 SYNCING = 'Syncing (pulls from YouTube, no API quota)'
-BUILDING = 'Building (writes M3U files here; YouTube only via ypl remote)'
+BUILDING = 'Building (writes M3U files here; YouTube only via ypl sync)'
 PLAYING = 'Listening (playing, and changing what is on while it plays)'
-WRITING = 'Writing (the only commands that reach YouTube)'
 ADMIN = 'Admin'
 
 # `status` is a glance, and a run where every playlist failed printed one line
@@ -139,12 +121,10 @@ playlists_app = typer.Typer(name='playlists', no_args_is_help=True, help=PLAYLIS
 videos_app = typer.Typer(name='videos', no_args_is_help=True, help=VIDEOS_HELP)
 config_app = typer.Typer(name='config', no_args_is_help=True, help=CONFIG_HELP)
 plays_app = typer.Typer(name='plays', no_args_is_help=True, help=PLAYS_HELP)
-remote_app = typer.Typer(name='remote', no_args_is_help=True, help=REMOTE_HELP)
 
 app.add_typer(playlists_app, name='playlists', rich_help_panel=READING)
 app.add_typer(videos_app, name='videos', rich_help_panel=READING)
 app.add_typer(plays_app, name='plays', rich_help_panel=PLAYING)
-app.add_typer(remote_app, name='remote', rich_help_panel=WRITING)
 app.add_typer(config_app, name='config', rich_help_panel=ADMIN)
 
 # Data goes to stdout and nothing else does, so a caller parsing --json never
@@ -1582,8 +1562,8 @@ def backend_for_browser(browser: str, page_id: str) -> youtubei.YouTubeiBackend:
     )
 
 
-@remote_app.command('auth')
-def remote_auth(
+@app.command('auth', rich_help_panel=SYNCING)
+def auth(
     browser: str = typer.Option(
         None, '--browser', '-b', help='Read the session from this browser: safari, firefox, chrome, brave, edge...'
     ),
@@ -1740,81 +1720,9 @@ def report_pull(pull: service.Pull) -> None:
     messages.print(f'[bold]{pull.playlist.name}[/bold] — {", ".join(changes)}')
 
 
-@remote_app.command('pull')
-def remote_pull(
-    name: str = typer.Argument(
-        None, help='Playlist to reconcile. Every synced playlist when omitted.', autocompletion=complete_local_playlist
-    ),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Reconcile playlists with YouTube, letting YouTube win.
-
-    Reads what is on YouTube, merges it into the local file against what was
-    there at the last reconcile, and records the read as the new base. Changes
-    made on a phone arrive here; changes made here stay made and go up on the
-    next [bold]ypl remote apply[/bold].
-    """
-    connection = db.connect()
-    targets = pull_targets_or_exit(connection, name)
-    if not targets:
-        messages.print('Nothing to pull — no playlist here is on YouTube yet.')
-        return
-
-    backend = backend_or_exit()
-    pulls = []
-    try:
-        for playlist in targets:
-            pulls.append(service.pull_playlist(connection, playlist, backend))
-    except remote.RemoteRateLimitedError as error:
-        # Stopped rather than retried: the limit clears on its own in hours,
-        # and everything reconciled so far is already saved.
-        messages.print(f'[red]YouTube asked us to slow down.[/red] {error}')
-        messages.print(f'Reconciled {len(pulls)} of {len(targets)} — run this again later.')
-        raise typer.Exit(1) from error
-    except remote.RemoteError as error:
-        messages.print(f'[red]{error}[/red]')
-        raise typer.Exit(1) from error
-    except basestore.BaseStoreError as error:
-        messages.print(f'[red]{error}[/red]')
-        messages.print('That file is the record of what YouTube last held. Delete it only if you accept that')
-        messages.print('everything in the playlist will then look newly added here, and go back up to YouTube.')
-        raise typer.Exit(1) from error
-
-    if as_json:
-        print_json(
-            [
-                {
-                    'name': pull.playlist.name,
-                    'slug': pull.playlist.slug,
-                    'remote_id': pull.playlist.remote_id,
-                    'video_count': len(pull.playlist.entries),
-                    'order_source': pull.result.order_source,
-                    'pulled_in': pull.result.pulled_in,
-                    'pulled_out': pull.result.pulled_out,
-                    'pending_add': pull.result.pending_add,
-                    'pending_remove': pull.result.pending_remove,
-                }
-                for pull in pulls
-            ]
-        )
-        return
-    for pull in pulls:
-        report_pull(pull)
-
-
-def push_targets_or_exit(connection: sqlite3.Connection, name: str | None) -> list[local.LocalPlaylist]:
-    if name is None:
-        return service.pushable_playlists()
-    playlist = local_or_exit(connection, name)
-    if not playlist.synced:
-        messages.print(f'[red]{playlist.name} is local only.[/red] Run [bold]ypl playlists promote {playlist.name!r}[/bold] first.')
-        raise typer.Exit(1)
-    return [playlist]
-
-
 def describe_push(push: service.Push) -> str:
     if push.stale:
-        return 'YouTube has changed since the last reconcile — run [bold]ypl remote pull[/bold] first'
+        return 'YouTube has changed since the last reconcile — the next sync settles it'
     parts = []
     if push.create:
         parts.append('create')
@@ -1827,128 +1735,6 @@ def describe_push(push: service.Push) -> str:
     return ', '.join(parts) if parts else 'nothing to push'
 
 
-def push_payload(push: service.Push) -> dict:
-    return {
-        'name': push.playlist.name,
-        'slug': push.playlist.slug,
-        'remote_id': push.playlist.remote_id,
-        'create': push.create,
-        'add': push.diff.add,
-        'remove': len(push.diff.remove),
-        'moves': push.moves,
-        'stale': push.stale,
-    }
-
-
-def plan_pushes(
-    connection: sqlite3.Connection, name: str | None, limit: int | None
-) -> tuple[youtubei.YouTubeiBackend | None, list[service.Push]]:
-    """Plan every target, and hand back the backend that read them.
-
-    The same backend carries on into `apply`, so a run is one signed-in session
-    and one throttle rather than a fresh one per playlist.
-    """
-    targets = push_targets_or_exit(connection, name)
-    if limit:
-        # Named rather than silent: a run that covered half the playlists and
-        # said "done" reads as everything being up on YouTube.
-        if len(targets) > limit:
-            messages.print(f'Planning {limit} of {len(targets)} playlists — run again for the rest.')
-        targets = targets[:limit]
-    if not targets:
-        return None, []
-
-    backend = backend_or_exit()
-    plans = []
-    try:
-        for playlist in targets:
-            plans.append(service.plan_push(playlist, backend))
-    except remote.RemoteRateLimitedError as error:
-        messages.print(f'[red]YouTube asked us to slow down.[/red] {error}')
-        raise typer.Exit(1) from error
-    except remote.RemoteError as error:
-        messages.print(f'[red]{error}[/red]')
-        raise typer.Exit(1) from error
-    except basestore.BaseStoreError as error:
-        messages.print(f'[red]{error}[/red]')
-        raise typer.Exit(1) from error
-    return backend, plans
-
-
-@remote_app.command('plan')
-def remote_plan(
-    name: str = typer.Argument(None, help='Playlist to plan. Every synced playlist when omitted.', autocompletion=complete_local_playlist),
-    limit: int = typer.Option(None, '--limit', '-n', help='Plan at most this many playlists.'),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """What `ypl remote apply` would change on YouTube.
-
-    A dry run by construction rather than by flag: this is the same reads and
-    the same arithmetic apply does, stopping before the first write.
-    """
-    connection = db.connect()
-    _, plans = plan_pushes(connection, name, limit)
-    if as_json:
-        print_json([push_payload(push) for push in plans])
-        return
-    if not plans:
-        messages.print('Nothing to plan — no playlist here is set to sync.')
-        return
-    for push in plans:
-        messages.print(f'[bold]{push.playlist.name}[/bold] — {describe_push(push)}')
-
-
-@remote_app.command('apply')
-def remote_apply(
-    name: str = typer.Argument(None, help='Playlist to push. Every synced playlist when omitted.', autocompletion=complete_local_playlist),
-    limit: int = typer.Option(None, '--limit', '-n', help='Push at most this many playlists, for a drain on a timer.'),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Make YouTube match the local files.
-
-    Slowly, and on purpose: every call is spaced, additions go up a hundred at
-    a time, and a rate limit stops the run instead of being retried into. A
-    playlist YouTube has changed since the last reconcile is skipped rather
-    than guessed at — [bold]ypl remote pull[/bold] is what settles that.
-    """
-    connection = db.connect()
-    backend, plans = plan_pushes(connection, name, limit)
-    if not plans or backend is None:
-        if not as_json:
-            messages.print('Nothing to apply — no playlist here is set to sync.')
-        return
-
-    done: list[service.Push] = []
-    failure: Exception | None = None
-    for push in plans:
-        if push.stale or push.empty:
-            done.append(push)
-            continue
-        try:
-            done.append(service.apply_push(push, backend))
-        except remote.RemoteError as error:
-            failure = error
-            break
-
-    if as_json:
-        print_json([push_payload(push) for push in done])
-    else:
-        for push in done:
-            if push.stale:
-                messages.print(f'[bold]{push.playlist.name}[/bold] — [yellow]skipped[/yellow]: {describe_push(push)}')
-            elif push.empty:
-                messages.print(f'[bold]{push.playlist.name}[/bold] — already up to date')
-            else:
-                messages.print(f'[bold]{push.playlist.name}[/bold] — pushed: {describe_push(push)}')
-
-    if failure:
-        messages.print(f'[red]{failure}[/red]')
-        messages.print(f'Stopped after {len(done)} of {len(plans)} — everything already pushed is recorded.')
-        raise typer.Exit(1)
-    if any(push.stale for push in done):
-        raise typer.Exit(1)
-
-
 @app.command('status', rich_help_panel=SYNCING)
 def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.')) -> None:
     """Whether everything is in sync, and what the last run did.
@@ -1959,7 +1745,7 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
     """
     connection = db.connect()
     playlists = local.list_playlists().playlists
-    pending = [playlist.name for playlist in playlists if playlist.synced and (not playlist.remote_id or service.needs_push(playlist))]
+    pending = [waiting for waiting in (service.pending_push(playlist) for playlist in playlists) if waiting]
     last = synclog.last()
     timer = schedule.installed()
     payload = {
@@ -1994,8 +1780,20 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
             messages.print(f'                [yellow]and {len(failures) - STATUS_FAILURES_SHOWN} more — ypl status --json[/yellow]')
     messages.print(f'Playlists       {payload["playlists"]} here')
     messages.print(f'Unenriched      {payload["unenriched"]} videos, {payload["unreadable"]} unreadable')
-    if pending:
-        messages.print(f'Waiting to push {", ".join(pending)}')
+    for waiting in pending:
+        change = (
+            'create'
+            if waiting['create']
+            else ', '.join(
+                part
+                for part in (
+                    f'{waiting["add"]} to add' if waiting['add'] else '',
+                    f'{waiting["remove"]} to remove' if waiting['remove'] else '',
+                )
+                if part
+            )
+        )
+        messages.print(f'Waiting to push {waiting["name"]} — {change or "reordered"}')
 
 
 @app.command('update', rich_help_panel=ADMIN)

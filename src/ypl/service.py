@@ -815,6 +815,30 @@ def needs_reconcile(connection: sqlite3.Connection, playlist: LocalPlaylist) -> 
     return mirrored_video_ids(connection, playlist.remote_id) != playlist.video_ids
 
 
+def pending_push(playlist: LocalPlaylist) -> dict | None:
+    """What one playlist would send, worked out without asking YouTube.
+
+    The answer `remote plan` used to give, and it gives it for nothing: the
+    membership half of a push is the local file against the recorded base, both
+    of which are files here. `plan` spent a request per playlist to learn the
+    same counts plus whether YouTube had moved underneath them — and staleness
+    is the sync's business rather than a glance's, because the sync is what
+    settles it.
+
+    None when there is nothing to send, so a caller can list only what is
+    actually waiting.
+    """
+    if not playlist.synced:
+        return None
+    if not playlist.remote_id:
+        return {'name': playlist.name, 'create': True, 'add': len(playlist.video_ids), 'remove': 0}
+    recorded = basestore.load(playlist.slug)
+    if recorded is None or recorded.video_ids == playlist.video_ids:
+        return None
+    diff = merge.push_plan(recorded.video_ids, playlist.video_ids)
+    return {'name': playlist.name, 'create': False, 'add': len(diff.add), 'remove': len(diff.remove)}
+
+
 def needs_push(playlist: LocalPlaylist) -> bool:
     """Whether the local file has moved away from the last reconcile.
 
