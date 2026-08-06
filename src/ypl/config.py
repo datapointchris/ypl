@@ -7,43 +7,6 @@ from pathlib import Path
 
 from ypl import paths
 
-EXAMPLE = """\
-# Which browser's cookies to borrow when reading playlists.
-# Needed only for private and unlisted playlists — public ones read without it.
-# One of: firefox, chrome, chromium, brave, edge, safari, vivaldi, opera.
-# cookies_from_browser = "firefox"
-
-# How many videos `ypl enrich` fetches in one run when --limit is not given.
-# Each video is one request, so a whole library is better done in sittings.
-enrich_batch_size = 50
-
-# Seconds to wait between requests when a command makes many of them —
-# `enrich --all` over a library, or a bare `sync` over every playlist. Reads
-# cost no API quota, but thousands of back-to-back extractions carrying your
-# cookies is a burst, and a burst is the shape that gets an account looked at.
-# Raise it if YouTube complains. Lowering it below 1 second does nothing —
-# pacing is what keeps this at human scale, so there is a floor under it.
-request_interval_seconds = 2.0
-
-# Whether the first `ypl sync` on a machine sets itself up to keep running —
-# at startup and every `background_sync_minutes` after that. There is no command
-# for this on purpose: turning it off here removes the timer on the next run.
-background_sync = true
-background_sync_minutes = 30
-
-# How long one `ypl sync` may spend before stopping and leaving the rest for
-# the next run. Everything it does is resumable, so a ceiling costs nothing but
-# patience — a library enriches itself over a day or two of background runs
-# rather than in one sitting that holds the machine. 0 means no ceiling.
-sync_minutes = 15
-
-# Arguments added to every `ypl play`. The escape hatch for anything mpv can do
-# that ypl does not have a flag for — profiles, output devices, cache sizes.
-# `ypl play --audio` already covers the common one.
-# mpv_arguments = ["--profile=low-latency", "--volume=70"]
-"""
-
-
 # A floor on the gap between requests, below which no config may go. The
 # credential is a Google account cookie and the Terms prohibit automated
 # access; pacing is the whole of what keeps this at human scale, so it is not
@@ -140,10 +103,3 @@ def load() -> Config:
         background_sync_minutes=background_minutes,
         mpv_arguments=mpv_arguments,
     )
-
-
-def write_example() -> Path:
-    path = paths.config_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(EXAMPLE)
-    return path

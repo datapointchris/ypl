@@ -20,7 +20,7 @@ class RemoteVideo:
 
     `description` and `chapters` are only populated by a full extraction —
     a flat playlist listing leaves them empty, which is exactly the difference
-    between `ypl sync` and `ypl enrich`.
+    between the mirror sweep and the enrich tail of `ypl sync`.
     """
 
     video_id: str

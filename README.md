@@ -39,7 +39,7 @@ Needs [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) and, for playback, [`mpv`](ht
 Once:
 
 ```bash
-ypl remote auth --browser safari   # sign in, from a browser already signed in
+ypl auth --browser safari   # sign in, from a browser already signed in
 ypl sync                           # and it keeps running itself from here on
 ```
 
@@ -102,7 +102,7 @@ Every read takes `--json`, which goes to stdout with nothing else on it. `urls` 
 piping:
 
 ```bash
-ypl playlists urls 'Get Insights' --sort oldest --limit 1 | xargs relate analyze
+ypl playlists show 'Get Insights' --urls --sort oldest --limit 1 | xargs relate analyze
 ```
 
 ## Playlists you build
@@ -169,15 +169,16 @@ even rather than as full chunks and a stub — 140 videos at a size of 90 is two
 `shortest`, `title`, `random`.
 
 A playlist you make is synced to YouTube by default, so it turns up in the YouTube app on your
-phone once the queue next drains. It is written as `PRIVATE`, which still appears in your own
-library on every device you are signed in on. `--local` keeps one here instead, and `promote` /
-`demote` change their mind later:
+phone after the next sync. It is written as `PRIVATE`, which still appears in your own library on
+every device you are signed in on. `--local` keeps one here instead:
 
 ```bash
 ypl playlists create 'Scratch' --from 'Deep Night' --local   # stays on this machine
-ypl playlists promote 'Scratch'                              # goes up on the next drain
-ypl playlists demote 'Scratch'                               # stop pushing; leaves YouTube alone
 ```
+
+Changing your mind is a line in the file rather than a pair of commands. A playlist carrying
+`#YPL-SYNCED:no` stays here; take the line out and the next sync puts it on YouTube. The file is
+the whole store, so the field lives where everything else about the playlist does.
 
 `ypl playlists list` shows where each one sits: `local`, `pending` (synced but not on YouTube yet),
 `synced`, or `remote` for a mirrored one.
@@ -185,7 +186,7 @@ ypl playlists demote 'Scratch'                               # stop pushing; lea
 `create` also reads URLs from a pipe, so a selection made by one command becomes a playlist:
 
 ```bash
-ypl playlists urls 'Deep Night' --sort random --limit 20 | ypl playlists create 'Sunday'
+ypl playlists show 'Deep Night' --urls --sort random --limit 20 | ypl playlists create 'Sunday'
 ```
 
 An entry is a video. A DJ mix holding forty tracks is one entry, because a video is the smallest
@@ -209,11 +210,9 @@ Private and unlisted playlists need a logged-in session — set `cookies_from_br
 | `$XDG_DATA_HOME/ypl/playlists/` | Local playlists as M3U. Authored, so these are the ones worth keeping. |
 | `$XDG_DATA_HOME/ypl/plays.jsonl` | Listening history, appended one line per listen. Not rebuildable from anything, so it sits with the playlists rather than in the mirror. |
 | `$XDG_DATA_HOME/ypl/remote/` | What YouTube held for each playlist at the last reconcile, one JSON file per playlist. The base of the three-way merge, and the only copy of each slot's `setVideoId`. Not rebuildable — re-reading YouTube answers what is there now, not what was there then. |
-| `$XDG_CONFIG_HOME/ypl/config.toml` | Settings. `ypl config init` writes a starter. |
-| `$XDG_CONFIG_HOME/ypl/auth.json` | Which browser holds the YouTube session, and which channel to act as. Written by `ypl remote auth`. No credential: the cookies are read from the browser on every run. |
+| `$XDG_CONFIG_HOME/ypl/config.toml` | Settings, hand-written. `ypl config show` prints what is in effect. |
+| `$XDG_CONFIG_HOME/ypl/auth.json` | Which browser holds the YouTube session, and which channel to act as. Written by `ypl auth`. No credential: the cookies are read from the browser on every run. |
 | `$XDG_STATE_HOME/ypl/mpv.sock` | mpv's IPC socket while `ypl play` is running. Read by `ypl now`. |
-
-`ypl config path` prints the first three.
 
 ## Playing
 
@@ -244,7 +243,7 @@ On Arch, waybar's built-in `mpris` module already shows mpv without any of this 
 ## Building a playlist from what you have
 
 ```bash
-ypl enrich --all                                  # tracklists for the whole library, once
+ypl sync                                          # tracklists arrive on the sync, a batch at a time
 ypl videos list --min-minutes 60                  # the mixes long enough to work to
 ypl videos list --artist 'black coffee'           # everything he appears in, anywhere
 ```
@@ -279,31 +278,6 @@ ypl videos list --json --min-minutes 60 > library.json
 cat chosen.txt | ypl playlists create 'six-hour-work-uptempo-house'
 ypl playlists edit 'six-hour-work-uptempo-house'   # the header totals the running time
 ```
-
-## Changing a playlist while it plays
-
-```bash
-ypl play 'six-hour-work-uptempo-house'   # sets the current playlist
-ypl drop                                  # take the playing video out of it
-ypl later -n 5                            # push it five places back
-ypl sooner                                # or bring it up one
-```
-
-None of those name a video. `drop` acts on whatever mpv has open, and skips to the next video as
-well — continuing to play what you just deleted is not what dropping it meant. `--keep-playing`
-if you would rather it did not.
-
-When playback is somewhere ypl cannot see — a browser tab, the phone — there is no socket to ask,
-so say which one with a fragment of its title instead. Still not an id:
-
-```bash
-ypl use 'six-hour-work-uptempo-house'    # what play would have set
-ypl drop wagram
-ypl later 'salle wagram' -n 10
-```
-
-A fragment matching two videos lists them and changes nothing. Every one of these edits the local
-file, so it goes up to YouTube on the next `ypl remote apply`.
 
 ## What to put on next
 
@@ -365,7 +339,7 @@ The backend sits behind an interface, so the Data API remains a one-module swap.
 Signing in is one command, once per machine:
 
 ```bash
-ypl remote auth --browser safari   # firefox, chrome, brave, edge, chromium, vivaldi, opera
+ypl auth --browser safari   # firefox, chrome, brave, edge, chromium, vivaldi, opera
 ```
 
 That is the whole flow: no DevTools, no paste, no OAuth. yt-dlp already decrypts every browser's
@@ -381,7 +355,7 @@ the jar is what makes signing in once mean once.
 The page id is the other half. A cookie jar can reach several identities — a personal Google
 account and any brand accounts under it — and without naming one, every request authenticates as
 whichever the browser last selected. If that is the personal account, its own channel's playlists
-come back owned by somebody else, with no item handles and no write that succeeds. So `ypl remote
+come back owned by somebody else, with no item handles and no write that succeeds. So `ypl
 auth` asks YouTube which identities the cookies reach, takes the one that owns a channel, and
 records its page id for every later request to send.
 
@@ -427,13 +401,7 @@ were written off as permanently read-only on that misreading.
 
 ### Reconciling
 
-`ypl remote pull` reads YouTube, merges it into the local file, and records what it read as the
-new base. Bare, it covers every synced playlist that is on YouTube; named, just the one.
-
-```bash
-ypl remote pull                    # every synced playlist
-ypl remote pull 'Sunday'           # one of them
-```
+`ypl sync` reads YouTube, merges it into the local file, and records what it read as the new base.
 
 Merging needs three states, not two. Local `[A, B, C]` against remote `[A, C]` has two possible
 histories — B was deleted on the phone, or B was added here and never pushed — and they are the
@@ -441,7 +409,7 @@ same two lists with opposite correct actions. YouTube exposes no per-item modifi
 removal leaves nothing behind, so ypl records what was there at the last reconcile and compares
 each side against that: gone from a side that had it means deleted by that side, present on a side
 the base never saw means added by it. Videos deleted on YouTube leave the local file, videos added
-there arrive in it, and changes made here stay made and go up on the next drain.
+there arrive in it, and changes made here stay made and go up in the same run.
 
 Order is settled once for the whole playlist rather than merged per item. Local order wins unless
 YouTube's own order changed since the base, in which case YouTube's wins outright — and adding or
@@ -454,15 +422,8 @@ elsewhere.
 
 ### Pushing
 
-`ypl remote plan` says what would change on YouTube; `ypl remote apply` does it. The plan is a dry
-run by construction rather than by flag — same reads, same arithmetic, stopping before the first
-write.
-
-```bash
-ypl remote plan                    # what would go up
-ypl remote apply                   # send it
-ypl remote apply --limit 5         # a drain on a timer
-```
+The same run pushes what the merge settled. `ypl status` says what is waiting to go up, and costs
+nothing to ask: the work is the local file against the recorded base, and both are files here.
 
 A playlist that has never been up is created on this run and bound to its new id before a single
 video goes into it — a creation that succeeded and was not written down is a playlist on YouTube
@@ -472,12 +433,25 @@ removed by the handle recorded for that slot, and the order is fixed with the fe
 produce it.
 
 Nothing is queued when you edit a playlist. The work is always whatever the local file and the
-base disagree about, so a plan is re-derived on demand and running one twice cannot ask for the
+base disagree about, so it is re-derived on demand and running a sync twice cannot ask for the
 same addition twice.
 
-If YouTube has changed since the last reconcile, that playlist is skipped rather than guessed at,
-and `ypl remote apply` exits 1 saying so — pushing on a stale base would decide a conflict without
-having seen it. Run `ypl remote pull` and apply again. Pull first, push second, always.
+Reconciling comes before pushing in the same run, which is what makes a stale base a non-event:
+the read that settles the merge is the read the push is planned against, so nothing is ever sent
+against a state the run has not seen.
+
+### What bounds a run
+
+The credential is a Google account cookie and the Terms prohibit automated access, so every bound
+here is deliberate. Requests are spaced — at least a second, and `request_interval_seconds` can
+only raise that, never lower it. A run stops after `sync_minutes` and leaves the rest, because
+every step re-derives what is left from stored state and a short run is never a lost update. A 429
+stops the run rather than being retried into.
+
+And one ceiling no config can reach: 400 requests to YouTube in a single run, counted in the
+backend where every request passes. The others are advisory in a way this one is not — a rate is
+not a total, the time budget is only checked between playlists, and both are read from a file that
+can be edited. Hitting it stops the run the same way a rate limit does.
 
 ## Not done yet
 

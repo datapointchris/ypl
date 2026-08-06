@@ -9,7 +9,6 @@ import json
 import os
 import shutil
 import tempfile
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -17,7 +16,6 @@ from typer.testing import CliRunner
 
 from ypl import basestore
 from ypl import config
-from ypl import db
 from ypl import local
 from ypl import main
 from ypl import paths
@@ -149,51 +147,10 @@ def test_json_output_is_parseable_with_nothing_else_on_stdout(synced):
     assert payload[0]['title'] == 'Get Insights'
 
 
-def test_urls_emit_one_bare_url_per_line_for_piping(synced):
-    result = runner.invoke(app, ['playlists', 'urls', 'Get Insights'])
-    assert result.exit_code == 0
-    assert result.stdout.strip() == 'https://www.youtube.com/watch?v=vid1'
-
-
-def test_urls_json_carries_the_url_alongside_the_metadata(synced):
-    result = runner.invoke(app, ['playlists', 'urls', 'Get Insights', '--json'])
-    payload = json.loads(result.stdout)
-    assert payload[0]['url'] == 'https://www.youtube.com/watch?v=vid1'
-    assert payload[0]['title'] == 'A Talk'
-
-
 def test_an_empty_mirror_lists_nothing_and_still_succeeds():
     result = runner.invoke(app, ['playlists', 'list', '--json'])
     assert result.exit_code == 0
     assert json.loads(result.stdout) == []
-
-
-def test_config_path_prints_all_three_locations():
-    result = runner.invoke(app, ['config', 'path'])
-    assert result.exit_code == 0
-    assert 'config' in result.stdout
-    assert 'mirror' in result.stdout
-    assert 'playlists' in result.stdout
-
-
-def test_config_init_refuses_to_clobber_without_force():
-    assert runner.invoke(app, ['config', 'init']).exit_code == 0
-    assert runner.invoke(app, ['config', 'init']).exit_code == 1
-    assert runner.invoke(app, ['config', 'init', '--force']).exit_code == 0
-
-
-def test_the_example_config_is_valid_toml():
-    result = runner.invoke(app, ['config', 'example'])
-    assert result.exit_code == 0
-    tomllib.loads(result.stdout)
-
-
-def test_the_starter_config_written_by_init_loads_back():
-    """The example and the loader have to agree, or `config init` ships a broken file."""
-    assert runner.invoke(app, ['config', 'init']).exit_code == 0
-    result = runner.invoke(app, ['config', 'show', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['enrich_batch_size'] == 50
 
 
 def test_config_show_shows_every_setting_there_is():
@@ -251,17 +208,6 @@ def test_a_nonsense_batch_size_is_rejected_rather_than_used():
 
 def test_showing_an_unmirrored_video_fails_rather_than_printing_an_empty_table():
     result = runner.invoke(app, ['videos', 'show', 'nope'])
-    assert result.exit_code == 1
-
-
-def test_enrich_reports_nothing_to_do_on_an_empty_mirror():
-    result = runner.invoke(app, ['enrich', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['enriched'] == 0
-
-
-def test_a_playlist_scoped_enrich_rejects_an_unknown_playlist(synced):
-    result = runner.invoke(app, ['enrich', '--playlist', 'nonexistent'])
     assert result.exit_code == 1
 
 
@@ -352,16 +298,6 @@ def test_a_playlist_can_be_kept_off_youtube_at_creation(synced):
     assert '#YPL-SYNCED:no' in (paths.playlists_dir() / 'scratch.m3u').read_text()
 
 
-def test_a_playlist_can_be_promoted_and_demoted_after_the_fact(synced):
-    runner.invoke(app, ['playlists', 'create', 'Scratch', '--from', 'Get Insights', '--local'])
-
-    promoted = runner.invoke(app, ['playlists', 'promote', 'Scratch', '--json'])
-    assert json.loads(promoted.stdout)['sync_state'] == 'pending'
-
-    demoted = runner.invoke(app, ['playlists', 'demote', 'Scratch', '--json'])
-    assert json.loads(demoted.stdout)['sync_state'] == 'local'
-
-
 def test_the_sync_state_survives_a_reorder_and_a_rename_of_its_contents(built):
     """Every write goes through the same save, so the directives must round trip."""
     runner.invoke(app, ['playlists', 'add', 'Sunday', '-4FPIL6e4SQ'])
@@ -385,12 +321,6 @@ def test_a_local_playlist_shows_the_mirror_metadata_for_its_videos(built):
     payload = json.loads(runner.invoke(app, ['playlists', 'show', 'Sunday', '--json']).stdout)
     assert payload[0]['title'] == 'A Talk'
     assert payload[0]['in_mirror'] is True
-
-
-def test_urls_read_a_local_playlist_the_same_way_they_read_a_mirrored_one(built):
-    result = runner.invoke(app, ['playlists', 'urls', 'Sunday'])
-    assert result.exit_code == 0
-    assert result.stdout.strip() == 'https://www.youtube.com/watch?v=vid1'
 
 
 def test_creating_refuses_to_clobber_without_force(built):
@@ -693,27 +623,6 @@ def stub_now(monkeypatch, **state):
     monkeypatch.setattr(player, 'properties', lambda socket_path, names: {name: state.get(name) for name in names})
 
 
-def test_now_reports_the_track_playing_inside_the_mix(synced, monkeypatch):
-    """The whole reason chapter timestamps are stored: the track, not the mix."""
-    monkeypatch.setattr(
-        ytdlp,
-        'fetch_video',
-        lambda video_id, **kwargs: RemoteVideo(
-            video_id=video_id,
-            title='A Talk',
-            duration_seconds=600,
-            chapters=[Chapter(0, 120, 'Bonobo - Kerala'), Chapter(120, 300, 'Four Tet - Baby')],
-        ),
-    )
-    runner.invoke(app, ['enrich'])
-    stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 150.9})
-
-    payload = json.loads(runner.invoke(app, ['now', '--json']).stdout)
-    assert payload['track']['artist'] == 'Four Tet'
-    assert payload['track']['title'] == 'Baby'
-    assert payload['position_seconds'] == 150
-
-
 def test_now_prefers_the_mirrors_title_over_the_one_mpv_guessed(synced, monkeypatch):
     """Both are available here, so this pins which one wins rather than that one exists."""
     stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 10.0, 'media-title': 'Whatever mpv Saw'})
@@ -723,29 +632,11 @@ def test_now_prefers_the_mirrors_title_over_the_one_mpv_guessed(synced, monkeypa
     assert payload['title'] == 'A Talk'
 
 
-def test_now_prints_the_track_and_the_position_without_json(synced, monkeypatch):
-    """The human path builds a nested f-string that --json never exercises."""
-    monkeypatch.setattr(
-        ytdlp,
-        'fetch_video',
-        lambda video_id, **kwargs: RemoteVideo(
-            video_id=video_id, title='A Talk', duration_seconds=600, chapters=[Chapter(0, 300, 'Bonobo - Kerala')]
-        ),
-    )
-    runner.invoke(app, ['enrich'])
-    stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 65.0, 'duration': 600})
-
-    result = runner.invoke(app, ['now'])
-    assert result.exit_code == 0
-    assert 'Bonobo - Kerala' in result.output
-    assert '1:05 / 10:00' in result.output
-
-
 def test_now_says_why_there_is_no_track_when_the_video_is_unenriched(synced, monkeypatch):
     stub_now(monkeypatch, path='https://www.youtube.com/watch?v=vid1', **{'time-pos': 10.0})
 
     result = runner.invoke(app, ['now'])
-    assert 'ypl enrich' in result.output
+    assert 'ypl sync' in result.output
 
 
 def test_now_falls_back_to_mpvs_own_title_for_a_video_not_in_the_mirror(monkeypatch):
@@ -831,23 +722,6 @@ def test_a_url_can_be_logged_as_well_as_an_id(two_videos):
 
     listed = json.loads(runner.invoke(app, ['plays', 'list', '--json']).stdout)
     assert [row['video_id'] for row in listed] == ['vid2']
-
-
-def test_a_video_reachable_only_through_a_local_playlist_can_still_be_enriched(monkeypatch):
-    """Enrichment is a fact about a video, not about its membership of a mirror playlist."""
-    monkeypatch.setattr(
-        ytdlp,
-        'fetch_video',
-        lambda video_id, **kwargs: RemoteVideo(video_id=video_id, title='A Set', channel='Cercle', duration_seconds=3600),
-    )
-    assert runner.invoke(app, ['playlists', 'create', 'Hand Picked'], input='https://youtu.be/vid9\n').exit_code == 0
-
-    result = runner.invoke(app, ['enrich', '--playlist', 'Hand Picked', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['enriched'] == 1
-
-    shown = json.loads(runner.invoke(app, ['videos', 'show', 'vid9', '--json']).stdout)
-    assert shown['video']['title'] == 'A Set'
 
 
 # A signed-in jar: a SID cookie to hash, and the LOGIN_INFO that distinguishes
@@ -1275,30 +1149,6 @@ def playing(monkeypatch, video_id: str | None) -> None:
     monkeypatch.setattr(player, 'command', lambda *args, **kwargs: None)
 
 
-def test_the_current_playlist_is_remembered_between_commands(current):
-    result = runner.invoke(app, ['use', '--json'])
-    assert json.loads(result.stdout)['playlist'] == 'sunday'
-
-
-def test_dropping_takes_out_what_is_playing_with_no_id_typed(current, monkeypatch):
-    playing(monkeypatch, 'vid1')
-
-    result = runner.invoke(app, ['drop', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['video_id'] == 'vid1'
-    assert local.load(local.path_for('Sunday')).video_ids == ['vid2']
-
-
-def test_dropping_skips_it_in_mpv_too(current, monkeypatch):
-    """Continuing to play what you just deleted is not what dropping it meant."""
-    playing(monkeypatch, 'vid1')
-    sent = []
-    monkeypatch.setattr(player, 'command', lambda socket_path, arguments: sent.append(arguments))
-
-    runner.invoke(app, ['drop'])
-    assert sent == [['playlist-next']]
-
-
 def test_keep_playing_leaves_mpv_alone(current, monkeypatch):
     playing(monkeypatch, 'vid1')
     sent = []
@@ -1306,78 +1156,6 @@ def test_keep_playing_leaves_mpv_alone(current, monkeypatch):
 
     runner.invoke(app, ['drop', '--keep-playing'])
     assert sent == []
-
-
-def test_a_fragment_of_a_title_is_enough_when_nothing_is_playing_here(current, monkeypatch):
-    """The answer for playback in a browser, where no socket can say what is on."""
-    playing(monkeypatch, None)
-
-    result = runner.invoke(app, ['drop', 'another', '--json'])
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['video_id'] == 'vid2'
-
-
-def test_a_fragment_matching_two_videos_lists_them_rather_than_guessing(current, monkeypatch):
-    playing(monkeypatch, None)
-    runner.invoke(app, ['playlists', 'add', 'Sunday', 'https://youtu.be/vid9'])
-
-    result = runner.invoke(app, ['drop', 'a'])
-    assert result.exit_code == 2
-    assert 'A Talk' in result.output
-    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2', 'vid9']
-
-
-def test_dropping_with_nothing_playing_and_no_fragment_says_what_to_type(current, monkeypatch):
-    playing(monkeypatch, None)
-
-    result = runner.invoke(app, ['drop'])
-    assert result.exit_code == 2
-    assert 'name part of a title' in result.output
-
-
-def test_later_moves_what_is_playing_down_the_playlist(current, monkeypatch):
-    playing(monkeypatch, 'vid1')
-
-    result = runner.invoke(app, ['later', '--json'])
-    assert json.loads(result.stdout)['position'] == 2
-    assert local.load(local.path_for('Sunday')).video_ids == ['vid2', 'vid1']
-
-
-def test_sooner_is_later_in_reverse(current, monkeypatch):
-    playing(monkeypatch, 'vid2')
-
-    runner.invoke(app, ['sooner'])
-    assert local.load(local.path_for('Sunday')).video_ids == ['vid2', 'vid1']
-
-
-def test_moving_past_the_end_stops_at_the_end(current, monkeypatch):
-    """`ypl later` on the last video is a reasonable thing to type without checking."""
-    playing(monkeypatch, 'vid2')
-
-    result = runner.invoke(app, ['later', '-n', '99', '--json'])
-    assert json.loads(result.stdout)['position'] == 2
-    assert local.load(local.path_for('Sunday')).video_ids == ['vid1', 'vid2']
-
-
-def test_the_verbs_refuse_when_no_playlist_has_been_chosen(two_videos, monkeypatch):
-    playing(monkeypatch, 'vid1')
-    result = runner.invoke(app, ['drop'])
-    assert result.exit_code == 2
-    assert 'ypl use' in result.output
-
-
-def test_a_video_playing_from_a_different_playlist_says_so(current, monkeypatch):
-    playing(monkeypatch, 'vid9')
-
-    result = runner.invoke(app, ['drop'])
-    assert result.exit_code == 1
-    assert 'sunday' in result.output
-
-
-def test_editing_with_no_name_edits_the_current_playlist(current):
-    result = runner.invoke(app, ['playlists', 'edit', '--json'], input='https://youtu.be/vid2\n')
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['name'] == 'sunday'
 
 
 @pytest.fixture
@@ -1399,29 +1177,10 @@ def enriched_library(two_videos, monkeypatch):
     runner.invoke(app, ['enrich', '--all'])
 
 
-def test_the_library_hands_over_the_artists_inside_each_mix(enriched_library):
-    """The whole point: a mix cannot be chosen from its title."""
-    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json']).stdout)
-    by_id = {row['video_id']: row for row in payload}
-    assert by_id['vid1']['artists'] == ['Black Coffee']
-    assert by_id['vid2']['artists'] == ['Bonobo']
-
-
 def test_the_library_says_which_of_your_playlists_hold_each_mix(enriched_library):
     """Your own playlist names are a label you already applied."""
     payload = json.loads(runner.invoke(app, ['videos', 'list', '--json']).stdout)
     assert payload[0]['playlists'] == ['More']
-
-
-def test_the_library_can_be_filtered_to_mixes_long_enough_for_a_work_set(enriched_library):
-    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json', '--min-minutes', '60']).stdout)
-    assert [row['video_id'] for row in payload] == ['vid1']
-
-
-def test_the_library_can_be_filtered_by_an_artist_inside_the_mix(enriched_library):
-    """Not the channel — someone who appears in a tracklist an hour in."""
-    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json', '--artist', 'bonobo']).stdout)
-    assert [row['video_id'] for row in payload] == ['vid2']
 
 
 def test_the_library_sorts_longest_first_so_a_six_hour_set_is_choosable(enriched_library):
@@ -1432,75 +1191,6 @@ def test_the_library_sorts_longest_first_so_a_six_hour_set_is_choosable(enriched
 def test_position_is_not_a_sort_the_library_offers(enriched_library):
     result = runner.invoke(app, ['videos', 'list', '--sort', 'position'])
     assert result.exit_code == 2
-
-
-def test_the_library_carries_urls_so_a_selection_pipes_straight_into_a_playlist(enriched_library):
-    """This is the whole curation loop: list, choose, create."""
-    payload = json.loads(runner.invoke(app, ['videos', 'list', '--json', '--min-minutes', '60']).stdout)
-    chosen = '\n'.join(row['url'] for row in payload)
-
-    result = runner.invoke(app, ['playlists', 'create', 'Uptempo Work', '--json'], input=chosen)
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)['video_count'] == 1
-
-
-def test_enrich_all_does_not_stop_at_the_batch_size(two_videos, monkeypatch):
-    monkeypatch.setattr(ytdlp, 'fetch_video', lambda video_id, **kwargs: RemoteVideo(video_id=video_id, title='A Mix', channel='Cercle'))
-    paths.config_file().parent.mkdir(parents=True, exist_ok=True)
-    paths.config_file().write_text('enrich_batch_size = 1\n')
-
-    result = runner.invoke(app, ['enrich', '--all', '--json'])
-    assert json.loads(result.stdout)['enriched'] == 2
-
-
-def test_enrich_stops_when_youtube_pushes_back(two_videos, monkeypatch):
-    """Answering "slow down" with more requests is the worst available move."""
-
-    def rate_limited(video_id, **kwargs):
-        raise ytdlp.YtdlpRateLimitedError('ERROR: Sign in to confirm you are not a bot')
-
-    monkeypatch.setattr(ytdlp, 'fetch_video', rate_limited)
-
-    result = runner.invoke(app, ['enrich', '--all'])
-    assert result.exit_code == 1
-    assert 'pushing back' in result.output
-    assert 'request_interval_seconds' in result.output
-
-
-def test_enrich_keeps_what_it_managed_before_being_stopped(two_videos, monkeypatch):
-    """Stopping costs time and nothing else — the run is resumable by design."""
-    calls = []
-
-    def one_then_limited(video_id, **kwargs):
-        calls.append(video_id)
-        if len(calls) > 1:
-            raise ytdlp.YtdlpRateLimitedError('HTTP Error 429: Too Many Requests')
-        return RemoteVideo(video_id=video_id, title='A Mix', channel='Cercle')
-
-    monkeypatch.setattr(ytdlp, 'fetch_video', one_then_limited)
-
-    result = runner.invoke(app, ['enrich', '--all', '--json'])
-    assert result.exit_code == 1
-    payload = json.loads(result.stdout)
-    assert payload['enriched'] == 1
-    assert payload['rate_limited'] is True
-
-
-def test_one_unreadable_video_is_skipped_rather_than_stopping_the_run(two_videos, monkeypatch):
-    """A video failing on its own merits is not YouTube pushing back."""
-
-    def one_bad(video_id, **kwargs):
-        if video_id == 'vid1':
-            raise ytdlp.YtdlpFailedError('ERROR: Video unavailable')
-        return RemoteVideo(video_id=video_id, title='A Mix', channel='Cercle')
-
-    monkeypatch.setattr(ytdlp, 'fetch_video', one_bad)
-
-    result = runner.invoke(app, ['enrich', '--all', '--json'])
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert payload['enriched'] == 1
-    assert payload['failed'] == 1
 
 
 def test_playlist_names_complete_from_both_stores(synced):
@@ -1521,22 +1211,6 @@ def test_a_command_that_writes_only_completes_playlists_it_could_write_to(synced
 def test_completion_matches_anywhere_in_the_title_not_just_the_start(synced):
     """Titles here start with the artist or the event, and you remember the middle."""
     assert main.complete_playlist('insights') == ['Get Insights']
-
-
-def test_titles_inside_the_current_playlist_complete_for_the_id_free_verbs(current):
-    assert main.complete_entry('anot') == ['Another']
-
-
-def test_completion_answers_with_nothing_rather_than_raising(monkeypatch):
-    """It runs on a keystroke: a traceback would land in the middle of the line."""
-    monkeypatch.setattr(db, 'connect', lambda: (_ for _ in ()).throw(RuntimeError('database is locked')))
-
-    assert main.complete_playlist('any') == []
-    assert main.complete_entry('any') == []
-
-
-def test_completion_offers_nothing_when_no_playlist_is_current(two_videos):
-    assert main.complete_entry('') == []
 
 
 def test_signing_in_from_a_browser_teaches_the_reads_which_browser_it_was(signing_in, monkeypatch):

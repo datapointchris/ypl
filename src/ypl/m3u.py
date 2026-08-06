@@ -30,7 +30,7 @@ SOURCE_DIRECTIVE = '#YPL-SOURCE:'
 
 # Two directives rather than one, because "should be synced" and "is bound to a
 # remote playlist" are genuinely different facts with a real window between
-# them: a playlist is promoted first and gets its remote id only when the queue
+# them: a playlist is marked synced first and gets its remote id only when the queue
 # next drains.
 SYNCED_DIRECTIVE = '#YPL-SYNCED:'
 REMOTE_DIRECTIVE = '#YPL-REMOTE:'

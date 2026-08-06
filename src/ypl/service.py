@@ -328,7 +328,7 @@ def unenriched_among(connection: sqlite3.Connection, video_ids: list[str]) -> li
 
 
 def unenriched_for(connection: sqlite3.Connection, playlist: ResolvedPlaylist | None, limit: int | None = None) -> list[str]:
-    """What `ypl enrich` should fetch next, whichever store the scope came from."""
+    """What the enrich tail should fetch next, whichever store the scope came from."""
     if playlist is not None and playlist.local is not None:
         pending = unenriched_among(connection, playlist.local.video_ids)
         return pending[:limit] if limit else pending
@@ -507,7 +507,7 @@ def entries_for(connection: sqlite3.Connection, video_ids: list[str]) -> list[m3
     An id the mirror has never seen still becomes an entry: the playlist is a
     list of videos, and refusing to write one because it has not been synced
     would make pasting a URL in harder than it needs to be. It writes an
-    unlabelled entry, which `ypl enrich` then fills in.
+    unlabelled entry, which the enrich tail then fills in.
     """
     known = videos_by_id(connection, video_ids)
     return [
@@ -666,7 +666,7 @@ def pull_playlist(connection: sqlite3.Connection, playlist: LocalPlaylist, backe
 
     Reads, merges, rewrites the file, and records the read as the new base.
     What has to go up is not written down anywhere: it is whatever the file
-    and the base disagree about, which `remote plan` re-derives on demand.
+    and the base disagree about, which `pending_push` re-derives on demand.
 
     The file is saved before the base, and that order is load-bearing. A base
     written first, followed by a failed save, describes a remote state the file
@@ -818,7 +818,7 @@ def needs_reconcile(connection: sqlite3.Connection, playlist: LocalPlaylist) -> 
 def pending_push(playlist: LocalPlaylist) -> dict | None:
     """What one playlist would send, worked out without asking YouTube.
 
-    The answer `remote plan` used to give, and it gives it for nothing: the
+    The answer `remote plan` used to give before it was deleted, and it gives it for nothing: the
     membership half of a push is the local file against the recorded base, both
     of which are files here. `plan` spent a request per playlist to learn the
     same counts plus whether YouTube had moved underneath them — and staleness
@@ -993,7 +993,7 @@ def sync_everything(
             backend.account()
             run.signed_in = True
         except remote.RemoteAuthError as error:
-            run.failures.append(('signed in', f'{error} — run `ypl remote auth --browser safari`'))
+            run.failures.append(('signed in', f'{error} — run `ypl auth --browser safari`'))
         except remote.RemoteError as error:
             run.failures.append(('signed in', brief(error)))
 
@@ -1150,7 +1150,7 @@ def enrich_pending(
 
 
 def pushable_playlists() -> list[LocalPlaylist]:
-    """The playlists a bare `remote apply` covers.
+    """The playlists the push half of a sync covers.
 
     Everything meant to sync, including the ones that have never been up: a
     playlist with no remote id is not waiting for anything, it is the creation
@@ -1160,7 +1160,7 @@ def pushable_playlists() -> list[LocalPlaylist]:
 
 
 def pullable_playlists() -> list[LocalPlaylist]:
-    """The playlists a bare `remote pull` covers.
+    """The playlists the reconcile half of a sync covers.
 
     Bound to a remote and still meant to sync. A demoted playlist keeps its
     remote id so that promoting it again finds the same YouTube playlist, but
@@ -1217,20 +1217,6 @@ def drop_entry(playlist: LocalPlaylist, index: int) -> m3u.Entry:
     return dropped
 
 
-def move_entry(playlist: LocalPlaylist, index: int, offset: int) -> int:
-    """Shift one entry along the playlist, returning where it ended up.
-
-    Clamped rather than refused at the ends: `ypl later` on the last video is a
-    reasonable thing to type without checking, and moving it as far as it goes
-    is what was meant.
-    """
-    entry = playlist.entries.pop(index)
-    destination = max(0, min(len(playlist.entries), index + offset))
-    playlist.entries.insert(destination, entry)
-    local.save(playlist, overwrite=True)
-    return destination
-
-
 @dataclass
 class Edit:
     """What an edited buffer did to a playlist."""
@@ -1283,18 +1269,6 @@ def delete_local_playlist(playlist: LocalPlaylist) -> None:
     """
     local.delete(playlist)
     basestore.delete(playlist.slug)
-
-
-def set_synced(playlist: LocalPlaylist, synced: bool) -> LocalPlaylist:
-    """Turn syncing on or off for a playlist.
-
-    Turning it off leaves any remote playlist alone rather than deleting it —
-    unbinding is about what ypl will push from here, and reaching across to
-    destroy something on YouTube is not what "stop syncing this" means.
-    """
-    playlist.synced = synced
-    local.save(playlist, overwrite=True)
-    return playlist
 
 
 def add_to_local_playlist(connection: sqlite3.Connection, playlist: LocalPlaylist, video_ids: list[str]) -> int:

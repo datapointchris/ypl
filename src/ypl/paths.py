@@ -94,15 +94,6 @@ def plays_file() -> Path:
     return data_dir() / 'plays.jsonl'
 
 
-def current_file() -> Path:
-    """Which playlist the id-free verbs act on.
-
-    State, not data: it is a pointer to something else, it is rebuilt by
-    playing or naming a playlist, and losing it costs one command.
-    """
-    return state_dir() / 'current.json'
-
-
 def mpv_socket() -> Path:
     """Where `ypl play` opens mpv's IPC socket, and `ypl now` looks for it.
 

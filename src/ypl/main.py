@@ -67,7 +67,7 @@ Examples:
 
   ypl playlists list                              both kinds, and how much is enriched
   ypl playlists show 'Get Insights'               the videos in one playlist
-  ypl playlists urls 'Get Insights' --sort oldest --limit 1
+  ypl playlists show 'Get Insights' --urls --sort oldest --limit 1
                                                   the next URL to feed to relate
   ypl playlists create 'Sunday' --from 'Deep Night' --sort random --limit 20
                                                   a new local playlist
@@ -100,9 +100,7 @@ The settings file at $XDG_CONFIG_HOME/ypl/config.toml.
 
 Examples:
 
-  ypl config init                                 write a starter file
   ypl config example                              print it without writing anything
-  ypl config path                                 where it would be read from
 """
 
 READING = 'Reading (the local mirror)'
@@ -215,25 +213,6 @@ def complete_local_playlist(incomplete: str) -> list[str]:
     return matching_playlist_titles(incomplete, service.LOCAL)
 
 
-def complete_entry(incomplete: str) -> list[str]:
-    """Titles inside the current playlist, for the verbs that take a fragment.
-
-    The same reasoning as the ids: what you can say about the thing playing is
-    its name, so the shell should finish it for you.
-    """
-    try:
-        connection = db.connect()
-        chosen = session.current()
-        if not chosen:
-            return []
-        playlist = service.resolve_playlist(connection, chosen, service.LOCAL)
-        rows = service.local_playlist_videos(connection, playlist.local) if playlist.local else []
-    except Exception:  # noqa: BLE001 - see complete_playlist
-        return []
-    lowered = incomplete.lower()
-    return [row['title'] for row in rows if row['title'] and lowered in row['title'].lower()]
-
-
 def print_json(data: object) -> None:
     """Emit JSON to stdout, bypassing Rich markup."""
     print(json.dumps(data, default=str))
@@ -263,7 +242,7 @@ def reading_browser(settings: config.Config, override: str | None = None) -> str
     """Which browser's cookies a read should borrow.
 
     An explicit flag wins, then the config, then whatever browser signing in
-    last worked with. That last step is the one that matters: `ypl remote auth`
+    last worked with. That last step is the one that matters: `ypl auth`
     proves a browser holds a YouTube session, and a tool that then asks you to
     tell it the same thing again in a config file is asking you to log in
     twice.
@@ -368,13 +347,13 @@ def video_id_argument(value: str) -> str:
 def video_ids_from_stdin_or_exit() -> list[str]:
     """Read piped URLs, one per line.
 
-    This is the other half of `playlists urls`, so a selection made by one
+    This is the other half of `playlists show --urls`, so a selection made by one
     command becomes a playlist without anything in between parsing YouTube
     links a second time.
     """
     if sys.stdin.isatty():
         messages.print(
-            '[red]Nothing piped in.[/red] Pass --from, or pipe URLs: [bold]ypl playlists urls ... | ypl playlists create NAME[/bold]'
+            '[red]Nothing piped in.[/red] Pass --from, or pipe URLs: [bold]ypl playlists show ... --urls | ypl playlists create NAME[/bold]'
         )
         raise typer.Exit(2)
     return video_ids_or_exit([line for line in sys.stdin.read().splitlines() if line.strip()])
@@ -391,7 +370,7 @@ def signed_in_backend(quiet: bool) -> youtubei.YouTubeiBackend | None:
     stored = session.stored_auth()
     if not stored.get('browser'):
         if not quiet:
-            messages.print('Not signed in — mirroring only. [bold]ypl remote auth --browser safari[/bold] syncs both ways.')
+            messages.print('Not signed in — mirroring only. [bold]ypl auth --browser safari[/bold] syncs both ways.')
         return None
     try:
         return backend_for_browser(stored['browser'], stored.get('page_id') or '')
@@ -493,7 +472,7 @@ def sync(
 
     One command and no order to remember: your playlists are mirrored, any that
     are new here are taken over, changes made on a phone arrive, and changes
-    made here go up. Signing in once with [bold]ypl remote auth[/bold] is the
+    made here go up. Signing in once with [bold]ypl auth[/bold] is the
     last thing it asks of you — before that, and on a machine that has never
     signed in, this mirrors and stops.
 
@@ -512,7 +491,7 @@ def sync(
         if not source:
             messages.print('[red]Nothing to sync from.[/red] Give a playlist URL, or name a browser to read your account:')
             messages.print('  [bold]ypl sync --browser safari[/bold]  — remembered afterwards, so once is enough')
-            messages.print('  [bold]ypl remote auth --browser safari[/bold]  — signs in for writing too')
+            messages.print('  [bold]ypl auth --browser safari[/bold]  — signs in for writing too')
             raise typer.Exit(2)
 
         with runlock.held() as mine:
@@ -564,87 +543,7 @@ def sync(
     messages.print(f'Synced [bold]{playlist.title}[/bold] ({playlist.playlist_id}): {len(playlist.videos)} videos')
     if unavailable:
         messages.print(f'{unavailable} are deleted or private — kept, so positions still line up')
-    messages.print(f'Next: [bold]ypl enrich --playlist {playlist.title!r}[/bold] to pull tracklists')
-
-
-@app.command('enrich', rich_help_panel=SYNCING)
-def enrich(
-    playlist: str = typer.Option(None, '--playlist', '-p', help='Limit to one playlist, by title or id.', autocompletion=complete_playlist),
-    limit: int = typer.Option(None, '--limit', '-n', help='How many videos to fetch this run.'),
-    everything: bool = typer.Option(False, '--all', help='Keep going until nothing is left, however long that takes.'),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Fetch each video in full and parse its tracklist.
-
-    `ypl sync` already does this with whatever time its budget leaves, so this
-    is the forcing version: one playlist now, or a long run in the foreground
-    rather than waiting for the timer to work through it.
-
-    Chapters where a video has them, timestamped description lines where it does
-    not. One request per video, so this is the slow half — it is resumable, and
-    a video already enriched is skipped. Stopping it costs nothing: every video
-    enriched is already stored.
-    """
-    settings = load_config_or_exit()
-    connection = db.connect()
-    resolved = resolve_or_exit(connection, playlist) if playlist else None
-    batch = None if everything else limit or settings.enrich_batch_size
-    video_ids = service.unenriched_for(connection, resolved, batch)
-    if not video_ids:
-        messages.print('Nothing left to enrich.')
-        if as_json:
-            print_json({'enriched': 0, 'tracks_found': 0, 'failed': 0})
-        return
-
-    enriched = 0
-    tracks_found = 0
-    failures: list[dict] = []
-    stopped = ''
-    # Paced, because this is the one command that makes thousands of requests
-    # in a row. A rate limit ends the run rather than being retried into: every
-    # video already enriched is stored, so stopping costs nothing but time.
-    pace = throttle.Throttle(settings.request_pace_seconds)
-    with messages.status(f'Enriching {len(video_ids)} videos...') as status:
-        for index, video_id in enumerate(video_ids, start=1):
-            status.update(f'[{index}/{len(video_ids)}] {video_id}')
-            pace.wait()
-            try:
-                tracks = service.enrich_video(connection, video_id, cookies_from_browser=reading_browser(settings))
-            except ytdlp.YtdlpRateLimitedError as error:
-                stopped = str(error).splitlines()[-1] if str(error) else 'YouTube asked us to slow down'
-                break
-            except ytdlp.YtdlpFailedError as error:
-                failures.append({'video_id': video_id, 'error': str(error).splitlines()[-1] if str(error) else 'unknown'})
-                continue
-            enriched += 1
-            tracks_found += len(tracks)
-
-    if as_json:
-        print_json(
-            {
-                'enriched': enriched,
-                'tracks_found': tracks_found,
-                'failed': len(failures),
-                'failures': failures,
-                'rate_limited': bool(stopped),
-            }
-        )
-        if stopped:
-            raise typer.Exit(1)
-        return
-    messages.print(f'Enriched [bold]{enriched}[/bold] videos, found [bold]{tracks_found}[/bold] tracks')
-    if failures:
-        messages.print(f'{len(failures)} failed:')
-        for failure in failures:
-            messages.print(f'  {failure["video_id"]}  {failure["error"]}')
-    remaining = len(service.unenriched_for(connection, resolved))
-    if stopped:
-        messages.print(f'[red]Stopped — YouTube is pushing back:[/red] {stopped}')
-        messages.print(f'{remaining} left. Leave it a few hours; everything enriched so far is already stored.')
-        messages.print('Raise [bold]request_interval_seconds[/bold] in the config to go gentler next time.')
-        raise typer.Exit(1)
-    if remaining:
-        messages.print(f'{remaining} still unenriched — run again to continue')
+    messages.print('Tracklists arrive on the next [bold]ypl sync[/bold]')
 
 
 @playlists_app.command('list', rich_help_panel=READING)
@@ -691,12 +590,30 @@ def report_unreadable_playlists(source: str | None) -> None:
 @playlists_app.command('show', rich_help_panel=READING)
 def playlists_show(
     name: str = typer.Argument(..., help='Playlist title or id.', autocompletion=complete_playlist),
+    sort: str = typer.Option('position', '--sort', help=f'One of: {", ".join(service.SORT_CLAUSES)}.'),
     limit: int = typer.Option(None, '--limit', '-n', help='Show at most this many videos.'),
+    urls: bool = typer.Option(False, '--urls', help='Emit bare video URLs, one per line, for piping.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
-    """The videos in one playlist, in playlist order."""
+    """The videos in one playlist, in playlist order.
+
+    [bold]--urls[/bold] emits one URL per line and nothing else, which is what
+    turns a selection into an argument list:
+
+      ypl playlists show 'Get Insights' --sort oldest --limit 1 | xargs relate analyze
+      ypl playlists show 'Deep Night' --sort random --limit 20 | ypl playlists create 'Sunday'
+    """
+    check_sort(sort)
     connection = db.connect()
     playlist = resolve_or_exit(connection, name)
+    if urls:
+        selected = service.playlist_selection(connection, playlist, sort, limit)
+        if as_json:
+            print_json([row | {'url': watch_url(row['video_id'])} for row in selected])
+            return
+        for row in selected:
+            print(watch_url(row['video_id']))
+        return
     if playlist.local is not None:
         rows = service.local_playlist_videos(connection, playlist.local, limit)
         count = len(playlist.local.entries)
@@ -719,34 +636,6 @@ def playlists_show(
         tracks = str(row['track_count']) if row['enriched_ts'] else '-'
         table.add_row(str(row['position']), display, row['channel'], duration_words(row['duration_seconds']), tracks, row['video_id'])
     console.print(table)
-
-
-@playlists_app.command('urls', rich_help_panel=READING)
-def playlists_urls(
-    name: str = typer.Argument(..., help='Playlist title or id.', autocompletion=complete_playlist),
-    sort: str = typer.Option('position', '--sort', help='One of: position, oldest, newest, random.'),
-    limit: int = typer.Option(None, '--limit', '-n', help='How many URLs to emit.'),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Emit video URLs, one per line, for piping into another tool.
-
-    This is the command that replaces browsing the playlist and copying a link:
-
-      ypl playlists urls 'Get Insights' --sort oldest --limit 1 | xargs relate analyze
-
-    It is also how a selection becomes a playlist:
-
-      ypl playlists urls 'Deep Night' --sort random --limit 20 | ypl playlists create 'Sunday'
-    """
-    check_sort(sort)
-    connection = db.connect()
-    playlist = resolve_or_exit(connection, name)
-    rows = service.playlist_selection(connection, playlist, sort, limit)
-    if as_json:
-        print_json([row | {'url': watch_url(row['video_id'])} for row in rows])
-        return
-    for row in rows:
-        print(watch_url(row['video_id']))
 
 
 @playlists_app.command('create', rich_help_panel=BUILDING)
@@ -931,7 +820,7 @@ def playlists_edit(
     stdin instead when something is piped in.
     """
     connection = db.connect()
-    playlist = current_playlist_or_exit(connection, name)
+    playlist = local_or_exit(connection, name)
     rows = service.local_playlist_videos(connection, playlist)
 
     if sys.stdin.isatty():
@@ -989,46 +878,7 @@ def playlists_edit(
     if unknown:
         messages.print(f'{len(unknown)} of those are not eleven-character ids — check them if a player rejects the file')
     if result.playlist.synced:
-        messages.print('Run [bold]ypl remote plan[/bold] to see what that means for YouTube')
-
-
-@playlists_app.command('promote', rich_help_panel=BUILDING)
-def playlists_promote(
-    name: str = typer.Argument(..., help='Local playlist to start syncing.', autocompletion=complete_local_playlist),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Start syncing a local playlist to YouTube.
-
-    It goes up on the next drain and appears in your library on every device
-    you are signed in on. Playlists are made synced by default, so this is for
-    one that was made with --local or demoted since.
-    """
-    connection = db.connect()
-    playlist = service.set_synced(local_or_exit(connection, name), True)
-    if as_json:
-        print_json({'name': playlist.name, 'slug': playlist.slug, 'sync_state': playlist.sync_state})
-        return
-    messages.print(f'[bold]{playlist.name}[/bold] will sync — it goes up on the next [bold]ypl remote apply[/bold]')
-
-
-@playlists_app.command('demote', rich_help_panel=BUILDING)
-def playlists_demote(
-    name: str = typer.Argument(..., help='Playlist to stop syncing.', autocompletion=complete_local_playlist),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Stop syncing a playlist, keeping the local file.
-
-    Anything already on YouTube is left alone — this changes what ypl pushes
-    from here, and does not reach across to delete it.
-    """
-    connection = db.connect()
-    playlist = service.set_synced(local_or_exit(connection, name), False)
-    if as_json:
-        print_json({'name': playlist.name, 'slug': playlist.slug, 'sync_state': playlist.sync_state})
-        return
-    messages.print(f'[bold]{playlist.name}[/bold] is local only now')
-    if playlist.remote_id:
-        messages.print(f'{playlist.remote_id} is still on YouTube — delete it there if you want it gone')
+        messages.print('Run [bold]ypl status[/bold] to see what that means for YouTube')
 
 
 @playlists_app.command('delete', rich_help_panel=BUILDING)
@@ -1112,7 +962,7 @@ def videos_list(
     console.print(table)
     unenriched = sum(1 for row in rows if not row['enriched_ts'])
     if unenriched:
-        messages.print(f'{unenriched} have no tracklist yet — [bold]ypl enrich --all[/bold] is what fills them in')
+        messages.print(f'{unenriched} have no tracklist yet — [bold]ypl sync[/bold] fills them in as it goes')
 
 
 # YouTube video ids are base64url, so roughly one in thirty starts with a
@@ -1137,7 +987,7 @@ def videos_show(
     messages.print(f'[bold]{video["title"]}[/bold]')
     messages.print(f'{video["channel"]} — {duration_words(video["duration_seconds"])}')
     if not video['enriched_ts']:
-        messages.print('Not enriched yet. Run [bold]ypl enrich[/bold] to pull its tracklist.')
+        messages.print('Not enriched yet — the next [bold]ypl sync[/bold] pulls its tracklist.')
         return
     if not tracks:
         messages.print('Enriched, but no tracklist found in its chapters or description.')
@@ -1157,34 +1007,6 @@ def videos_show(
             track['source'],
         )
     console.print(table)
-
-
-@config_app.command('init')
-def config_init(
-    force: bool = typer.Option(False, '--force', help='Overwrite an existing config file.'),
-) -> None:
-    """Write a starter config file."""
-    path = paths.config_file()
-    if path.exists() and not force:
-        messages.print(f'[red]{path} already exists.[/red] Pass --force to overwrite it.')
-        raise typer.Exit(1)
-    config.write_example()
-    messages.print(f'Wrote {path}')
-
-
-@config_app.command('example')
-def config_example() -> None:
-    """Print the annotated starter config without writing anything."""
-    print(config.EXAMPLE)
-
-
-@config_app.command('path')
-def config_path() -> None:
-    """Print where the config, mirror and local playlists live."""
-    print(f'config    {paths.config_file()}')
-    print(f'mirror    {paths.database_file()}')
-    print(f'playlists {paths.playlists_dir()}')
-    print(f'plays     {paths.plays_file()}')
 
 
 @config_app.command('show')
@@ -1251,12 +1073,6 @@ def play(
         messages.print(f'[red]{socket_path} is too long for a unix socket[/red] — playing without [bold]ypl now[/bold] support.')
         socket_path = None
 
-    # Playing a local playlist is the clearest possible statement of which one
-    # `drop` and `later` mean. A mirrored one is read-only, so it is not one
-    # those verbs could act on and is deliberately not remembered.
-    if playlist.local:
-        session.remember(playlist.local.name)
-
     messages.print(f'Playing [bold]{playlist.title}[/bold] — {len(rows)} videos')
     try:
         exit_code = player.play([watch_url(row['video_id']) for row in rows], socket_path, arguments)
@@ -1311,47 +1127,7 @@ def now(
         f'{title}  {timestamp_words(position)} / {timestamp_words(int(duration) if isinstance(duration, int | float) else None)}'
     )
     if not track and video and not video['enriched_ts']:
-        messages.print('Not enriched — run [bold]ypl enrich[/bold] to get the track instead of the video.')
-
-
-@app.command('use', rich_help_panel=PLAYING)
-def use(
-    name: str = typer.Argument(
-        None, help='Playlist to work on. Prints the current one when omitted.', autocompletion=complete_local_playlist
-    ),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Set the playlist that `drop`, `later` and `sooner` act on.
-
-    `ypl play` sets this on its own; this is for when playback is happening
-    somewhere ypl cannot see — the YouTube app, or a browser tab.
-    """
-    connection = db.connect()
-    if name is None:
-        chosen = session.current()
-        if not chosen:
-            messages.print('No current playlist. Run [bold]ypl use <name>[/bold] or [bold]ypl play <name>[/bold].')
-            raise typer.Exit(1)
-        if as_json:
-            print_json({'playlist': chosen})
-            return
-        messages.print(f'[bold]{chosen}[/bold]')
-        return
-
-    playlist = local_or_exit(connection, name)
-    session.remember(playlist.name)
-    if as_json:
-        print_json({'playlist': playlist.name, 'video_count': len(playlist.entries)})
-        return
-    messages.print(f'Working on [bold]{playlist.name}[/bold] — {len(playlist.entries)} videos')
-
-
-def current_playlist_or_exit(connection: sqlite3.Connection, name: str | None) -> local.LocalPlaylist:
-    chosen = name or session.current()
-    if not chosen:
-        messages.print('[red]No current playlist.[/red] Run [bold]ypl use <name>[/bold], or pass --playlist.')
-        raise typer.Exit(2)
-    return local_or_exit(connection, chosen)
+        messages.print('Not enriched — the next [bold]ypl sync[/bold] gets the track instead of the video.')
 
 
 def playing_video_id() -> str:
@@ -1361,110 +1137,6 @@ def playing_video_id() -> str:
     except player.NotPlayingError:
         return ''
     return m3u.video_id_from(str(state['path'] or '')) or ''
-
-
-def target_entry_or_exit(connection: sqlite3.Connection, playlist: local.LocalPlaylist, match: str | None) -> int:
-    """Which entry a verb means: the one named, or the one playing."""
-    rows = service.local_playlist_videos(connection, playlist)
-    if match:
-        try:
-            return service.find_entry(rows, match)
-        except service.AmbiguousEntryError as error:
-            messages.print(f'[red]{error}:[/red]')
-            for candidate in error.candidates:
-                messages.print(f'  {candidate["title"]}')
-            raise typer.Exit(2) from error
-        except service.EntryNotFoundError as error:
-            messages.print(f'[red]{error}[/red]')
-            raise typer.Exit(1) from error
-
-    video_id = playing_video_id()
-    if not video_id:
-        messages.print('[red]Nothing is playing through ypl,[/red] so name part of a title: [bold]ypl drop wagram[/bold]')
-        raise typer.Exit(2)
-    try:
-        return service.entry_position(playlist, video_id)
-    except service.EntryNotFoundError as error:
-        messages.print(f'[red]{error}[/red] — is [bold]{playlist.name}[/bold] the playlist you are listening to?')
-        raise typer.Exit(1) from error
-
-
-def report_after_change(playlist: local.LocalPlaylist) -> None:
-    if playlist.synced:
-        messages.print('Run [bold]ypl remote plan[/bold] to see what that means for YouTube')
-
-
-@app.command('drop', rich_help_panel=PLAYING)
-def drop(
-    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.', autocompletion=complete_entry),
-    playlist_name: str = typer.Option(
-        None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.', autocompletion=complete_local_playlist
-    ),
-    keep_playing: bool = typer.Option(False, '--keep-playing', help='Do not skip it in mpv.'),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Take the playing video out of the playlist.
-
-    Names no id: it is whatever mpv has open, or whatever fragment of a title
-    you can type. mpv skips to the next video as well, since continuing to play
-    what you just deleted is not what dropping it meant.
-    """
-    connection = db.connect()
-    playlist = current_playlist_or_exit(connection, playlist_name)
-    index = target_entry_or_exit(connection, playlist, match)
-    was_playing = playlist.entries[index].video_id == playing_video_id()
-    dropped = service.drop_entry(playlist, index)
-
-    if was_playing and not keep_playing:
-        # Best effort: the video is already out of the playlist file, and mpv
-        # having gone away between the two is not a reason to report a failure.
-        with contextlib.suppress(player.NotPlayingError):
-            player.command(paths.mpv_socket(), ['playlist-next'])
-
-    if as_json:
-        print_json({'playlist': playlist.name, 'video_id': dropped.video_id, 'video_count': len(playlist.entries)})
-        return
-    messages.print(f'Dropped [bold]{dropped.title or dropped.video_id}[/bold] — {len(playlist.entries)} left')
-    report_after_change(playlist)
-
-
-def shift(connection: sqlite3.Connection, playlist_name: str | None, match: str | None, offset: int, as_json: bool) -> None:
-    playlist = current_playlist_or_exit(connection, playlist_name)
-    index = target_entry_or_exit(connection, playlist, match)
-    entry = playlist.entries[index]
-    destination = service.move_entry(playlist, index, offset)
-
-    if as_json:
-        print_json({'playlist': playlist.name, 'video_id': entry.video_id, 'position': destination + 1})
-        return
-    messages.print(f'[bold]{entry.title or entry.video_id}[/bold] is now #{destination + 1} of {len(playlist.entries)}')
-    report_after_change(playlist)
-
-
-@app.command('later', rich_help_panel=PLAYING)
-def later(
-    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.', autocompletion=complete_entry),
-    count: int = typer.Option(1, '--count', '-n', help='How many places to move it back.'),
-    playlist_name: str = typer.Option(
-        None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.', autocompletion=complete_local_playlist
-    ),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Push a video further down the playlist."""
-    shift(db.connect(), playlist_name, match, count, as_json)
-
-
-@app.command('sooner', rich_help_panel=PLAYING)
-def sooner(
-    match: str = typer.Argument(None, help='Part of a title. Defaults to what is playing.', autocompletion=complete_entry),
-    count: int = typer.Option(1, '--count', '-n', help='How many places to move it up.'),
-    playlist_name: str = typer.Option(
-        None, '--playlist', '-p', help='Playlist to act on. Defaults to the current one.', autocompletion=complete_local_playlist
-    ),
-    as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
-) -> None:
-    """Bring a video further up the playlist."""
-    shift(db.connect(), playlist_name, match, -count, as_json)
 
 
 @app.command('next', rich_help_panel=PLAYING)
@@ -1571,7 +1243,7 @@ def auth(
 ) -> None:
     """Sign in, by naming a browser you are already signed in to.
 
-    [bold]ypl remote auth --browser safari[/bold] and nothing else. There is
+    [bold]ypl auth --browser safari[/bold] and nothing else. There is
     nothing to paste and nothing to find in DevTools: yt-dlp already decrypts
     every browser's cookie store, so the session is read from the one you are
     using.
@@ -1585,7 +1257,7 @@ def auth(
     source = browser or reading_browser(load_config_or_exit()) or session.browser()
     if not source:
         messages.print('[red]Which browser are you signed in to YouTube with?[/red]')
-        messages.print('Run [bold]ypl remote auth --browser safari[/bold] — or firefox, chrome, brave, edge.')
+        messages.print('Run [bold]ypl auth --browser safari[/bold] — or firefox, chrome, brave, edge.')
         raise typer.Exit(2)
 
     try:
@@ -1623,7 +1295,7 @@ def backend_or_exit() -> youtubei.YouTubeiBackend:
     stored = session.stored_auth()
     if not stored.get('browser'):
         messages.print('[red]Not signed in.[/red]')
-        messages.print('Run [bold]ypl remote auth --browser safari[/bold] to sign in.')
+        messages.print('Run [bold]ypl auth --browser safari[/bold] to sign in.')
         raise typer.Exit(1)
     try:
         return backend_for_browser(stored['browser'], stored.get('page_id') or '')
@@ -1632,7 +1304,7 @@ def backend_or_exit() -> youtubei.YouTubeiBackend:
         raise typer.Exit(1) from error
     except remote.RemoteAuthError as error:
         messages.print(f'[red]{error}[/red]')
-        messages.print('Run [bold]ypl remote auth[/bold] to sign in.')
+        messages.print('Run [bold]ypl auth[/bold] to sign in.')
         raise typer.Exit(1) from error
     except (remote.RemoteError, ytdlp.YtdlpUnavailableError) as error:
         messages.print(f'[red]{error}[/red]')
@@ -1666,7 +1338,7 @@ def mirrored_or_exit(connection: sqlite3.Connection, name: str) -> service.Resol
     except service.PlaylistNotFoundError as error:
         bound = bound_playlist_named(name)
         if bound:
-            messages.print(f'[red]{bound.name} is already a playlist here.[/red] Reconcile it with [bold]ypl remote pull[/bold].')
+            messages.print(f'[red]{bound.name} is already a playlist here.[/red] The next [bold]ypl sync[/bold] reconciles it.')
             raise typer.Exit(1) from error
         messages.print(f'[red]No mirrored playlist matching {name!r}.[/red] Run [bold]ypl sync[/bold] to mirror the account first.')
         raise typer.Exit(1) from error
@@ -1695,10 +1367,10 @@ def pull_targets_or_exit(connection: sqlite3.Connection, name: str | None) -> li
         return service.pullable_playlists()
     playlist = local_or_exit(connection, name)
     if not playlist.remote_id:
-        messages.print(f'[red]{playlist.name} is not on YouTube yet.[/red] It goes up on the next [bold]ypl remote apply[/bold].')
+        messages.print(f'[red]{playlist.name} is not on YouTube yet.[/red] It goes up on the next [bold]ypl sync[/bold].')
         raise typer.Exit(1)
     if not playlist.synced:
-        messages.print(f'[red]{playlist.name} is local only.[/red] Run [bold]ypl playlists promote {playlist.name!r}[/bold] first.')
+        messages.print(f'[red]{playlist.name} is local only.[/red] Take [bold]#YPL-SYNCED:no[/bold] out of its file to sync it.')
         raise typer.Exit(1)
     return [playlist]
 
@@ -1765,7 +1437,7 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
         return
 
     messages.print(f'Syncing now     {"yes" if payload["running"] else "no"}')
-    messages.print(f'Signed in       {"yes" if payload["signed_in"] else "no — ypl remote auth"}')
+    messages.print(f'Signed in       {"yes" if payload["signed_in"] else "no — ypl auth"}')
     messages.print(f'Scheduled       {f"every {timer.interval_minutes} min ({timer.manager})" if timer else "no — run ypl sync once"}')
     messages.print(f'Last sync       {payload["last_sync"] or "never"}')
     if last:
