@@ -1549,17 +1549,12 @@ def account(monkeypatch):
             playlist_id=url,
             title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
-            # Public, because YouTube Music serves nothing else and the whole
-            # remote half of a sync is skipped for a playlist that is not; and
-            # this account's own channel, because the sweep only adopts what the
-            # account owns and the feed lists saved playlists too.
-            #
-            # The channel is the brand account, which is the fact the old
-            # backend could not see: it answered with the *Google account* name,
-            # so every one of this account's own playlists was judged to belong
-            # to somebody else. Naming it `Chris Birch` here made the suite
-            # agree with the bug.
-            availability='public',
+            # The brand account, which is the fact the old backend could not
+            # see: it answered with the *Google account* name, so every one of
+            # this account's own playlists was judged to belong to somebody
+            # else. Naming it `Chris Birch` here made the suite agree with the
+            # bug. The sweep only adopts what the account owns, and the feed
+            # lists saved playlists too, so this is what the filter turns on.
             channel='iChrisBirch',
         ),
     )
@@ -1603,7 +1598,6 @@ def test_a_saved_playlist_from_someone_elses_channel_is_not_adopted_by_the_sweep
             playlist_id=url,
             title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
-            availability='public',
             channel='iChrisBirch' if url == 'PLa' else 'The Partially Examined Life',
         )
 
@@ -1618,87 +1612,34 @@ def test_a_saved_playlist_from_someone_elses_channel_is_not_adopted_by_the_sweep
     assert 'Art' in [row['title'] for row in json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)]
 
 
-def test_a_playlist_that_is_not_public_is_left_out_of_the_remote_half(account, signed_in, monkeypatch):
-    """Measured against the real account: YouTube Music answers a non-public
-    playlist with a page carrying no `contents`, for its owner, with a live
-    session. Twenty-three of forty-two failed that way every half hour."""
+def test_a_playlist_that_is_not_public_syncs_like_any_other(account, signed_in, monkeypatch):
+    """Privacy is not ypl's business, and never was the thing in the way.
 
-    def fetch(url, **kwargs):
-        title = {'PLa': 'Deep Night', 'PLb': 'Art'}[url]
-        return RemotePlaylist(
-            playlist_id=url,
-            title=title,
-            videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
-            availability='public' if url == 'PLa' else '',
-            channel='iChrisBirch',
-        )
-
-    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-
-    assert run['adopted'] == ['Deep Night']
-    assert run['withheld'] == ['Art']
-    # Not a failure: nothing here can change it, so a run that called it one
-    # would report the same playlists on every run for as long as the timer runs.
-    assert run['failures'] == []
-    # Said once, in the glance, rather than as a failure line per playlist.
-    assert '1 playlist YouTube Music will not serve' in runner.invoke(app, ['status']).output
-
-
-def test_the_system_lists_are_not_named_among_the_playlists_that_are_not_public(account, signed_in, monkeypatch):
-    """`Liked videos` and `Watch later` are in the feed, are never public, and
-    have no privacy setting to change. Counting them told the real account 23
-    playlists were withheld when only 21 of them could ever be acted on."""
-    monkeypatch.setattr(
-        ytdlp,
-        'fetch_account_playlists',
-        lambda browser, **kwargs: [
-            PlaylistRef(playlist_id='PLa', title='Deep Night'),
-            PlaylistRef(playlist_id='LL', title='Liked videos'),
-        ],
-    )
-
-    def fetch(url, **kwargs):
-        return RemotePlaylist(
-            playlist_id=url,
-            title={'PLa': 'Deep Night', 'LL': 'Liked videos'}[url],
-            videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
-            availability='public' if url == 'PLa' else '',
-            channel='iChrisBirch',
-        )
-
-    monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
-
-    run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
-
-    assert run['withheld'] == []
-    assert run['failures'] == []
-    # Mirrored and readable like any other — left out of the count, not the sync.
-    assert 'Liked videos' in [row['title'] for row in json.loads(runner.invoke(app, ['playlists', 'list', '--json']).stdout)]
-    assert 'Not public' not in runner.invoke(app, ['status']).output
-
-
-def test_an_adopted_playlist_gone_private_stops_being_reconciled(account, signed_in, monkeypatch):
-    """The other direction, and why this filters more than the sweep."""
-    runner.invoke(app, ['sync', '--browser', 'safari'])
-    assert json.loads(runner.invoke(app, ['status', '--json']).stdout)['last_run']['adopted']
+    A whole subsystem existed to keep non-public playlists out of adopt,
+    reconcile and push, because YouTube Music answered them with a page holding
+    no `contents`. The cause was the identity every request carried, not the
+    privacy setting: reading as the channel rather than as the Google account
+    behind it returns them in full, with a handle on every slot. Verified
+    against the account on `Art` and `Computers`, the two the old diagnosis
+    named as permanently read-only.
+    """
 
     def fetch(url, **kwargs):
         return RemotePlaylist(
             playlist_id=url,
             title={'PLa': 'Deep Night', 'PLb': 'Art'}[url],
             videos=[RemoteVideo(video_id=f'{url}vid', title='A Mix')],
-            availability='',
+            channel='iChrisBirch',
         )
 
     monkeypatch.setattr(ytdlp, 'fetch_playlist', fetch)
+
     run = json.loads(runner.invoke(app, ['sync', '--browser', 'safari', '--json']).stdout)
 
-    assert run['reconciled'] == []
-    assert run['pushed'] == []
-    assert sorted(run['withheld']) == ['Art', 'Deep Night']
+    assert sorted(run['adopted']) == ['Art', 'Deep Night']
     assert run['failures'] == []
+    assert 'withheld' not in run
+    assert 'Not public' not in runner.invoke(app, ['status']).output
 
 
 def test_one_unreadable_playlist_does_not_cost_the_others_their_sync(account, monkeypatch):

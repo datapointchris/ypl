@@ -411,17 +411,15 @@ playlists it hands over, and are refused either way.
 An adopted playlist then resolves to its file rather than to both stores — it is one playlist, and
 the file is the half that can be edited.
 
-**A playlist that is not public is out of reach of the write backend entirely.** YouTube Music
-answers a browse for one with a page carrying no `contents` at all — for its owner, with a live
-session, and with `logged_in: 1` in the response it does return — so it cannot be adopted, and an
-adopted playlist made private afterwards can no longer be reconciled or pushed either. `ypl sync`
-leaves them out and says how many, rather than spending a request each to fail the same way every
-half hour. They are still mirrored and still readable here; making one public on YouTube brings it
-back into the sync on the next run, with nothing to re-run by hand. The count names only playlists
-you could act on — `Liked videos` and `Watch later` are not public either and never can be, so they
-are left out of it rather than reported every run as something to fix. yt-dlp reports the privacy on
-the same free read the mirror already makes, which is why this costs no request and needs nothing
-stored.
+**Privacy is not ypl's business.** New playlists are created private, and nothing else here reads,
+reports or changes who can see one.
+
+This was not always true, and the reason is worth keeping. A whole subsystem existed to hold
+non-public playlists out of adopting, reconciling and pushing, because a browse for one came back
+with no contents — for its owner, with a live session. The cause was the identity every request
+carried rather than the privacy setting: reading as the channel instead of as the Google account
+behind it returns them in full, with a handle on every slot. Twenty-three of forty-two playlists
+were written off as permanently read-only on that misreading.
 
 ### Reconciling
 

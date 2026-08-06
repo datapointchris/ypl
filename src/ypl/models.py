@@ -65,12 +65,6 @@ class RemotePlaylist:
     channel: str = ''
     videos: list[RemoteVideo] = field(default_factory=list)
 
-    # yt-dlp's word for who can see this, `public` or absent. Kept because it
-    # decides whether the write backend can touch the playlist at all — see
-    # `service.not_public` — and because the free read reports it, so nothing
-    # has to be stored or asked for separately.
-    availability: str = ''
-
     @property
     def url(self) -> str:
         return f'https://www.youtube.com/playlist?list={self.playlist_id}'

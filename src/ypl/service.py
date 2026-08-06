@@ -883,11 +883,6 @@ class SyncRun:
     # not a problem with the sync: a library this old holds deleted and private
     # ones, and a run that called that a failure would report one forever.
     skipped: list[tuple[str, str]] = field(default_factory=list)
-    # Playlists YouTube Music will not serve because they are not public. Also
-    # apart from `failures`, for the same reason and more strongly: nothing here
-    # can change it, so a run reporting it as a failure would report the same
-    # twenty-three every half hour for as long as the timer runs.
-    withheld: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
@@ -914,7 +909,6 @@ class SyncRun:
             'seconds': round(self.seconds, 1),
             'failures': [f'{name}: {reason}' for name, reason in self.failures],
             'skipped': len(self.skipped),
-            'withheld': self.withheld,
         }
 
 
@@ -981,13 +975,6 @@ def sync_everything(
             run.failures.append(('signed in', brief(error)))
 
     if run.signed_in and backend is not None:
-        # The system lists are left out of the report the way a saved playlist is
-        # left out of the sweep: `Liked videos` and `Watch later` have no privacy
-        # setting to change, so listing them under a heading that invites an
-        # action is a standing fact reported as news. They stay in `not_public`,
-        # which is the filter rather than the report — Music serves them no
-        # better for being YouTube's own.
-        run.withheld = sorted(title for playlist_id, title in not_public(account).items() if playlist_id not in SYSTEM_PLAYLIST_IDS)
         for item in queued_work(connection, account, backend, identity):
             if budget.exhausted:
                 run.stopped = 'budget'
@@ -1007,29 +994,6 @@ def sync_everything(
     run.unenriched = len(unenriched_everywhere(connection))
     run.seconds = budget.elapsed_seconds
     return run
-
-
-def not_public(account: AccountSync) -> dict[str, str]:
-    """The playlists YouTube Music will not serve, by id, titled.
-
-    Music's browse endpoint answers a playlist that is not public with a page
-    carrying no `contents` at all — for its owner, with a live session, and with
-    `logged_in: 1` in the response it does return — which ytmusicapi surfaces as
-    `Unable to find 'contents'`. Measured on this account: three public
-    playlists read fine and every non-public one failed that way, every run.
-
-    So a non-public playlist cannot take part in the remote half at all. It
-    cannot be adopted, and an adopted one that later goes private cannot be
-    reconciled or pushed either, which is why this filters all three rather than
-    only the sweep. Attempting anyway spends a read per playlist per run to fail
-    the same way forever, and buries `ypl status` in the failures.
-
-    Read off the mirror sweep that just happened rather than stored: yt-dlp
-    reports `availability` on the same free request the mirror already makes, so
-    this costs nothing, needs no column, and re-answers itself the moment a
-    playlist's privacy changes.
-    """
-    return {playlist.playlist_id: playlist.title for playlist in account.synced if playlist.availability != 'public'}
 
 
 def queued_work(
@@ -1068,12 +1032,8 @@ def queued_work(
     def adopt_one(run: SyncRun, candidate: ResolvedPlaylist) -> None:
         run.adopted.append(adopt_playlist(connection, candidate, backend).name)
 
-    withheld = not_public(account)
-
     work: list[Work] = []
     for playlist in pullable_playlists():
-        if playlist.remote_id in withheld:
-            continue
         if needs_reconcile(connection, playlist):
             work.append(
                 Work(
@@ -1085,8 +1045,6 @@ def queued_work(
             )
 
     for playlist in pushable_playlists():
-        if playlist.remote_id in withheld:
-            continue
         # An unbound playlist is not waiting for a change to be worth pushing:
         # it does not exist on YouTube yet, and the creation is the push.
         if not playlist.remote_id or needs_push(playlist):
@@ -1110,7 +1068,7 @@ def queued_work(
     for mirrored in account.synced:
         if mirrored.playlist_id in bound or mirrored.playlist_id in refused or mirrored.playlist_id in SYSTEM_PLAYLIST_IDS:
             continue
-        if mirrored.playlist_id in withheld or not owned_by(identity, mirrored.channel):
+        if not owned_by(identity, mirrored.channel):
             continue
         candidate = ResolvedPlaylist(kind=REMOTE, title=mirrored.title, identifier=mirrored.playlist_id)
         work.append(Work(kind='adopt', label=mirrored.title, cost=READ_COST, perform=partial(adopt_one, candidate=candidate)))

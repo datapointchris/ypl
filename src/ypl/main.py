@@ -489,11 +489,6 @@ def report_sync(run: service.SyncRun) -> None:
         messages.print(f'Enriched [bold]{run.enriched}[/bold] videos, found {run.tracks_found} tracks')
     if run.skipped:
         messages.print(f'{len(run.skipped)} videos could not be read — deleted, private or region-locked')
-    if run.withheld:
-        messages.print(
-            f'{len(run.withheld)} not public, so YouTube Music will not serve them — '
-            f'mirrored and readable here, but not adopted or pushed: {", ".join(run.withheld)}'
-        )
     for name, reason in run.failures:
         messages.print(f'[yellow]{name}[/yellow]: {reason}')
     if run.stopped == 'budget':
@@ -2069,9 +2064,6 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
             # in `~/dev/standards/cli-design.md`.
             messages.print(f'                [yellow]and {len(failures) - STATUS_FAILURES_SHOWN} more — ypl status --json[/yellow]')
     messages.print(f'Playlists       {payload["playlists"]} here, {payload["declined"]} declined')
-    if last and last.get('withheld'):
-        count = len(last['withheld'])
-        messages.print(f'Not public      {count} playlist{"" if count == 1 else "s"} YouTube Music will not serve — read-only here')
     messages.print(f'Unenriched      {payload["unenriched"]} videos, {payload["unreadable"]} unreadable')
     if pending:
         messages.print(f'Waiting to push {", ".join(pending)}')
