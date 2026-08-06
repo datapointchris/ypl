@@ -1,6 +1,67 @@
 # CHANGELOG
 
 
+## v1.0.0 (2026-08-06)
+
+### Bug Fixes
+
+- **remote**: Confirm a delete by its command, not by a status
+  ([`2dc1921`](https://github.com/datapointchris/ypl/commit/2dc19210dcf318615e84d473f806f6c18adefb50))
+
+`playlist/delete` answers with a `command`, not with the `status` every edit_playlist action
+  returns, so checking for one made every successful delete raise. Found against the account: the
+  delete had worked and ypl reported it refused.
+
+A real refusal arrives as a status code instead — 400 for an id that is not a playlist, 403 for one
+  this identity may not delete — both of which are already errors by the time the body is read.
+
+### Features
+
+- **remote**: Write through youtubei as the channel, not the account
+  ([`9627d8c`](https://github.com/datapointchris/ypl/commit/9627d8cf95b845487d221fbda637bd1dba7fb538))
+
+Every request ypl made authenticated as the personal Google account rather than as the brand account
+  that owns the channel and all forty-two playlists. That is why no write ever succeeded: playlists
+  read back owned by somebody else, no setVideoId on any item, STATUS_FAILED on every edit.
+
+`ypl remote auth --browser safari` now asks YouTube which identities the browser's cookies reach and
+  records the one that owns a channel, so every later request can name it in `x-goog-pageid`.
+  Verified against the account: it signs in as iChrisBirch and reads playlists with real slot
+  handles.
+
+YouTube Music could not be fixed the same way — a brand account has no Music presence and answers
+  with the signed-out menu — so ytmusicapi goes and the backend speaks youtubei on www.youtube.com
+  over httpx.
+
+Nothing about the session is stored any more. The cookies are read from the browser on every run,
+  which removes both the credential on disk and the stale-session failure that had sync mirroring
+  all afternoon while the write path was quietly signed out.
+
+Three protocol corrections found while building it:
+
+- The authorization header carries one hash per SID cookie the jar holds, not one. The old single
+  SAPISIDHASH was computed from `__Secure-3PAPISID`, which is the wrong cookie for that scheme. - A
+  move names `movedSetVideoIdSuccessor`. The predecessor field belongs to the after-variant and
+  would land every moved item one position out. - `x-goog-visitor-id` is required. Without it
+  youtubei answers PERMISSION_DENIED for every playlist that is not public.
+
+A playlist is read from its own page rather than from `browseId: VL<id>`, which is the
+  music.youtube.com convention and returns page furniture with no videos on the main site. Paging
+  past the first hundred slots is not solved: the page's continuation token answers 200 with no
+  items. Rather than return a short list — which the merge would read as a pile of remote deletions
+  and push back as removals — a truncated read raises.
+
+BREAKING CHANGE: `ypl remote auth` no longer accepts pasted request headers and has no --replace
+  flag. Sign in with --browser. The session file at $XDG_CONFIG_HOME/ypl/ytmusic.json is obsolete
+  and can be deleted.
+
+### Breaking Changes
+
+- **remote**: `ypl remote auth` no longer accepts pasted request headers and has no --replace flag.
+  Sign in with --browser. The session file at $XDG_CONFIG_HOME/ypl/ytmusic.json is obsolete and can
+  be deleted.
+
+
 ## v0.12.7 (2026-08-06)
 
 ### Bug Fixes
