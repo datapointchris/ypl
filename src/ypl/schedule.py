@@ -14,6 +14,7 @@ machine's `ypl` and this machine's paths, and a file checked in with someone
 else's home directory in it is a file that silently does nothing.
 """
 
+import datetime as dt
 import os
 import platform
 import shutil
@@ -25,6 +26,12 @@ from pathlib import Path
 LABEL = 'com.ichrisbirch.ypl'
 UNIT = 'ypl-sync'
 DEFAULT_INTERVAL_MINUTES = 30
+
+# What tells the run it is the unwatched one, and so has no reason to stop while
+# there is work left. A unit written before this existed names a bare `ypl sync`,
+# which `ensure` already compares and rewrites — so the change reaches every
+# machine on its next sync without anything having to be reinstalled.
+BACKGROUND_ARGUMENTS = ('--background',)
 
 # The binaries a run shells out to. yt-dlp is the one that matters on a timer,
 # since every read goes through it; mpv is here so that a unit written today
@@ -257,7 +264,7 @@ def ensure(interval_minutes: int = DEFAULT_INTERVAL_MINUTES, wanted: bool = True
         return None
     existing = installed()
     try:
-        command = [executable(), 'sync']
+        command = [executable(), 'sync', *BACKGROUND_ARGUMENTS]
     except ScheduleError:
         # Nothing can be installed and nothing can be compared, so whatever is
         # already there is the answer. Saying "no timer" would be a lie about a
@@ -276,7 +283,7 @@ def ensure(interval_minutes: int = DEFAULT_INTERVAL_MINUTES, wanted: bool = True
 
 
 def install(interval_minutes: int = DEFAULT_INTERVAL_MINUTES) -> Installed:
-    command = [executable(), 'sync']
+    command = [executable(), 'sync', *BACKGROUND_ARGUMENTS]
     log_path().parent.mkdir(parents=True, exist_ok=True)
     if is_macos():
         path = agent_path()
@@ -390,6 +397,26 @@ def command_from(text: str) -> list[str]:
         elif inside and stripped == '</array>':
             break
     return arguments
+
+
+def next_fire(last_finished: dt.datetime | None, interval_minutes: int) -> dt.datetime | None:
+    """When the timer is expected to start the next run.
+
+    Derived rather than asked. `launchctl` reports no next-fire time for a
+    `StartInterval` job at all, and `systemctl list-timers` reports an exact
+    one — a figure that is precise on Linux and simply absent on macOS is worse
+    than one estimate meaning the same thing on both.
+
+    Measured from the end of the last run rather than its start, because that is
+    what launchd does with a job still going when the interval elapses: the
+    countdown restarts on exit. A fifteen-minute run on a thirty-minute timer
+    therefore came round every forty-five minutes, and reporting the next sync
+    as half an hour after the last one began would have been wrong by exactly
+    the length of the run every single time.
+    """
+    if last_finished is None:
+        return None
+    return last_finished + dt.timedelta(minutes=interval_minutes)
 
 
 def interval_from(text: str) -> int:

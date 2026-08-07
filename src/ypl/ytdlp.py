@@ -16,6 +16,9 @@ import json
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from ypl.models import Chapter
@@ -122,13 +125,42 @@ def run(arguments: list[str], timeout_seconds: int) -> str:
     return result.stdout
 
 
-def cookie_arguments(cookies_from_browser: str | None) -> list[str]:
-    """Private and unlisted playlists are invisible without a logged-in session."""
-    return ['--cookies-from-browser', cookies_from_browser] if cookies_from_browser else []
+@dataclass(frozen=True)
+class Cookies:
+    """How a yt-dlp call proves who is asking, and what proving it costs.
+
+    Naming a browser makes yt-dlp decrypt that browser's entire cookie store on
+    every invocation, and enriching a library is one invocation per video.
+    Measured against Safari on the same video: 11.6 seconds with the browser
+    named, 7.9 with the same cookies exported once to a file, byte-identical
+    metadata either way. A third of what a full library costs was being spent
+    re-reading a file that had not changed since the run began.
+
+    Both forms are kept because they answer different needs. A one-off read of a
+    single playlist has nothing to amortise an export over, and `ypl auth` has
+    no run to hang one on.
+    """
+
+    browser: str | None = None
+    jar: Path | None = None
+
+    def arguments(self) -> list[str]:
+        """Private and unlisted playlists are invisible without a logged-in session."""
+        if self.jar:
+            return ['--cookies', str(self.jar)]
+        if self.browser:
+            return ['--cookies-from-browser', self.browser]
+        return []
 
 
-def browser_cookies(browser: str, domain: str = COOKIE_DOMAIN, timeout_seconds: int = 120) -> dict[str, str]:
-    """The YouTube cookies a browser is holding, read through yt-dlp.
+def cookie_arguments(cookies: Cookies | None) -> list[str]:
+    return cookies.arguments() if cookies else []
+
+
+def export_cookie_jar(
+    browser: str, destination: Path, domain: str = COOKIE_DOMAIN, timeout_seconds: int = 120
+) -> http.cookiejar.MozillaCookieJar:
+    """Write one browser's cookies for one domain to a jar yt-dlp can be handed.
 
     yt-dlp already decrypts every browser's cookie store — Safari's binary
     format, Chrome's keychain-encrypted database, Firefox's sqlite — and it is
@@ -141,28 +173,76 @@ def browser_cookies(browser: str, domain: str = COOKIE_DOMAIN, timeout_seconds: 
     are exported before anything reaches the network, and nothing is requested
     from YouTube by a command whose only job is to read a local file. The exit
     code is therefore ignored and the jar is what gets checked.
+
+    Filtered to the one domain rather than handed on whole, because the whole
+    jar is every site the browser has ever set a cookie for — 1.3 MB here — and
+    yt-dlp parses all of it on every video. Filtering took the same read from
+    11.1 seconds to 7.9. It is also simply the right thing to write down: a
+    file of every session this browser holds is not what a YouTube read needs.
     """
     with tempfile.TemporaryDirectory() as directory:
-        jar_path = Path(directory) / 'cookies.txt'
-        arguments = ['--cookies-from-browser', browser, '--cookies', str(jar_path), '--simulate', UNRESOLVABLE_URL]
+        exported = Path(directory) / 'cookies.txt'
+        arguments = ['--cookies-from-browser', browser, '--cookies', str(exported), '--simulate', UNRESOLVABLE_URL]
         try:
             subprocess.run(  # noqa: S603
                 [binary_path(), *arguments], capture_output=True, text=True, timeout=timeout_seconds
             )
         except subprocess.TimeoutExpired as error:
             raise YtdlpFailedError(f'{BINARY} did not finish reading cookies from {browser}') from error
-        if not jar_path.exists():
+        if not exported.exists():
             raise YtdlpFailedError(f'{BINARY} read no cookies from {browser} — is it a browser it supports?')
 
-        jar = http.cookiejar.MozillaCookieJar(str(jar_path))
+        whole = http.cookiejar.MozillaCookieJar(str(exported))
         # Expiry and session flags are ignored deliberately: a cookie the
         # browser is still holding is one the browser is still using, and
         # Google's session cookies are exactly the ones that matter here.
-        jar.load(ignore_discard=True, ignore_expires=True)
-        return {cookie.name: cookie.value or '' for cookie in jar if domain in (cookie.domain or '')}
+        whole.load(ignore_discard=True, ignore_expires=True)
+
+    jar = http.cookiejar.MozillaCookieJar(str(destination))
+    for cookie in whole:
+        if domain in (cookie.domain or ''):
+            jar.set_cookie(cookie)
+    # 0600, by `FileCookieJar.save` itself. These are a live Google session and
+    # the browser is where they belong; the only reason a copy exists is that
+    # yt-dlp has to be handed one per process.
+    jar.save(ignore_discard=True, ignore_expires=True)
+    return jar
 
 
-def fetch_account_playlists(cookies_from_browser: str, timeout_seconds: int = 300) -> list[PlaylistRef]:
+def browser_cookies(browser: str, domain: str = COOKIE_DOMAIN, timeout_seconds: int = 120) -> dict[str, str]:
+    """The YouTube cookies a browser is holding, as the write path wants them."""
+    with tempfile.TemporaryDirectory() as directory:
+        jar = export_cookie_jar(browser, Path(directory) / 'youtube.txt', domain=domain, timeout_seconds=timeout_seconds)
+        return {cookie.name: cookie.value or '' for cookie in jar}
+
+
+@contextmanager
+def exported_cookies(browser: str | None) -> Iterator[Cookies]:
+    """One cookie decrypt for a whole run, in a jar that does not outlive it.
+
+    The lifetime is the point as much as the saving is. A run holds the jar for
+    as long as it is making requests and the directory goes with it, so a
+    crashed sync leaves no Google session sitting in the state directory waiting
+    for somebody to notice it.
+
+    A browser that cannot be read is not fatal: yt-dlp is handed the browser name
+    instead, which is what every call did before this existed. A slower sync is
+    a better answer than no sync, and the failure is one `ypl auth` reports
+    properly.
+    """
+    if not browser:
+        yield Cookies()
+        return
+    with tempfile.TemporaryDirectory() as directory:
+        try:
+            path = Path(directory) / 'youtube.txt'
+            export_cookie_jar(browser, path)
+            yield Cookies(jar=path)
+        except (YtdlpFailedError, YtdlpUnavailableError, OSError):
+            yield Cookies(browser=browser)
+
+
+def fetch_account_playlists(cookies: Cookies, timeout_seconds: int = 300) -> list[PlaylistRef]:
     """Every playlist the signed-in account has, in one flat request.
 
     Read from YouTube's own playlists feed rather than from the YouTube Music
@@ -175,7 +255,7 @@ def fetch_account_playlists(cookies_from_browser: str, timeout_seconds: int = 30
     without one, which is the same cookie already needed to read any private
     playlist.
     """
-    arguments = ['--flat-playlist', '--dump-single-json', *cookie_arguments(cookies_from_browser), ACCOUNT_PLAYLISTS_URL]
+    arguments = ['--flat-playlist', '--dump-single-json', *cookie_arguments(cookies), ACCOUNT_PLAYLISTS_URL]
     payload = json.loads(run(arguments, timeout_seconds))
     return [
         PlaylistRef(playlist_id=entry['id'], title=entry.get('title') or entry['id'])
@@ -184,7 +264,7 @@ def fetch_account_playlists(cookies_from_browser: str, timeout_seconds: int = 30
     ]
 
 
-def fetch_account_channel_id(cookies_from_browser: str, timeout_seconds: int = 120) -> str:
+def fetch_account_channel_id(cookies: Cookies, timeout_seconds: int = 120) -> str:
     """Which channel this browser is signed in as, by id.
 
     Read off `LL` — the account's own Liked videos — because it is the one list
@@ -204,14 +284,14 @@ def fetch_account_channel_id(cookies_from_browser: str, timeout_seconds: int = 1
         '--playlist-items',
         '0',
         '--dump-single-json',
-        *cookie_arguments(cookies_from_browser),
+        *cookie_arguments(cookies),
         ACCOUNT_CHANNEL_URL,
     ]
     payload = json.loads(run(arguments, timeout_seconds))
     return payload.get('channel_id') or ''
 
 
-def fetch_playlist(url: str, cookies_from_browser: str | None = None, timeout_seconds: int = 600) -> RemotePlaylist:
+def fetch_playlist(url: str, cookies: Cookies | None = None, timeout_seconds: int = 600) -> RemotePlaylist:
     """List a playlist's videos without fetching each one.
 
     Flat, so this is one request for the whole playlist regardless of length.
@@ -221,7 +301,7 @@ def fetch_playlist(url: str, cookies_from_browser: str | None = None, timeout_se
     arguments = [
         '--flat-playlist',
         '--dump-single-json',
-        *cookie_arguments(cookies_from_browser),
+        *cookie_arguments(cookies),
         url,
     ]
     payload = json.loads(run(arguments, timeout_seconds))
@@ -253,12 +333,12 @@ def flat_entry_to_video(entry: dict) -> RemoteVideo:
     )
 
 
-def fetch_video(video_id: str, cookies_from_browser: str | None = None, timeout_seconds: int = 120) -> RemoteVideo:
+def fetch_video(video_id: str, cookies: Cookies | None = None, timeout_seconds: int = 120) -> RemoteVideo:
     """Fully extract one video, for its description and chapters."""
     arguments = [
         '--dump-json',
         '--skip-download',
-        *cookie_arguments(cookies_from_browser),
+        *cookie_arguments(cookies),
         watch_url(video_id),
     ]
     payload = json.loads(run(arguments, timeout_seconds))

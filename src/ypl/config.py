@@ -22,6 +22,7 @@ class Config:
     sync_minutes: float = 15.0
     background_sync: bool = True
     background_sync_minutes: int = 30
+    background_sync_hours: float = 0.0
     mpv_arguments: list[str] = field(default_factory=list)
 
     @property
@@ -38,13 +39,39 @@ class Config:
 
     @property
     def sync_seconds(self) -> float | None:
-        """The ceiling as `Budget` wants it — None rather than zero for no limit.
+        """The ceiling for a run someone started, as `Budget` wants it.
+
+        Short on purpose: a run at the prompt is one somebody is waiting on, and
+        the work it leaves behind costs nothing because every step re-derives
+        what is left. None rather than zero for no limit.
 
         None here is not unbounded in practice: the write path carries its own
         request ceiling — `youtubei.MAX_REQUESTS_PER_RUN` — which no config
         reaches. This one only decides how long a run may spend.
         """
         return self.sync_minutes * 60 if self.sync_minutes else None
+
+    @property
+    def background_sync_seconds(self) -> float | None:
+        """The ceiling for the timer's run — nothing, by default.
+
+        The opposite answer to `sync_seconds`, because the two runs are watched
+        differently. Nobody is waiting on the timer, so the only thing a clock
+        bound achieves there is idleness: `StartInterval` starts counting when a
+        run exits, so a fifteen-minute budget on a thirty-minute timer worked a
+        third of the wall clock and left the other two thirds asleep — measured
+        at 45 minutes between runs and 45 videos enriched in each, which put a
+        first library four thousand videos deep three days out.
+
+        Nothing is lost by removing it. What keeps this at human scale is the
+        throttle, which is a rate and holds however long a run lasts, and the
+        write path's own request ceiling. A run that stops early was never a
+        safety property — it was a guess at fitting inside a timer slot.
+
+        Set it to a number of hours to put a backstop back, for a machine where a
+        run that will not finish is worse than one that stops short.
+        """
+        return self.background_sync_hours * 3600 if self.background_sync_hours else None
 
 
 class ConfigError(ValueError):
@@ -89,6 +116,9 @@ def load() -> Config:
     background_minutes = payload.get('background_sync_minutes', 30)
     if not isinstance(background_minutes, int) or isinstance(background_minutes, bool) or background_minutes < 1:
         raise ConfigError(path, f'background_sync_minutes must be a positive integer, got {background_minutes!r}')
+    background_hours = payload.get('background_sync_hours', 0.0)
+    if not isinstance(background_hours, int | float) or isinstance(background_hours, bool) or background_hours < 0:
+        raise ConfigError(path, f'background_sync_hours must be a number of hours, got {background_hours!r}')
     mpv_arguments = payload.get('mpv_arguments', [])
     # Checked rather than trusted: these go straight onto an mpv command line,
     # and a bare string would be spread one character per argument.
@@ -101,5 +131,6 @@ def load() -> Config:
         sync_minutes=float(sync_minutes),
         background_sync=background_sync,
         background_sync_minutes=background_minutes,
+        background_sync_hours=float(background_hours),
         mpv_arguments=mpv_arguments,
     )

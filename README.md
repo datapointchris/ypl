@@ -60,7 +60,7 @@ since a run that dies before it can record anything leaves its reason only there
 Everything else is reading:
 
 ```bash
-ypl status                                             # is it working, and how far behind
+ypl status                                             # is it working, how far behind, how long left
 ypl --version                                          # which build, including the background one
 ypl playlists list                                     # everything, mirrored and local
 ypl playlists show 'Deep Night'                        # the videos in one
@@ -83,10 +83,11 @@ Steps 2–4 are skipped for every playlist that has not changed, which is what m
 cost nothing: the free mirror read already said which ones moved, so a library where nothing
 happened overnight spends no write-client requests at all.
 
-The run is bounded (`sync_minutes`, 15 by default) and every step re-derives what is left from
-stored state, so stopping is always safe — a run cut short is a shorter run, never a lost update.
-A library of six thousand videos enriches itself over a couple of days of background runs, and
-`ypl status` says how far it has got.
+Every step re-derives what is left from stored state, so stopping is always safe — a run cut short
+is a shorter run, never a lost update. That is what lets the two ways of running it be bounded
+differently: a run you started stops after `sync_minutes` (15) and tells you what it left, while
+the timer's run has no clock to stop at and works until there is nothing left. `ypl status` says
+how far it has got and when the backlog will be gone.
 
 A machine that has not signed in mirrors and stops rather than failing, because signing in is
 per-machine and a sync that refuses to run without it is a sync that stops happening.
@@ -447,14 +448,20 @@ against a state the run has not seen.
 
 The credential is a Google account cookie and the Terms prohibit automated access, so every bound
 here is deliberate. Requests are spaced — at least a second, and `request_interval_seconds` can
-only raise that, never lower it. A run stops after `sync_minutes` and leaves the rest, because
-every step re-derives what is left from stored state and a short run is never a lost update. A 429
-stops the run rather than being retried into.
+only raise that, never lower it. A 429 stops the run rather than being retried into.
 
 And one ceiling no config can reach: 400 requests to YouTube in a single run, counted in the
 backend where every request passes. The others are advisory in a way this one is not — a rate is
-not a total, the time budget is only checked between playlists, and both are read from a file that
-can be edited. Hitting it stops the run the same way a rate limit does.
+not a total, and both are read from a file that can be edited. Hitting it stops the run the same
+way a rate limit does.
+
+What is deliberately *not* a bound is how long the timer's run lasts. Stopping it at a clock
+protected nothing — the throttle is a rate and holds however long a run goes on — while
+`StartInterval` counts from when a run exits, so a fifteen-minute budget on a thirty-minute timer
+worked a third of the wall clock and slept the rest. Measured on this account: 45 minutes between
+runs, 45 videos enriched in each, and a four-thousand-video backlog three days out. The timer's
+run now drains it instead; `background_sync_hours` puts a backstop back for a machine where a run
+that will not finish is worse than one that stops short.
 
 ## Not done yet
 

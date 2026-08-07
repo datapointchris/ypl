@@ -568,3 +568,24 @@ def test_a_playlist_that_really_is_empty_still_binds(connection, stub_remote):
 
     bound = service.bind_remote_playlist(connection, candidate, EmptyReadBackend())
     assert bound.video_ids == []
+
+
+def test_progress_counts_the_backlog_against_what_it_is_a_backlog_of(connection, stub_remote):
+    """`4327 unenriched` is alarming or routine depending on the total, and the
+    total was the half that was missing."""
+    stub_remote(fetched_playlist=playlist(video('vid1'), video('vid2')))
+    service.sync_playlist(connection, 'PL1')
+
+    progress = service.enrichment_progress(connection)
+    assert (progress.total, progress.enriched, progress.remaining) == (2, 0, 2)
+
+
+def test_progress_leaves_out_what_will_never_read(connection, stub_remote):
+    """A remaining count the run will never work down is one nobody trusts twice."""
+    stub_remote(fetched_playlist=playlist(video('vid1'), video('vid2')))
+    service.sync_playlist(connection, 'PL1')
+    service.mark_unreadable(connection, 'vid2', 'Private video')
+
+    progress = service.enrichment_progress(connection)
+    assert progress.remaining == 1
+    assert progress.unreadable == 1

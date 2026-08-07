@@ -5,6 +5,7 @@ the API rather than a nicety.
 """
 
 import dataclasses
+import datetime as dt
 import json
 import os
 import shutil
@@ -16,11 +17,13 @@ from typer.testing import CliRunner
 
 from ypl import basestore
 from ypl import config
+from ypl import db
 from ypl import local
 from ypl import main
 from ypl import paths
 from ypl import player
 from ypl import remote
+from ypl import runlock
 from ypl import schedule
 from ypl import service
 from ypl import session
@@ -1253,7 +1256,73 @@ def test_status_stops_short_of_reprinting_a_whole_failed_run():
     assert 'and 4 more — ypl status --json' in output
     assert 'playlist 8' not in output
     # The lines the whole command exists to answer still have to be below it.
-    assert 'Unenriched' in output
+    assert 'Tracklists' in output
+
+
+def test_status_says_how_far_through_the_tracklists_the_library_is(synced):
+    """A backlog with no total behind it is a number nobody can act on.
+
+    Four thousand to enrich is either most of the library or a rounding error,
+    and `Unenriched 4327 videos` did not say which.
+    """
+    output = runner.invoke(app, ['status']).output
+    assert 'Tracklists      0 of 1 videos (0%)' in output
+    assert '1 to go' in output
+
+
+def test_status_projects_when_the_backlog_will_be_gone(synced, monkeypatch):
+    """The line this command did not have, and the only one anyone reads it for."""
+    monkeypatch.setattr(synclog, 'enrich_rate_per_hour', lambda: 0.5)
+
+    assert 'done in 2h 00m' in runner.invoke(app, ['status']).output
+
+
+def test_status_says_when_the_next_sync_is_due():
+    """A timer you cannot see the next firing of is one you cannot tell apart
+    from a dead one."""
+    synclog.record({'seconds': 60.0})
+    schedule.install(30)
+
+    assert 'Next sync' in runner.invoke(app, ['status']).output
+
+
+def test_status_reports_a_run_in_progress_as_one(monkeypatch):
+    """Mid-run is exactly when the counts are worth reading, and `Syncing now
+    yes` alone did not say the numbers below it were moving."""
+    monkeypatch.setattr(runlock, 'started', lambda: dt.datetime.now(dt.UTC) - dt.timedelta(minutes=20))
+
+    output = runner.invoke(app, ['status']).output
+    assert 'yes — 20 min so far' in output
+    assert 'Next sync       30 min after this run finishes' not in output
+
+
+def test_status_explains_what_unreadable_means(synced):
+    """Fifty-five failures reads as fifty-five things to fix, and it is none."""
+    connection = db.connect()
+    service.mark_unreadable(connection, 'vid1', 'Private video')
+
+    assert 'deleted, private or region-locked' in runner.invoke(app, ['status']).output
+
+
+def test_the_timer_runs_the_mode_that_does_not_stop_at_a_clock(homebrew_yt_dlp, monkeypatch):
+    """The whole point of the background run: no time bound, so it drains."""
+    monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
+
+    timer = schedule.ensure(30)
+
+    assert timer is not None
+    assert timer.command == ['/usr/local/bin/ypl', 'sync', '--background']
+
+
+def test_a_unit_written_before_the_background_flag_is_rewritten(homebrew_yt_dlp, monkeypatch):
+    """Nothing has to be reinstalled by hand: `ensure` already compares the
+    command, so the next sync on every machine picks the new one up."""
+    monkeypatch.setattr(schedule, 'executable', lambda: '/usr/local/bin/ypl')
+    schedule.install(30)
+    stale = schedule.installed().path
+    stale.write_text(stale.read_text().replace('<string>--background</string>\n', '').replace('--background', ''))
+
+    assert schedule.ensure(30).command == ['/usr/local/bin/ypl', 'sync', '--background']
 
 
 def test_a_bare_ypl_says_where_things_stand_and_what_to_run():
@@ -1277,3 +1346,65 @@ def test_a_bare_ypl_stops_naming_a_next_command_once_there_is_none():
     output = runner.invoke(app, []).output
     assert 'Signed in       yes' in output
     assert 'ypl auth' not in output
+
+
+def test_the_rate_is_measured_across_the_gaps_not_only_inside_the_runs():
+    """The number anyone wants is when the backlog will be gone.
+
+    A rate taken from time spent working said three videos a minute while the
+    old fifteen-in-thirty timer was actually managing one — it spent two thirds
+    of every hour asleep, and the projection built on it was out by three times.
+    """
+    runs = [
+        {'ts': '2026-08-07T02:00:00+00:00', 'enriched': 45},
+        {'ts': '2026-08-07T01:00:00+00:00', 'enriched': 40},
+        {'ts': '2026-08-07T00:00:00+00:00', 'enriched': 50},
+    ]
+    assert synclog.enrich_rate_per_hour(runs) == pytest.approx(42.5)
+
+
+def test_one_run_is_not_enough_to_claim_a_rate():
+    """A projection from a single point is a guess wearing an estimate's clothes."""
+    assert synclog.enrich_rate_per_hour([{'ts': '2026-08-07T02:00:00+00:00', 'enriched': 45}]) is None
+
+
+def test_the_next_run_is_counted_from_when_the_last_one_ended():
+    """What launchd does with a job still going when the interval elapses: the
+    countdown restarts on exit. Counting from the start was wrong by the length
+    of the run, every time."""
+    ended = dt.datetime(2026, 8, 7, 1, 34, tzinfo=dt.UTC)
+    assert schedule.next_fire(ended, 30) == dt.datetime(2026, 8, 7, 2, 4, tzinfo=dt.UTC)
+
+
+def test_asking_whether_a_sync_is_running_does_not_reset_when_it_started():
+    """`ypl status` opened the lock file for writing, which truncates — and
+    truncating stamps it. Every check reset the one timestamp saying how long
+    the running sync had been going."""
+    with runlock.held() as mine:
+        assert mine
+        began = runlock.started()
+        assert runlock.running()
+        assert runlock.started() == began
+
+
+def test_nothing_is_running_when_nothing_holds_the_lock():
+    with runlock.held():
+        pass
+    assert runlock.started() is None
+
+
+def test_an_exported_jar_is_what_a_run_hands_yt_dlp(tmp_path):
+    """Naming the browser instead made yt-dlp decrypt the whole cookie store
+    once per video, which was a third of what enriching a library cost."""
+    jar = tmp_path / 'youtube.txt'
+    assert ytdlp.Cookies(jar=jar).arguments() == ['--cookies', str(jar)]
+    assert ytdlp.Cookies(browser='safari').arguments() == ['--cookies-from-browser', 'safari']
+    assert ytdlp.Cookies().arguments() == []
+
+
+def test_a_browser_that_cannot_be_exported_falls_back_to_naming_it(monkeypatch):
+    """A slower sync is a better answer than no sync."""
+    monkeypatch.setattr(ytdlp, 'export_cookie_jar', lambda *args, **kwargs: (_ for _ in ()).throw(ytdlp.YtdlpFailedError('no')))
+
+    with ytdlp.exported_cookies('safari') as cookies:
+        assert cookies == ytdlp.Cookies(browser='safari')

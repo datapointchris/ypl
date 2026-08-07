@@ -2,6 +2,7 @@
 
 import contextlib
 import dataclasses
+import datetime as dt
 import importlib.metadata
 import json
 import sqlite3
@@ -420,7 +421,21 @@ def signed_in_backend(quiet: bool) -> youtubei.YouTubeiBackend | None:
         return None
 
 
-def sync_everything_or_exit(connection: sqlite3.Connection, browser: str, limit: int | None, quiet: bool) -> service.SyncRun:
+def sync_everything_or_exit(
+    connection: sqlite3.Connection,
+    browser: str,
+    limit: int | None,
+    quiet: bool,
+    background: bool = False,
+) -> service.SyncRun:
+    """One run, bounded by whichever clock belongs to how it was started.
+
+    The two are not the same question. A run at the prompt is one somebody is
+    waiting on, so it stays short and says what it left. The timer's run is
+    watched by nobody and has no reason to stop while there is work — see
+    `config.background_sync_seconds` for what that changed and why nothing is
+    given up by it.
+    """
     settings = load_config_or_exit()
 
     def announce(reference) -> None:
@@ -440,7 +455,7 @@ def sync_everything_or_exit(connection: sqlite3.Connection, browser: str, limit:
             on_playlist=announce,
             on_video=announce_video,
             pace=throttle.Throttle(settings.request_pace_seconds),
-            budget=throttle.Budget(seconds=settings.sync_seconds),
+            budget=throttle.Budget(seconds=settings.background_sync_seconds if background else settings.sync_seconds),
         )
     except ytdlp.YtdlpUnavailableError as error:
         messages.print(f'[red]{error}[/red]')
@@ -493,7 +508,8 @@ def report_sync(run: service.SyncRun) -> None:
         messages.print(f'[yellow]{name}[/yellow]: {reason}')
     if run.stopped == 'budget':
         messages.print(
-            f'Stopped at the {round(run.seconds / 60)} minute budget — {run.unenriched} videos still to enrich, next run continues.'
+            f'Stopped at the {round(run.seconds / 60)} minute budget — {run.unenriched} videos still to enrich, '
+            'and the timer works through them. [bold]ypl status[/bold] says how long that will take.'
         )
     elif run.stopped == 'rate limit':
         messages.print('[red]Stopped — YouTube asked us to slow down.[/red] Everything done so far is stored.')
@@ -509,6 +525,7 @@ def sync(
     browser: str = typer.Option(None, '--browser', '-b', help='Browser whose YouTube session to borrow. Defaults to cookies_from_browser.'),
     limit: int = typer.Option(None, '--limit', '-n', help='Mirror at most this many playlists.'),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
+    background: bool = typer.Option(False, '--background', hidden=True, help='What the timer runs: no clock bound, so the backlog drains.'),
 ) -> None:
     """Sync everything, in both directions.
 
@@ -524,6 +541,11 @@ def sync(
     where nothing moved overnight spends nothing.
 
     A single playlist by URL only mirrors it, and needs nothing if it is public.
+
+    Run here it keeps to a quarter of an hour and tells you what it left for
+    next time; run by the timer it works until there is nothing left. Both hold
+    the same floor between requests, which is the thing that actually keeps this
+    at human scale.
     """
     settings = load_config_or_exit()
     connection = db.connect()
@@ -549,7 +571,7 @@ def sync(
 
             if not as_json:
                 messages.print('Reading your playlists...')
-            run = sync_everything_or_exit(connection, source, limit, quiet=as_json)
+            run = sync_everything_or_exit(connection, source, limit, quiet=as_json, background=background)
             session.remember_browser(source)
             synclog.record(run.payload())
             keep_running(settings, quiet=as_json)
@@ -562,7 +584,9 @@ def sync(
         return
 
     try:
-        playlist = service.sync_playlist(connection, url, cookies_from_browser=reading_browser(settings, browser))
+        # The browser directly rather than an export: one playlist is one read,
+        # and there is nothing here for an exported jar to be amortised over.
+        playlist = service.sync_playlist(connection, url, cookies=ytdlp.Cookies(browser=reading_browser(settings, browser)))
     except ytdlp.YtdlpUnavailableError as error:
         messages.print(f'[red]{error}[/red]')
         raise typer.Exit(1) from error
@@ -1449,42 +1473,129 @@ def describe_push(push: service.Push) -> str:
     return ', '.join(parts) if parts else 'nothing to push'
 
 
+def span_words(seconds: float | None) -> str:
+    """A length of time as someone would say it, coarsening as it grows.
+
+    Separate from `duration_words`, which formats a video: `2:14` is the right
+    answer for a track and the wrong one for how long a sync has been going.
+    Precision is dropped deliberately at each step up — minutes stop mattering
+    once the answer is in days, and carrying them implies the estimate is better
+    than it is.
+    """
+    if seconds is None:
+        return 'unknown'
+    if seconds < 60:
+        return 'under a minute'
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f'{minutes} min'
+    hours, remaining = divmod(minutes, 60)
+    if hours < 24:
+        return f'{hours}h {remaining:02d}m'
+    days = round(hours / 24)
+    return f'about {days} day{"s" if days != 1 else ""}'
+
+
+def stop_reason_words(run: dict) -> str:
+    """Why the last run ended, in the terms of what to do about it."""
+    return {
+        'budget': 'stopped at its time budget',
+        'rate limit': 'stopped — YouTube asked us to slow down',
+    }.get(run.get('stopped') or '', 'finished everything it could')
+
+
+def enrichment_lines(progress: service.EnrichmentProgress, rate: float | None) -> list[str]:
+    """The tracklist backlog, and when it will be gone.
+
+    The projection is the line that matters and the one this command did not
+    have. A bare count of what is left says nothing about whether the tool is
+    working through it in an hour or a week, which is the only thing anyone
+    reads this to find out.
+    """
+    percent = round(progress.fraction * 100)
+    lines = [f'Tracklists      {progress.enriched} of {progress.total} videos ({percent}%)']
+    if progress.done:
+        lines.append('                nothing left to enrich')
+    elif rate:
+        finish = span_words(progress.remaining / rate * 3600)
+        lines.append(f'                {progress.remaining} to go — {round(rate)}/hour lately, done in {finish}')
+    else:
+        lines.append(f'                {progress.remaining} to go — too few runs yet to say how long')
+    if progress.unreadable:
+        lines.append(f'                {progress.unreadable} unreadable: deleted, private or region-locked, and never asked about again')
+    return lines
+
+
 @app.command('status', rich_help_panel=SYNCING)
 def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.')) -> None:
-    """Whether everything is in sync, and what the last run did.
+    """Whether everything is in sync, what it is doing, and when it will be done.
 
     The window onto a sync nobody watches. What it answers is the question a
     background process makes hard: is this working, and if it is behind, by how
-    much and since when.
+    much, since when, and how long until it is not.
+
+    The counts move while a run is going, because they are read from the mirror
+    rather than from the log a run writes when it ends — so this is also the way
+    to watch one happen.
     """
     connection = db.connect()
     playlists = local.list_playlists().playlists
     pending = [waiting for waiting in (service.pending_push(playlist) for playlist in playlists) if waiting]
     last = synclog.last()
     timer = schedule.installed()
+    started = runlock.started()
+    progress = service.enrichment_progress(connection)
+    rate = synclog.enrich_rate_per_hour()
+    finished = dt.datetime.fromisoformat(last['ts']) if last and last.get('ts') else None
+    upcoming = schedule.next_fire(finished, timer.interval_minutes) if timer and not started else None
     payload = {
-        'running': runlock.running(),
+        'running': bool(started),
+        'running_since': started,
         'signed_in': bool(session.browser()),
         'scheduled': bool(timer),
         'interval_minutes': timer.interval_minutes if timer else None,
+        'next_sync': upcoming,
         'last_sync': last.get('ts') if last else None,
         'last_run': last,
         'playlists': len(playlists),
-        'unenriched': len(service.unenriched_everywhere(connection)),
-        'unreadable': len(service.unreadable_video_ids(connection)),
+        'enrichment': {
+            'total': progress.total,
+            'enriched': progress.enriched,
+            'remaining': progress.remaining,
+            'unreadable': progress.unreadable,
+            'per_hour': round(rate, 1) if rate else None,
+            'hours_left': round(progress.remaining / rate, 1) if rate and progress.remaining else None,
+        },
         'pending_push': pending,
     }
     if as_json:
         print_json(payload)
         return
 
-    messages.print(f'Syncing now     {"yes" if payload["running"] else "no"}')
+    if started:
+        elapsed = span_words((dt.datetime.now(dt.UTC) - started).total_seconds())
+        messages.print(f'Syncing now     yes — {elapsed} so far, and these counts are moving')
+    else:
+        messages.print('Syncing now     no')
     messages.print(f'Signed in       {"yes" if payload["signed_in"] else "no — ypl auth"}')
     messages.print(f'Scheduled       {f"every {timer.interval_minutes} min ({timer.manager})" if timer else "no — run ypl sync once"}')
+    if timer:
+        # Nothing is pending while a run holds the lock: the timer's next firing
+        # is counted from when this one exits, so any figure here would be a
+        # countdown to a moment that moves every second the run continues.
+        if started:
+            messages.print(f'Next sync       {timer.interval_minutes} min after this run finishes')
+        elif upcoming:
+            due = (upcoming - dt.datetime.now(dt.UTC)).total_seconds()
+            messages.print(f'Next sync       {f"in {span_words(due)}" if due > 0 else "due now"} ({upcoming:%H:%M})')
     messages.print(f'Last sync       {payload["last_sync"] or "never"}')
     if last:
+        ran = f'ran {span_words(last["seconds"])}, ' if last.get('seconds') else ''
+        messages.print(f'                {ran}{stop_reason_words(last)}')
         done = [f'{len(last[key])} {key}' for key in ('bound', 'reconciled', 'pushed') if last.get(key)]
-        messages.print(f'                {", ".join(done) if done else "nothing to do"}')
+        done.append(f'{last["enriched"]} enriched' if last.get('enriched') else '')
+        shown = ', '.join(part for part in done if part)
+        messages.print(f'                {shown or "nothing to do"}')
         failures = last.get('failures') or []
         for failure in failures[:STATUS_FAILURES_SHOWN]:
             messages.print(f'                [yellow]{failure}[/yellow]')
@@ -1493,7 +1604,8 @@ def status(as_json: bool = typer.Option(False, '--json', help='Output as JSON to
             # in `~/dev/standards/cli-design.md`.
             messages.print(f'                [yellow]and {len(failures) - STATUS_FAILURES_SHOWN} more — ypl status --json[/yellow]')
     messages.print(f'Playlists       {payload["playlists"]} here')
-    messages.print(f'Unenriched      {payload["unenriched"]} videos, {payload["unreadable"]} unreadable')
+    for line in enrichment_lines(progress, rate):
+        messages.print(line)
     for waiting in pending:
         change = (
             'create'

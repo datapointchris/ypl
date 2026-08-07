@@ -9,9 +9,8 @@ it costs the answer to "what happened overnight" and nothing more. Append-only,
 so a run in progress cannot corrupt the record of the last one.
 """
 
+import datetime as dt
 import json
-from datetime import UTC
-from datetime import datetime
 
 from ypl import paths
 
@@ -21,7 +20,7 @@ KEEP_LINES = 500
 
 
 def now_ts() -> str:
-    return datetime.now(UTC).isoformat(timespec='seconds')
+    return dt.datetime.now(dt.UTC).isoformat(timespec='seconds')
 
 
 def record(entry: dict) -> dict:
@@ -70,3 +69,37 @@ def load(limit: int | None = None) -> list[dict]:
 def last() -> dict | None:
     runs = load(limit=1)
     return runs[0] if runs else None
+
+
+# Enough runs to average out a slow one without reaching back to a week when the
+# machine was asleep, which would report a rate the tool is not achieving now.
+RATE_SAMPLE_RUNS = 8
+
+
+def enrich_rate_per_hour(runs: list[dict] | None = None) -> float | None:
+    """Videos enriched per hour of wall clock, or None with too little to say.
+
+    Wall clock rather than time spent working, deliberately. What anyone wants
+    from this is when the backlog will be gone, and a rate measured only inside
+    the runs answers a question nobody asked: it was three videos a minute while
+    the tool was awake and one a minute in reality, because two thirds of every
+    hour was spent waiting for the next timer.
+
+    Measured between run timestamps, which are written when a run ends, so the
+    videos counted are those enriched in the spans the timestamps bracket — the
+    oldest run's own work happened before the window and is left out of the
+    numerator.
+    """
+    runs = runs if runs is not None else load(limit=RATE_SAMPLE_RUNS)
+    if len(runs) < 2:
+        return None
+    try:
+        newest = dt.datetime.fromisoformat(runs[0]['ts'])
+        oldest = dt.datetime.fromisoformat(runs[-1]['ts'])
+    except (KeyError, ValueError):
+        return None
+    hours = (newest - oldest).total_seconds() / 3600
+    enriched = sum(run.get('enriched') or 0 for run in runs[:-1])
+    if hours <= 0 or not enriched:
+        return None
+    return enriched / hours

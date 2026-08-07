@@ -8,14 +8,13 @@ name a mirrored playlist or an authored one, and only a layer that can see both
 stores can say which — or refuse when the answer is both.
 """
 
+import datetime as dt
 import random
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
-from datetime import UTC
-from datetime import datetime
 from functools import partial
 
 from ypl import basestore
@@ -80,10 +79,10 @@ class ResolvedPlaylist:
 
 
 def now_ts() -> str:
-    return datetime.now(UTC).isoformat(timespec='seconds')
+    return dt.datetime.now(dt.UTC).isoformat(timespec='seconds')
 
 
-def sync_playlist(connection: sqlite3.Connection, url: str, cookies_from_browser: str | None = None) -> RemotePlaylist:
+def sync_playlist(connection: sqlite3.Connection, url: str, cookies: ytdlp.Cookies | None = None) -> RemotePlaylist:
     """Mirror one playlist's current contents.
 
     The membership rows are replaced wholesale rather than diffed, because a
@@ -91,7 +90,7 @@ def sync_playlist(connection: sqlite3.Connection, url: str, cookies_from_browser
     after the moved item. `videos` rows are upserted instead, so an enrichment
     already paid for is not thrown away by a re-sync.
     """
-    playlist = ytdlp.fetch_playlist(url, cookies_from_browser=cookies_from_browser)
+    playlist = ytdlp.fetch_playlist(url, cookies=cookies)
     with connection:
         connection.execute(
             """
@@ -157,7 +156,7 @@ class AccountSync:
 
 def sync_account(
     connection: sqlite3.Connection,
-    cookies_from_browser: str,
+    cookies: ytdlp.Cookies,
     limit: int | None = None,
     on_playlist: Callable[[PlaylistRef], None] | None = None,
     pace: Throttle | None = None,
@@ -173,15 +172,15 @@ def sync_account(
     back-to-back requests carrying your cookies, and a rate limit stops the run
     rather than being retried into, exactly as on the write side.
     """
-    result = AccountSync(channel_id=ytdlp.fetch_account_channel_id(cookies_from_browser))
+    result = AccountSync(channel_id=ytdlp.fetch_account_channel_id(cookies))
     pace = pace or Throttle()
-    references = ytdlp.fetch_account_playlists(cookies_from_browser)
+    references = ytdlp.fetch_account_playlists(cookies)
     for reference in references[:limit] if limit else references:
         if on_playlist:
             on_playlist(reference)
         pace.wait()
         try:
-            result.synced.append(sync_playlist(connection, reference.playlist_id, cookies_from_browser))
+            result.synced.append(sync_playlist(connection, reference.playlist_id, cookies))
         except ytdlp.YtdlpRateLimitedError:
             raise
         except ytdlp.YtdlpFailedError as error:
@@ -213,7 +212,7 @@ def store_tracks(connection: sqlite3.Connection, video_id: str, tracks: list[Tra
         )
 
 
-def enrich_video(connection: sqlite3.Connection, video_id: str, cookies_from_browser: str | None = None) -> list[Track]:
+def enrich_video(connection: sqlite3.Connection, video_id: str, cookies: ytdlp.Cookies | None = None) -> list[Track]:
     """Fetch one video in full and store whatever tracklist it yields.
 
     Inserts rather than only updating, because enrichment is a fact about a
@@ -221,7 +220,7 @@ def enrich_video(connection: sqlite3.Connection, video_id: str, cookies_from_bro
     local playlist may never have been in a mirrored playlist at all, and the
     full extraction returns every field `sync` would have written anyway.
     """
-    video = ytdlp.fetch_video(video_id, cookies_from_browser=cookies_from_browser)
+    video = ytdlp.fetch_video(video_id, cookies=cookies)
     tracks = tracklist.best_tracklist(video.chapters, video.description)
     with connection:
         connection.execute(
@@ -277,6 +276,47 @@ def mark_unreadable(connection: sqlite3.Connection, video_id: str, reason: str) 
 
 def unreadable_video_ids(connection: sqlite3.Connection) -> set[str]:
     return {row['video_id'] for row in connection.execute('SELECT video_id FROM enrich_failures')}
+
+
+@dataclass
+class EnrichmentProgress:
+    """How far through the tracklists the library is.
+
+    A count on its own answers nothing: four thousand videos to enrich is
+    alarming or routine depending entirely on whether it is four thousand of
+    four thousand or of six. The pair is what makes it readable, and the pair is
+    what `ypl status` was missing.
+    """
+
+    total: int
+    enriched: int
+    remaining: int
+    unreadable: int
+
+    @property
+    def fraction(self) -> float:
+        return self.enriched / self.total if self.total else 1.0
+
+    @property
+    def done(self) -> bool:
+        return not self.remaining
+
+
+def enrichment_progress(connection: sqlite3.Connection) -> EnrichmentProgress:
+    """The tracklist backlog, counted the same way the enrich tail works through it.
+
+    `remaining` is the enrich queue itself rather than a subtraction, because the
+    two disagree: the queue skips what is permanently unreadable and reaches
+    videos with no mirror row at all, and a status reporting a number the run
+    will never work down is a status nobody trusts twice.
+    """
+    counts = connection.execute('SELECT COUNT(*) AS total, COUNT(enriched_ts) AS enriched FROM videos WHERE is_unavailable = 0').fetchone()
+    return EnrichmentProgress(
+        total=counts['total'],
+        enriched=counts['enriched'],
+        remaining=len(unenriched_everywhere(connection)),
+        unreadable=len(unreadable_video_ids(connection)),
+    )
 
 
 def unenriched_everywhere(connection: sqlite3.Connection) -> list[str]:
@@ -1012,12 +1052,41 @@ def sync_everything(
     playlist that caused them and the run carries on. A rate limit is the
     exception and ends the run, because continuing into it is what turns a
     throttle into a pattern worth noticing.
+
+    The browser's cookies are read once here and handed to every call as a file.
+    A run is thousands of yt-dlp invocations and each was decrypting the whole
+    cookie store again — `ytdlp.exported_cookies` has what that cost.
+    """
+    with ytdlp.exported_cookies(cookies_from_browser) as cookies:
+        return run_sync(
+            connection,
+            cookies,
+            backend=backend,
+            limit=limit,
+            on_playlist=on_playlist,
+            on_video=on_video,
+            pace=pace or Throttle(),
+            budget=budget or Budget(),
+        )
+
+
+def run_sync(
+    connection: sqlite3.Connection,
+    cookies: ytdlp.Cookies,
+    backend: Backend | None,
+    limit: int | None,
+    on_playlist: Callable[[PlaylistRef], None] | None,
+    on_video: Callable[[int, int, str], None] | None,
+    pace: Throttle,
+    budget: Budget,
+) -> SyncRun:
+    """The run itself, once there is a session to make it with.
+
+    Split out of `sync_everything` only so the cookie export has something to be
+    opened and closed around, rather than indenting a body this long by one.
     """
     run = SyncRun()
-    budget = budget or Budget()
-    pace = pace or Throttle()
-
-    account = sync_account(connection, cookies_from_browser, limit=limit, on_playlist=on_playlist, pace=pace)
+    account = sync_account(connection, cookies, limit=limit, on_playlist=on_playlist, pace=pace)
     run.mirrored = len(account.synced)
     run.videos = account.video_count
     run.failures = [(reference.title, reason) for reference, reason in account.failures]
@@ -1060,7 +1129,7 @@ def sync_everything(
                 run.failures.append((item.label, brief(error)))
 
     if not run.stopped:
-        enrich_pending(connection, run, cookies_from_browser, pace=pace, budget=budget, on_video=on_video)
+        enrich_pending(connection, run, cookies, pace=pace, budget=budget, on_video=on_video)
     run.unenriched = len(unenriched_everywhere(connection))
     run.seconds = budget.elapsed_seconds
     return run
@@ -1152,7 +1221,7 @@ def queued_work(
 def enrich_pending(
     connection: sqlite3.Connection,
     run: SyncRun,
-    cookies_from_browser: str | None,
+    cookies: ytdlp.Cookies | None,
     pace: Throttle,
     budget: Budget,
     on_video: Callable[[int, int, str], None] | None = None,
@@ -1180,7 +1249,7 @@ def enrich_pending(
         budget.charge(READ_COST)
         pace.wait()
         try:
-            run.tracks_found += len(enrich_video(connection, video_id, cookies_from_browser=cookies_from_browser))
+            run.tracks_found += len(enrich_video(connection, video_id, cookies=cookies))
             run.enriched += 1
         except ytdlp.YtdlpRateLimitedError as error:
             run.failures.append((video_id, str(error).splitlines()[-1] if str(error) else 'rate limited'))
