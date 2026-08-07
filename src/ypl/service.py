@@ -13,6 +13,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
 from functools import partial
@@ -591,6 +592,38 @@ def owned_by(account_channel_id: str, playlist_channel_id: str) -> bool:
     return bool(account_channel_id) and account_channel_id == playlist_channel_id
 
 
+def demote_unowned_playlists(account: AccountSync) -> list[str]:
+    """Unmark a synced file the mirror says another channel owns.
+
+    Ownership is decided once, when the file is bound, and until now nothing
+    re-asked. A file bound before that question was asked at all keeps queueing
+    a reconcile against a playlist the write client cannot read, and YouTube
+    answers it with no video list every run, forever — a permanent failure that
+    no amount of syncing clears. The mirror sweep already knows who owns each
+    playlist, so correcting the flag costs no request.
+
+    Only a positive answer demotes anything, and both ids have to be known for
+    it to count. `owned_by` is false for an unknown account channel as much as
+    for a genuinely foreign one, and leaning on it here would read one failed
+    account read as proof that all forty playlists belong to somebody else.
+
+    The entries are left exactly as they are. A demotion says where this file
+    can be pushed, not what belongs in it, and rebuilding it from the mirror
+    would throw away whatever was edited here.
+    """
+    if not account.channel_id:
+        return []
+    owners = {mirrored.playlist_id: mirrored.channel_id for mirrored in account.synced if mirrored.channel_id}
+    demoted = []
+    for playlist in pullable_playlists():
+        owner = owners.get(playlist.remote_id)
+        if not owner or owned_by(account.channel_id, owner):
+            continue
+        local.save(replace(playlist, synced=False), overwrite=True)
+        demoted.append(playlist.name)
+    return demoted
+
+
 def bind_remote_playlist(
     connection: sqlite3.Connection, playlist: ResolvedPlaylist, backend: Backend, synced: bool = True
 ) -> LocalPlaylist:
@@ -894,6 +927,7 @@ class SyncRun:
     reconciled: list[Pull] = field(default_factory=list)
     pushed: list[Push] = field(default_factory=list)
     unchanged: int = 0
+    demoted: list[str] = field(default_factory=list)
     enriched: int = 0
     tracks_found: int = 0
     unenriched: int = 0
@@ -908,7 +942,7 @@ class SyncRun:
 
     @property
     def changed(self) -> bool:
-        return bool(self.bound or self.reconciled or self.pushed or self.enriched)
+        return bool(self.bound or self.reconciled or self.pushed or self.enriched or self.demoted)
 
     def payload(self) -> dict:
         """The line this run leaves in the log."""
@@ -923,6 +957,7 @@ class SyncRun:
             'added_there': sum(len(push.diff.add) for push in self.pushed),
             'removed_there': sum(len(push.diff.remove) for push in self.pushed),
             'unchanged': self.unchanged,
+            'demoted': self.demoted,
             'enriched': self.enriched,
             'tracks_found': self.tracks_found,
             'unenriched': self.unenriched,
@@ -979,6 +1014,10 @@ def sync_everything(
     run.videos = account.video_count
     run.failures = [(reference.title, reason) for reference, reason in account.failures]
     budget.charge(READ_COST * (len(account.synced) + 1))
+
+    # Before anything is queued rather than after it fails, so a playlist this
+    # account cannot write to never becomes work in the first place.
+    run.demoted = demote_unowned_playlists(account)
 
     if backend is not None:
         # Asked once, before any of the work. A session that is not signed in

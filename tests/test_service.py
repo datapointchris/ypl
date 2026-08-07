@@ -7,8 +7,11 @@ import pytest
 from ypl import config
 from ypl import db
 from ypl import history
+from ypl import local
+from ypl import m3u
 from ypl import service
 from ypl import ytdlp
+from ypl.local import LocalPlaylist
 from ypl.models import Chapter
 from ypl.models import RemotePlaylist
 from ypl.models import RemoteVideo
@@ -454,3 +457,82 @@ def test_the_request_pace_has_a_floor_no_config_can_go_under():
     assert config.Config(request_interval_seconds=0.01).request_pace_seconds == config.MINIMUM_INTERVAL_SECONDS
     # Slower is always allowed.
     assert config.Config(request_interval_seconds=30).request_pace_seconds == 30
+
+
+def bound_file(name, remote_id, synced=True):
+    saved = LocalPlaylist(
+        name=name,
+        path=local.path_for(name),
+        entries=[m3u.Entry(video_id='v1', title='A Mix')],
+        synced=synced,
+        remote_id=remote_id,
+    )
+    local.save(saved, overwrite=True)
+    return saved
+
+
+def mirrored(playlist_id, channel_id):
+    return RemotePlaylist(playlist_id=playlist_id, title=playlist_id, channel='whoever', channel_id=channel_id)
+
+
+def test_a_playlist_another_channel_owns_stops_being_synced():
+    """The failure this fixes ran every half hour and never cleared.
+
+    Two playlists saved from other channels were bound before ownership was
+    consulted, so every run queued a reconcile the write client cannot serve and
+    logged the same two failures forever.
+    """
+    bound_file('Understanding Trauma', 'PLtheirs')
+    account = service.AccountSync(channel_id='UCmine', synced=[mirrored('PLtheirs', 'UCtheirs')])
+
+    assert service.demote_unowned_playlists(account) == ['Understanding Trauma']
+    assert local.load(local.path_for('Understanding Trauma')).synced is False
+
+
+def test_demoting_keeps_the_remote_id_and_everything_in_the_file():
+    """A demotion says where the file can be pushed, not what belongs in it."""
+    bound_file('Understanding Trauma', 'PLtheirs')
+    service.demote_unowned_playlists(service.AccountSync(channel_id='UCmine', synced=[mirrored('PLtheirs', 'UCtheirs')]))
+
+    reloaded = local.load(local.path_for('Understanding Trauma'))
+    assert reloaded.remote_id == 'PLtheirs'
+    assert reloaded.video_ids == ['v1']
+
+
+def test_a_playlist_this_account_owns_is_left_synced():
+    bound_file('Chill Out', 'PLmine')
+    account = service.AccountSync(channel_id='UCmine', synced=[mirrored('PLmine', 'UCmine')])
+
+    assert service.demote_unowned_playlists(account) == []
+    assert local.load(local.path_for('Chill Out')).synced is True
+
+
+def test_an_unknown_account_channel_demotes_nothing():
+    """The failure mode worth guarding: one bad account read is not proof.
+
+    `owned_by` is false for an unknown account channel exactly as it is for a
+    genuinely foreign one, so trusting it here would unsync the whole library on
+    a run that could not work out who we are.
+    """
+    bound_file('Chill Out', 'PLmine')
+    account = service.AccountSync(channel_id='', synced=[mirrored('PLmine', 'UCmine')])
+
+    assert service.demote_unowned_playlists(account) == []
+    assert local.load(local.path_for('Chill Out')).synced is True
+
+
+def test_a_playlist_this_run_did_not_mirror_is_left_alone():
+    """A limited run mirrors some of the library, and silence is not ownership."""
+    bound_file('Chill Out', 'PLmine')
+    account = service.AccountSync(channel_id='UCmine', synced=[mirrored('PLother', 'UCmine')])
+
+    assert service.demote_unowned_playlists(account) == []
+    assert local.load(local.path_for('Chill Out')).synced is True
+
+
+def test_a_mirrored_playlist_with_no_known_owner_is_left_alone():
+    bound_file('Chill Out', 'PLmine')
+    account = service.AccountSync(channel_id='UCmine', synced=[mirrored('PLmine', '')])
+
+    assert service.demote_unowned_playlists(account) == []
+    assert local.load(local.path_for('Chill Out')).synced is True

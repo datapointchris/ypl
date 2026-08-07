@@ -483,6 +483,8 @@ def report_sync(run: service.SyncRun) -> None:
         messages.print(f'[bold]{push.playlist.name}[/bold] — pushed: {describe_push(push)}')
     for name in run.bound:
         messages.print(f'[bold]{name}[/bold] — now a file here')
+    for name in run.demoted:
+        messages.print(f'[bold]{name}[/bold] — another channel owns it, so it is no longer synced')
     if run.enriched:
         messages.print(f'Enriched [bold]{run.enriched}[/bold] videos, found {run.tracks_found} tracks')
     if run.skipped:
