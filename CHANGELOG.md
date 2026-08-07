@@ -1,6 +1,209 @@
 # CHANGELOG
 
 
+## v2.0.0 (2026-08-07)
+
+### Bug Fixes
+
+- **remote**: Bound one run's requests where no config can reach
+  ([`8929979`](https://github.com/datapointchris/ypl/commit/89299793137f7af00cbde65c616b70e4ab6dc8f0))
+
+Three bounds existed and none of them was a guarantee.
+
+`request_interval_seconds = 0` passed validation, which removed the pacing entirely — the one
+  setting that can turn this into something shaped like a scraper. It is a floor now: raising it is
+  allowed, lowering it past a second does nothing.
+
+`sync_minutes = 0` meant no ceiling rather than no time, so a run could go on indefinitely by config
+  alone.
+
+And the budget is only checked *between* work items, while a single item can be many requests:
+  binding one 960-video playlist is ten paged reads charged as one. A playlist large enough never
+  reaches a check at all.
+
+So the real bound goes where every request actually passes, in the backend, counted before the
+  request rather than after: 400 in one run, whatever the config says and whatever the caller
+  passes. It raises a RemoteRateLimitedError subclass so every existing caller already handles it
+  correctly — the run stops and leaves the rest, because everything re-derives from stored state and
+  a short run is never a lost update.
+
+The bootstrap page load counts too. It is a request to YouTube like any other.
+
+### Chores
+
+- **ci**: Re-trigger builds dropped by the Actions outage
+  ([`67bff03`](https://github.com/datapointchris/ypl/commit/67bff0363491b3fc6fcd400f0d0460991f786cbf))
+
+GitHub Actions was degraded from 15:22 UTC on 2026-08-06: the CI run for 30c4f86 never acquired a
+  hosted runner, and the four pushes after it created no runs at all. main has been unvalidated and
+  unreleased since. An empty commit is the only trigger these workflows expose.
+
+### Features
+
+- **cli**: A bare ypl answers where things stand
+  ([`1420a6b`](https://github.com/datapointchris/ypl/commit/1420a6b845eae777e5e2b3b97a7af4450487abba))
+
+It printed thirty-nine commands in six panels, which is the answer to "what can this do" — not the
+  question anyone types a bare command to ask. Now it says whether you are signed in, when it last
+  synced, how many playlists are here, and the one thing to run next.
+
+One line rather than a menu, because every state has exactly one sensible answer and offering the
+  others is what turns a first run into reading. On a machine that has never been set up that line
+  is `ypl auth --browser safari`, which with `ypl sync` is the whole setup.
+
+This departs from the fleet's no-args-shows-help rule in `~/dev/standards/cli-design.md`, under the
+  override that rule already carries for a tool whose identity is one read-only action: the glance
+  takes no options of its own, writes nothing, and `--help` still answers what it used to. Exit 0
+  rather than 2, because it ran and answered. The test records the departure and the reasoning
+  rather than deleting the rule it breaks.
+
+- **cli**: Cut the surface to what earns its place
+  ([`38ab5e6`](https://github.com/datapointchris/ypl/commit/38ab5e6948814a43a1e61e96e7a329652392fc4d))
+
+Twelve commands go. Each was either a second way to do something the tool already does, or a verb
+  acting on state you could not see in the command.
+
+`playlists urls` becomes `playlists show --urls`, which is the same read with the same --sort and
+  one fewer command to know about. `enrich` was the tail of every sync already. `config
+  init|example|path` wrote and located a file that is hand-edited and optional; `config show` says
+  what is in effect, which is the only one of the four anybody needed.
+
+`playlists promote|demote` are a field. A playlist stays here by carrying `#YPL-SYNCED:no` in its
+  file, and the file is the whole store — so changing your mind is an edit to the thing itself
+  rather than a pair of commands that reach in and set it.
+
+`use`, `drop`, `later` and `sooner` were built on a remembered current playlist, which is why their
+  names say nothing: `later` is `playlists order` with an invisible target and `drop` is `playlists
+  remove` with one. The pointer goes with them, and so does everything that existed to serve it —
+  the completion helper, the current-playlist resolver, and the state file.
+
+`plays add` stays, against the plan, because deleting it leaves `history` with no caller at all:
+  `plays list` would be permanently empty and `ypl next` would rank on nothing. It is the write half
+  of the play history and the `on_log` hook `menu next` is documented against, not spare surface.
+
+Also removed the code left with no callers — `set_synced`, `move_entry`, `config.write_example` and
+  its template — and the help text throughout that still named commands that no longer exist.
+
+- **cli**: Sync is the only command that reaches YouTube
+  ([`605eec8`](https://github.com/datapointchris/ypl/commit/605eec88a3d42cbd5ebbceec87ec5d30176ee895))
+
+`remote pull`, `remote plan` and `remote apply` were the same loop `ypl sync` already runs, driven
+  by hand in a fixed order. They are gone, and with them the `remote` group — `auth` moves to the
+  root, which is where the two-command setup was always meant to be: `ypl auth --browser safari`,
+  then `ypl sync`.
+
+What `plan` answered moves into `ypl status`, and costs nothing to answer there. The membership half
+  of a push is the local file against the recorded base, both of which are files here, so `status`
+  now says what each playlist would send rather than only naming it. `plan` spent a request per
+  playlist to learn the same counts plus whether YouTube had moved underneath them, and staleness is
+  the sync's business — the sync is what settles it.
+
+Collapsing pull into apply also changes an outcome rather than preserving it. A playlist YouTube had
+  changed used to be refused, and told you to run the other command; now the reconcile happens first
+  and the push sends what the merge settled. Nothing is ever pushed against a base the run has not
+  read.
+
+The suite loses a third of its tests. Sixty-one of them existed only once a whole sync was stood up
+  — an account feed, a mirror, a fake backend, a timer and a lock, so that one invocation could be
+  asserted on. They tested the wiring rather than the behaviour, and the behaviour is covered where
+  it lives.
+
+And a guarantee they were quietly breaking: no test may start yt-dlp, mpv or a service manager. Once
+  sync became the only way to drive a reconcile, tests that had stubbed the playlist reads still
+  left `fetch_video` real, so the enrich tail at the end of every run went to YouTube on the
+  signed-in account, unthrottled — the suite disables the pacing. tests/conftest.py refuses those
+  processes by name now, so it fails loudly rather than making the request.
+
+BREAKING CHANGE: `ypl remote auth` is now `ypl auth`, and `ypl remote pull|plan|apply` are gone —
+  `ypl sync` does all three. `ypl status --json` carries objects in `pending_push` rather than
+  names.
+
+- **remote**: Read a whole playlist, however many videos it holds
+  ([`4fe5fcd`](https://github.com/datapointchris/ypl/commit/4fe5fcd198695ba6557f6a7de7b0b10e1263f290))
+
+Reads stopped at the first hundred slots, so every playlist bigger than that failed rather than
+  sync. WSC is 960 videos; it now reads 960, each with its setVideoId handle.
+
+Three things were wrong, and each failed by answering 200 with no items rather than by erroring,
+  which is why they took so long to separate:
+
+- `browse` needs `params: wgYCCAA=` alongside `browseId`. Without it the call returns page furniture
+  and no videos at all, which is what made a page scrape look like the only way to read a playlist.
+  The same value asks for unavailable videos to be included — one that has gone private is still a
+  slot, and omitting it reads to the merge as a deletion. - A continuation's `clickTracking` goes in
+  the request root beside `continuation`, not inside `context`, and it must be the tracking of the
+  same command that carried the token. - The client version and visitor id cannot be constants.
+  YouTube ships a version most days and the visitor id is per-session, so both are read from ytcfg
+  on one page load per backend.
+
+The page scrape goes with them: one `browse` call now returns the first hundred slots and the token
+  for the rest.
+
+A missing page id is recovered from the browser's own DELEGATED_SESSION_ID during that bootstrap.
+  Not sending one is not an error either — it is another 200 with no videos — and the stored one had
+  been silently cleared by an older build on the sync timer, which is what hid the real cause for
+  hours. A page id that was chosen at sign-in still wins over the browser's selection.
+
+Verified against the account: create, add, read back with handles, move, remove, rename and delete
+  all succeed on a scratch playlist, and seven mirrored playlists read to exactly their mirrored
+  counts.
+
+### Refactoring
+
+- **sync**: Delete the privacy subsystem
+  ([`30c4f86`](https://github.com/datapointchris/ypl/commit/30c4f86ed9cf6fe4aec35ad549df0954b50e43f2))
+
+Privacy was never what stood between this tool and the playlists it could not write to. A browse for
+  a non-public playlist came back with no contents — for its owner, with a live session — and that
+  was read as YouTube refusing to serve it. The cause was the identity every request carried:
+  reading as the channel rather than as the Google account behind it returns those playlists in
+  full, with a handle on every slot.
+
+Twenty-three of forty-two playlists were written off as permanently read-only on that misreading,
+  and a subsystem grew to keep them out of adopting, reconciling and pushing. All of it comes out:
+  not_public, the withheld list and its report, the availability field and its yt-dlp parse, and the
+  three filter sites in the work queue.
+
+New playlists are still created private. Nothing else here reads, reports or changes who can see a
+  playlist.
+
+BREAKING CHANGE: `ypl sync --json` no longer carries a `withheld` key, and `ypl status` no longer
+  prints a `Not public` row.
+
+- **sync**: Every playlist YouTube holds is a file here
+  ([`68a0e20`](https://github.com/datapointchris/ypl/commit/68a0e20e439c1557254091787b62bbd3777d3edd))
+
+Adopting was an opt-in step guarding a decision nobody wanted to make. One sync, two stores, no
+  opt-in: the sweep writes a file for every mirrored playlist that has none, and changes flow both
+  ways from then on.
+
+Ownership stops being a guess. It decided which playlists to adopt by comparing the account name
+  against the playlist's channel, and the two reads never agreed — the account menu says `Chris
+  Birch` for a channel called `iChrisBirch` — so every playlist this account owns was judged to be
+  somebody else's. It is a channel id match now, read once per run off the account's own Liked
+  videos, which is the same free request path everything else uses.
+
+What ownership decides is no longer whether a file is written but whether it is synced. A playlist
+  on someone else's channel gets `#YPL-SYNCED:no` at the moment its file is created, and is built
+  from the mirror rather than the write backend, with no base and no push to prepare. A rule applied
+  where the file is made cannot leave a file quietly queuing pushes that will be refused.
+
+The declined list goes with it. It existed because sync would re-adopt a playlist deleted here, and
+  it recorded an intention to have a playlist there but not here. That state no longer exists:
+  deleting is deleting, and a file that vanishes on its own is a playlist missing its file, which
+  the next sync writes again.
+
+BREAKING CHANGE: `ypl remote adopt` is gone — `ypl sync` does it for every playlist, every run. `ypl
+  sync --json` reports `bound` where it reported `adopted`, `ypl status --json` no longer carries
+  `declined`, and $XDG_DATA_HOME/ypl/declined.json is obsolete and can be deleted.
+
+### Breaking Changes
+
+- **sync**: `ypl remote adopt` is gone — `ypl sync` does it for every playlist, every run. `ypl sync
+  --json` reports `bound` where it reported `adopted`, `ypl status --json` no longer carries
+  `declined`, and $XDG_DATA_HOME/ypl/declined.json is obsolete and can be deleted.
+
+
 ## v1.0.0 (2026-08-06)
 
 ### Bug Fixes
