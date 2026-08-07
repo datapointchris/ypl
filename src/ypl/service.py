@@ -672,6 +672,14 @@ def bind_remote_playlist(
             # bound and can never be pushed, so refuse before anything is
             # written.
             raise BindError(f'{playlist.title} read back with no slot handles — this session is not signed in')
+        mirrored = mirrored_video_ids(connection, playlist.identifier)
+        if not items and mirrored:
+            # The other shape a bad read takes, and the one that left two empty
+            # files behind: the call answers with the page and no videos in it.
+            # An empty list is indistinguishable from a playlist that really is
+            # empty until you ask the mirror, which was read minutes ago and
+            # costs nothing to consult — so it is what decides.
+            raise BindError(f'{playlist.title} read back empty while the mirror holds {len(mirrored)} videos — refusing a bad read')
         video_ids = [item.video_id for item in items]
     else:
         video_ids = mirrored_video_ids(connection, playlist.identifier)

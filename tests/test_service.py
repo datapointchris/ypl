@@ -536,3 +536,35 @@ def test_a_mirrored_playlist_with_no_known_owner_is_left_alone():
 
     assert service.demote_unowned_playlists(account) == []
     assert local.load(local.path_for('Chill Out')).synced is True
+
+
+class EmptyReadBackend:
+    """A write client that answers with the page and no videos in it."""
+
+    def playlist_items(self, playlist_id):
+        return []
+
+
+def test_a_write_read_that_comes_back_empty_is_refused_when_the_mirror_holds_videos(connection, stub_remote):
+    """What left two playlists as header-only files that could not be played.
+
+    An empty read passed the handle check vacuously — there were no handles for
+    it to fault — and wrote a file that looked bound and held nothing.
+    """
+    stub_remote(fetched_playlist=playlist(video('v1'), video('v2')))
+    service.sync_playlist(connection, 'PL1')
+    candidate = service.ResolvedPlaylist(kind=service.REMOTE, title='Deep Night', identifier='PL1')
+
+    with pytest.raises(service.BindError):
+        service.bind_remote_playlist(connection, candidate, EmptyReadBackend())
+    assert not local.path_for('Deep Night').exists()
+
+
+def test_a_playlist_that_really_is_empty_still_binds(connection, stub_remote):
+    """The mirror is what tells the two apart, and it agrees here."""
+    stub_remote(fetched_playlist=playlist(playlist_id='PL1'))
+    service.sync_playlist(connection, 'PL1')
+    candidate = service.ResolvedPlaylist(kind=service.REMOTE, title='Deep Night', identifier='PL1')
+
+    bound = service.bind_remote_playlist(connection, candidate, EmptyReadBackend())
+    assert bound.video_ids == []
