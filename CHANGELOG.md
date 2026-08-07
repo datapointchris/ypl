@@ -1,6 +1,52 @@
 # CHANGELOG
 
 
+## v2.1.0 (2026-08-07)
+
+### Code Style
+
+- Import datetime as a module, not its names
+  ([`3b09363`](https://github.com/datapointchris/ypl/commit/3b093633859783fc1b41118ff0ffc180d1410cd5))
+
+`from datetime import datetime` leaves a file where `datetime` means a class in one place and a
+  module in another, and every later name has to be imported separately. `dt.datetime.now(dt.UTC)`
+  says which is which at the use site.
+
+Now a fleet rule in ~/dev/standards/python.md.
+
+### Features
+
+- **sync**: Drain the backlog, and say in status how long that takes
+  ([`d78dceb`](https://github.com/datapointchris/ypl/commit/d78dceba18500409b20d6bcf786f285096a5f42e))
+
+Three things, one goal: a first library finishes in hours rather than days, and the command that
+  watches it says so.
+
+The timer's run no longer stops at a clock. `StartInterval` counts from when a run exits, so a
+  15-minute budget on a 30-minute timer worked a third of the wall clock — measured on this account
+  at 45 minutes between runs, 45 videos enriched in each, and 4,327 left to go, which is three days.
+  Nothing was protecting anything: the throttle is a rate and holds however long a run lasts, and
+  the write path has its own request ceiling. Foreground runs keep `sync_minutes`, because somebody
+  is waiting on those; `background_sync_hours` puts a backstop back for a machine where a run that
+  will not finish is the worse failure. The timer's unit gains `--background`, which `ensure`
+  already compares, so every machine picks it up on its next sync without reinstalling anything.
+
+Cookies are read once a run instead of once a video. `--cookies-from-browser` decrypts the whole
+  store on every yt-dlp call: 11.6s a video against 5.6s with a jar exported once and filtered to
+  youtube.com, identical metadata. Handing over the unfiltered 1.3 MB jar was still 11.1s, so the
+  filter is half of it. The jar is 0600 in a temporary directory that dies with the run, and a
+  browser that will not export falls back to being named.
+
+`ypl status` answers what it could not. What is running now and for how long, when the next run is
+  due, how far through the tracklists the library is against the total rather than as a bare
+  backlog, the rate measured across the gaps rather than inside the runs, and when it will be done.
+  `55 unreadable` now says it means deleted and private videos that will never be asked about again.
+
+Two bugs found on the way: `runlock` opened its file for writing to *check* the lock, and truncating
+  stamps it — so every `ypl status` reset the start time of the run it was reporting on, and a
+  second run turned away reset it too.
+
+
 ## v2.0.2 (2026-08-07)
 
 ### Bug Fixes
