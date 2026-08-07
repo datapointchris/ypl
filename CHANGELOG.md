@@ -1,6 +1,30 @@
 # CHANGELOG
 
 
+## v2.0.1 (2026-08-07)
+
+### Bug Fixes
+
+- **sync**: Unsync playlists another channel owns
+  ([`2163bf8`](https://github.com/datapointchris/ypl/commit/2163bf8a244a8e5f8426c6a332d05aabef7900d9))
+
+Two playlists saved from other channels were bound before ownership was consulted, so they carried
+  #YPL-SYNCED:yes. Every run queued a reconcile against them, and the write client cannot read a
+  playlist the account does not own — YouTube answers with no video list. The same two failures had
+  been logged every half hour since, and no amount of syncing cleared them.
+
+The mirror sweep already knows who owns each playlist, so the flag is corrected from what it just
+  read, before any work is queued and at no request cost. Demotion needs a positive answer on both
+  ids: owned_by is false for an unknown account channel exactly as it is for a genuinely foreign
+  one, and trusting it there would unsync the whole library on a run that could not work out who we
+  are.
+
+### Chores
+
+- **lint**: Disable SC1091/SC1090 from the forge toolchain
+  ([`140f5a6`](https://github.com/datapointchris/ypl/commit/140f5a682ccd2d2c31a2b83c48fa7e7c54b21ea4))
+
+
 ## v2.0.0 (2026-08-07)
 
 ### Bug Fixes
