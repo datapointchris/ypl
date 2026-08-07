@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## v2.0.2 (2026-08-07)
+
+### Bug Fixes
+
+- **sync**: Refuse a bind that read back empty
+  ([`c2bcde1`](https://github.com/datapointchris/ypl/commit/c2bcde11fc5bcdb91ce99bb8d50aeb5b08969f11))
+
+The handle check only fires when there are handles to fault, so a write read answering with the page
+  and no videos in it passed vacuously and wrote a file that looked bound and held nothing. That is
+  how Understanding Trauma and Design Patterns ended up as six lines of header with no videos under
+  them — bound, unplayable, and never refilled.
+
+An empty list on its own cannot be told from a playlist that really is empty. The mirror can tell
+  them apart, it was read minutes earlier in the same run, and consulting it costs no request, so it
+  is what decides.
+
+
 ## v2.0.1 (2026-08-07)
 
 ### Bug Fixes
