@@ -23,12 +23,11 @@ knows the handles it needs before it starts, and re-reads to confirm them
 rather than to discover them.
 """
 
+import datetime as dt
 import json
 import os
 from dataclasses import dataclass
 from dataclasses import field
-from datetime import UTC
-from datetime import datetime
 from pathlib import Path
 
 from ypl import paths
@@ -95,7 +94,7 @@ class Base:
 
 
 def now_ts() -> str:
-    return datetime.now(UTC).isoformat(timespec='seconds')
+    return dt.datetime.now(dt.UTC).isoformat(timespec='seconds')
 
 
 def path_for(slug: str) -> Path:

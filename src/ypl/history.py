@@ -12,10 +12,9 @@ end — the shape least likely to lose earlier entries when two machines both
 append.
 """
 
+import datetime as dt
 import json
 from dataclasses import dataclass
-from datetime import UTC
-from datetime import datetime
 
 from ypl import paths
 
@@ -27,7 +26,7 @@ class Play:
 
 
 def now_ts() -> str:
-    return datetime.now(UTC).isoformat(timespec='seconds')
+    return dt.datetime.now(dt.UTC).isoformat(timespec='seconds')
 
 
 def record(video_id: str, played_ts: str | None = None) -> Play:
