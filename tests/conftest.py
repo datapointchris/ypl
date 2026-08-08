@@ -15,6 +15,7 @@ to be in place.
 """
 
 import subprocess
+from pathlib import PurePath
 
 import pytest
 
@@ -37,8 +38,18 @@ def no_subprocesses(monkeypatch):
 
     def guard(real):
         def checked(command, *args, **kwargs):
-            wanted = ' '.join(str(part) for part in command) if isinstance(command, list | tuple) else str(command)
-            if any(binary in wanted for binary in FORBIDDEN):
+            parts = list(command) if isinstance(command, list | tuple) else [str(command)]
+            wanted = ' '.join(str(part) for part in parts)
+            # Match the executable, never the whole command line. Every call site
+            # here puts the binary at argv[0] (`[binary_path(), *arguments]`),
+            # while the rest of the line carries temp paths the suite does not
+            # control — and a substring test against those is a coin flip:
+            # mkdtemp produced /tmp/tmpv3_xagop/, in which "tmpv3" contains
+            # "mpv", so an editor test failed as if it had launched a video
+            # player. Roughly one run in sixty, which reads as a broken commit
+            # rather than a broken guard.
+            executable = PurePath(parts[0]).name if parts else ''
+            if executable in FORBIDDEN:
                 raise AssertionError(
                     f'a test tried to run {wanted}\n'
                     'Stub the function that runs it — nothing in this suite may reach YouTube or this machine.'
