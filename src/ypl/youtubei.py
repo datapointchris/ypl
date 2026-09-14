@@ -30,7 +30,7 @@ import re
 import time
 from typing import Any
 
-import httpx
+import httpx2
 
 from ypl.remote import CREATE_INTERVAL_SECONDS
 from ypl.remote import DEFAULT_PRIVACY
@@ -83,7 +83,7 @@ STATUS_SUCCEEDED = 'STATUS_SUCCEEDED'
 # private is still a slot, and omitting it reads as a deletion.
 PLAYLIST_ITEMS_PARAMS = 'wgYCCAA='
 
-# Sent because youtubei answers a non-browser agent differently, and httpx
+# Sent because youtubei answers a non-browser agent differently, and httpx2
 # would otherwise announce itself as one.
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15'
 
@@ -383,7 +383,7 @@ class YouTubeiBackend:
         page_id: str = '',
         throttle: Throttle | None = None,
         create_throttle: Throttle | None = None,
-        client: httpx.Client | None = None,
+        client: httpx2.Client | None = None,
         max_requests: int = MAX_REQUESTS_PER_RUN,
     ):
         if not cookies.get(LOGIN_COOKIE):
@@ -403,7 +403,7 @@ class YouTubeiBackend:
         # and sharing one floor would either crawl every add or outrun the one
         # limit we know about.
         self.create_throttle = create_throttle or Throttle(CREATE_INTERVAL_SECONDS)
-        self.client = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+        self.client = client or httpx2.Client(timeout=REQUEST_TIMEOUT_SECONDS)
 
     def spend(self) -> None:
         """Account for one request, and refuse to make it past the ceiling.
@@ -437,7 +437,7 @@ class YouTubeiBackend:
         self.throttle.wait()
         try:
             response = self.client.get(ORIGIN, headers=page_headers(self.cookies), follow_redirects=True)
-        except httpx.HTTPError:
+        except httpx2.HTTPError:
             return
         if response.status_code >= 400:
             return
@@ -468,7 +468,7 @@ class YouTubeiBackend:
                 headers=request_headers(self.cookies, self.page_id, self.visitor_id),
                 params={'prettyPrint': 'false'},
             )
-        except httpx.HTTPError as error:
+        except httpx2.HTTPError as error:
             raise RemoteError(f'could not reach YouTube: {error}') from error
 
         if response.status_code == 429:

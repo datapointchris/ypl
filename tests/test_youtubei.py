@@ -1,6 +1,6 @@
 import json
 
-import httpx
+import httpx2
 import pytest
 
 from ypl import youtubei
@@ -98,7 +98,7 @@ def bootstrap_page(visitor='VISITOR', version='2.20260806.01.00'):
 
 
 class Recorder:
-    """An httpx client that answers from a script and keeps what it was sent."""
+    """An httpx2 client that answers from a script and keeps what it was sent."""
 
     def __init__(self, responses, page=None):
         self.responses = list(responses)
@@ -108,12 +108,12 @@ class Recorder:
 
     def get(self, url, params=None, headers=None, follow_redirects=False):
         self.gets.append({'url': url, 'params': params, 'headers': headers})
-        return httpx.Response(200, text=self.page, request=httpx.Request('GET', url))
+        return httpx2.Response(200, text=self.page, request=httpx2.Request('GET', url))
 
     def post(self, url, json=None, headers=None, params=None):
         self.requests.append({'url': url, 'body': json, 'headers': headers})
         status, payload = self.responses.pop(0) if self.responses else (200, {'status': youtubei.STATUS_SUCCEEDED})
-        return httpx.Response(status, json=payload, request=httpx.Request('POST', url))
+        return httpx2.Response(status, json=payload, request=httpx2.Request('POST', url))
 
 
 def backend(responses=(), page_id='', cookies=None, page=None):
@@ -454,10 +454,10 @@ def test_every_request_carries_the_client_context():
 def test_a_network_failure_is_a_remote_error_not_a_traceback():
     class Broken:
         def get(self, *args, **kwargs):
-            raise httpx.ConnectError('no route to host')
+            raise httpx2.ConnectError('no route to host')
 
         def post(self, *args, **kwargs):
-            raise httpx.ConnectError('no route to host')
+            raise httpx2.ConnectError('no route to host')
 
     broken = youtubei.YouTubeiBackend(dict(SIGNED_IN), throttle=Throttle(0), client=Broken())
     with pytest.raises(RemoteError, match='could not reach YouTube'):
@@ -467,10 +467,10 @@ def test_a_network_failure_is_a_remote_error_not_a_traceback():
 def test_a_response_that_is_not_json_says_so():
     class Garbage:
         def get(self, url, **kwargs):
-            return httpx.Response(200, text='', request=httpx.Request('GET', url))
+            return httpx2.Response(200, text='', request=httpx2.Request('GET', url))
 
         def post(self, url, **kwargs):
-            return httpx.Response(200, text='<!doctype html>', request=httpx.Request('POST', url))
+            return httpx2.Response(200, text='<!doctype html>', request=httpx2.Request('POST', url))
 
     with pytest.raises(youtubei.YouTubeiError):
         youtubei.YouTubeiBackend(dict(SIGNED_IN), throttle=Throttle(0), client=Garbage()).rename_playlist('PL1', 'Monday')
