@@ -102,8 +102,8 @@ func routes() *http.ServeMux {
 	return mux
 }
 
-// ok answers a probe. The service has no dependency to wait on, so it is live
-// and ready as soon as its listener is bound.
+// ok answers a probe. The database is open and migrated before the listener
+// binds, so the service is live and ready as soon as it is bound.
 func ok(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))

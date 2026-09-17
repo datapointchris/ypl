@@ -14,6 +14,10 @@ import (
 	"github.com/datapointchris/ypl/api/store/generated"
 )
 
+// ErrPlaylistNotInMirror is the refusal for a playlist id the mirror holds no
+// playlist under. Nothing has been written when it is returned.
+var ErrPlaylistNotInMirror = errors.New("the mirror holds no such playlist")
+
 // Counts is what one import wrote.
 type Counts struct {
 	Videos         int
@@ -22,9 +26,9 @@ type Counts struct {
 }
 
 // Import copies every video in playlistIDs, with its tracks and any recorded
-// enrich failure, from source into st inside one transaction. Running it again
-// overwrites the same rows. A playlist id the source does not hold is an error,
-// so a mistyped id cannot shrink the import unnoticed.
+// enrich failure, from source into st inside one transaction. A video in
+// several of the playlists is copied once. Running it again overwrites the
+// same rows with what the mirror holds then.
 func Import(ctx context.Context, source *sql.DB, st *store.Store, playlistIDs []string) (Counts, error) {
 	videoIDs, err := videosIn(ctx, source, playlistIDs)
 	if err != nil {
@@ -32,9 +36,9 @@ func Import(ctx context.Context, source *sql.DB, st *store.Store, playlistIDs []
 	}
 
 	var counts Counts
-	err = st.InTx(ctx, func(q *generated.Queries) error {
+	err = st.InTx(ctx, func(tx *store.Tx) error {
 		for _, videoID := range videoIDs {
-			tracks, failed, err := copyVideo(ctx, source, q, videoID)
+			tracks, failed, err := copyVideo(ctx, source, tx, videoID)
 			if err != nil {
 				return err
 			}
@@ -62,7 +66,7 @@ func videosIn(ctx context.Context, source *sql.DB, playlistIDs []string) ([]stri
 			return nil, fmt.Errorf("look up playlist %s: %w", playlistID, err)
 		}
 		if exists == 0 {
-			return nil, fmt.Errorf("the mirror holds no playlist %s", playlistID)
+			return nil, fmt.Errorf("%w: %s", ErrPlaylistNotInMirror, playlistID)
 		}
 
 		rows, err := source.QueryContext(ctx, "SELECT DISTINCT video_id FROM playlist_videos WHERE playlist_id = ?", playlistID)
@@ -93,15 +97,21 @@ func videosIn(ctx context.Context, source *sql.DB, playlistIDs []string) ([]stri
 // copyVideo writes one video, replaces its tracklist, and carries over its
 // enrich failure. It reports how many tracks it wrote and whether a failure was
 // recorded.
-func copyVideo(ctx context.Context, source *sql.DB, q *generated.Queries, videoID string) (int, bool, error) {
-	video := generated.UpsertVideoParams{VideoID: videoID}
+func copyVideo(ctx context.Context, source *sql.DB, tx *store.Tx, videoID string) (int, bool, error) {
+	video := generated.ImportVideoParams{VideoID: videoID}
+	var description string
 	var uploadDate sql.NullString
 	err := source.QueryRowContext(ctx, `
 		SELECT title, channel, duration_seconds, description, upload_date, is_unavailable, enriched_ts
 		FROM videos WHERE video_id = ?`, videoID,
-	).Scan(&video.Title, &video.ChannelTitle, &video.DurationSeconds, &video.Description, &uploadDate, &video.IsUnavailable, &video.EnrichedTs)
+	).Scan(&video.Title, &video.ChannelTitle, &video.DurationSeconds, &description, &uploadDate, &video.IsUnavailable, &video.EnrichedTs)
 	if err != nil {
 		return 0, false, fmt.Errorf("read video %s: %w", videoID, err)
+	}
+	// The mirror stores '' for a description it has not read. Only an enriched
+	// video's description is a reading.
+	if video.EnrichedTs.Valid {
+		video.Description = sql.NullString{String: description, Valid: true}
 	}
 	if uploadDate.Valid {
 		iso, err := isoDate(uploadDate.String)
@@ -110,7 +120,7 @@ func copyVideo(ctx context.Context, source *sql.DB, q *generated.Queries, videoI
 		}
 		video.UploadDate = sql.NullString{String: iso, Valid: true}
 	}
-	if err := q.UpsertVideo(ctx, video); err != nil {
+	if err := tx.ImportVideo(ctx, video); err != nil {
 		return 0, false, fmt.Errorf("write video %s: %w", videoID, err)
 	}
 
@@ -118,7 +128,7 @@ func copyVideo(ctx context.Context, source *sql.DB, q *generated.Queries, videoI
 	if err != nil {
 		return 0, false, err
 	}
-	if err := store.ReplaceTracks(ctx, q, videoID, tracks); err != nil {
+	if err := tx.ReplaceTracks(ctx, videoID, tracks); err != nil {
 		return 0, false, err
 	}
 
@@ -131,7 +141,7 @@ func copyVideo(ctx context.Context, source *sql.DB, q *generated.Queries, videoI
 	case err != nil:
 		return 0, false, fmt.Errorf("read the enrich failure of %s: %w", videoID, err)
 	}
-	if err := q.UpsertEnrichFailure(ctx, failure); err != nil {
+	if err := tx.UpsertEnrichFailure(ctx, failure); err != nil {
 		return 0, false, fmt.Errorf("write the enrich failure of %s: %w", videoID, err)
 	}
 	return len(tracks), true, nil

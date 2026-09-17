@@ -9,14 +9,15 @@ CREATE TABLE track_sources (
 );
 
 -- Keyed by YouTube's own video id, which is immutable and is the id every
--- request and response names. description is '' until enrichment has read the
--- video, which enriched_ts records. upload_date is an ISO date.
+-- request and response names. description, upload_date and enriched_ts are
+-- NULL until enrichment has read the video, so a NULL description is "not read"
+-- and '' is "read, and empty". upload_date is an ISO date.
 CREATE TABLE videos (
     video_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     channel_title TEXT NOT NULL,
     duration_seconds INTEGER,
-    description TEXT NOT NULL DEFAULT '',
+    description TEXT,
     upload_date TEXT,
     is_unavailable BOOLEAN NOT NULL DEFAULT 0 CHECK (is_unavailable IN (0, 1)),
     enriched_ts TEXT

@@ -53,6 +53,22 @@ func (q *Queries) DeleteTracks(ctx context.Context, videoID string) error {
 	return err
 }
 
+const getEnrichFailure = `-- name: GetEnrichFailure :one
+SELECT
+    video_id,
+    attempted_ts,
+    reason
+FROM enrich_failures
+WHERE video_id = ?
+`
+
+func (q *Queries) GetEnrichFailure(ctx context.Context, videoID string) (EnrichFailure, error) {
+	row := q.db.QueryRowContext(ctx, getEnrichFailure, videoID)
+	var i EnrichFailure
+	err := row.Scan(&i.VideoID, &i.AttemptedTs, &i.Reason)
+	return i, err
+}
+
 const getVideo = `-- name: GetVideo :one
 SELECT
     video_id,
@@ -81,6 +97,48 @@ func (q *Queries) GetVideo(ctx context.Context, videoID string) (Video, error) {
 		&i.EnrichedTs,
 	)
 	return i, err
+}
+
+const importVideo = `-- name: ImportVideo :exec
+INSERT INTO videos (
+    video_id, title, channel_title, duration_seconds, description, upload_date, is_unavailable, enriched_ts
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (video_id) DO UPDATE SET
+    title = excluded.title,
+    channel_title = excluded.channel_title,
+    duration_seconds = excluded.duration_seconds,
+    description = excluded.description,
+    upload_date = excluded.upload_date,
+    is_unavailable = excluded.is_unavailable,
+    enriched_ts = excluded.enriched_ts
+`
+
+type ImportVideoParams struct {
+	VideoID         string
+	Title           string
+	ChannelTitle    string
+	DurationSeconds sql.NullInt64
+	Description     sql.NullString
+	UploadDate      sql.NullString
+	IsUnavailable   bool
+	EnrichedTs      sql.NullString
+}
+
+// Writes every column, so it is only for a copy of a whole row. A caller holding
+// some of a video's columns would overwrite the rest.
+func (q *Queries) ImportVideo(ctx context.Context, arg ImportVideoParams) error {
+	_, err := q.db.ExecContext(ctx, importVideo,
+		arg.VideoID,
+		arg.Title,
+		arg.ChannelTitle,
+		arg.DurationSeconds,
+		arg.Description,
+		arg.UploadDate,
+		arg.IsUnavailable,
+		arg.EnrichedTs,
+	)
+	return err
 }
 
 const insertTrack = `-- name: InsertTrack :exec
@@ -197,45 +255,5 @@ type UpsertTrackSourceParams struct {
 
 func (q *Queries) UpsertTrackSource(ctx context.Context, arg UpsertTrackSourceParams) error {
 	_, err := q.db.ExecContext(ctx, upsertTrackSource, arg.Source, arg.Label, arg.Description)
-	return err
-}
-
-const upsertVideo = `-- name: UpsertVideo :exec
-INSERT INTO videos (
-    video_id, title, channel_title, duration_seconds, description, upload_date, is_unavailable, enriched_ts
-)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (video_id) DO UPDATE SET
-    title = excluded.title,
-    channel_title = excluded.channel_title,
-    duration_seconds = excluded.duration_seconds,
-    description = excluded.description,
-    upload_date = excluded.upload_date,
-    is_unavailable = excluded.is_unavailable,
-    enriched_ts = excluded.enriched_ts
-`
-
-type UpsertVideoParams struct {
-	VideoID         string
-	Title           string
-	ChannelTitle    string
-	DurationSeconds sql.NullInt64
-	Description     string
-	UploadDate      sql.NullString
-	IsUnavailable   bool
-	EnrichedTs      sql.NullString
-}
-
-func (q *Queries) UpsertVideo(ctx context.Context, arg UpsertVideoParams) error {
-	_, err := q.db.ExecContext(ctx, upsertVideo,
-		arg.VideoID,
-		arg.Title,
-		arg.ChannelTitle,
-		arg.DurationSeconds,
-		arg.Description,
-		arg.UploadDate,
-		arg.IsUnavailable,
-		arg.EnrichedTs,
-	)
 	return err
 }

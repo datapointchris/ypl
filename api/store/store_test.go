@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -29,16 +30,41 @@ func countSources(t *testing.T, st *Store) int {
 	return n
 }
 
-func TestPathPrefersTheEnvironmentThenStateHome(t *testing.T) {
+func countVideos(t *testing.T, st *Store) int64 {
+	t.Helper()
+	n, err := st.Queries.CountVideos(context.Background())
+	if err != nil {
+		t.Fatalf("count videos: %v", err)
+	}
+	return n
+}
+
+func TestPathPrefersTheEnvironmentThenDataHome(t *testing.T) {
 	t.Setenv("DATABASE_PATH", "/data/ypl.db")
 	if got, err := Path(); err != nil || got != "/data/ypl.db" {
 		t.Fatalf("Path with DATABASE_PATH set = %q, %v", got, err)
 	}
 
 	t.Setenv("DATABASE_PATH", "")
-	t.Setenv("XDG_STATE_HOME", "/state")
-	if got, err := Path(); err != nil || got != "/state/ypl/api.db" {
-		t.Fatalf("Path under XDG_STATE_HOME = %q, %v", got, err)
+	t.Setenv("XDG_DATA_HOME", "/share")
+	if got, err := Path(); err != nil || got != "/share/ypl/api.db" {
+		t.Fatalf("Path under XDG_DATA_HOME = %q, %v", got, err)
+	}
+}
+
+func TestARelativePathOpensAtThatPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	for _, path := range []string{"api.db", filepath.Join("rel", "api.db")} {
+		st, err := Open(context.Background(), path)
+		if err != nil {
+			t.Fatalf("Open(%q): %v", path, err)
+		}
+		_ = st.Close()
+		if _, err := os.Stat(filepath.Join(dir, path)); err != nil {
+			t.Fatalf("Open(%q) did not create the file at that path: %v", path, err)
+		}
 	}
 }
 
@@ -61,8 +87,8 @@ func TestOpenAppliesMigrationsAndSeedsTheSources(t *testing.T) {
 func TestReopeningAnExistingDatabaseChangesNothing(t *testing.T) {
 	ctx := context.Background()
 	first, path := open(t)
-	if err := first.Queries.UpsertVideo(ctx, video("v1")); err != nil {
-		t.Fatalf("upsert: %v", err)
+	if err := first.Queries.ImportVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("import video: %v", err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -77,8 +103,8 @@ func TestReopeningAnExistingDatabaseChangesNothing(t *testing.T) {
 	if got := countSources(t, again); got != len(trackSources) {
 		t.Fatalf("track sources after reopen = %d, want %d", got, len(trackSources))
 	}
-	if n, err := again.Queries.CountVideos(ctx); err != nil || n != 1 {
-		t.Fatalf("videos after reopen = %d, %v; want 1", n, err)
+	if n := countVideos(t, again); n != 1 {
+		t.Fatalf("videos after reopen = %d, want 1", n)
 	}
 }
 
@@ -117,7 +143,7 @@ func TestEveryPooledConnectionEnforcesForeignKeysInWALMode(t *testing.T) {
 
 func TestATrackNamingAnUnknownVideoIsRefused(t *testing.T) {
 	st, _ := open(t)
-	err := st.Queries.InsertTrack(context.Background(), track("missing", 1))
+	err := st.Queries.InsertTrack(context.Background(), track("missing", 1, "chapter"))
 	if err == nil {
 		t.Fatal("inserted a track for a video the database does not hold")
 	}
@@ -135,21 +161,11 @@ func TestUnavailabilityIsABoolean(t *testing.T) {
 func TestReplaceTracksReplacesTheWholeTracklist(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
-	if err := st.Queries.UpsertVideo(ctx, video("v1")); err != nil {
-		t.Fatalf("upsert: %v", err)
+	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("import video: %v", err)
 	}
-
-	replace := func(tracks ...generated.InsertTrackParams) {
-		t.Helper()
-		err := st.InTx(ctx, func(q *generated.Queries) error {
-			return ReplaceTracks(ctx, q, "v1", tracks)
-		})
-		if err != nil {
-			t.Fatalf("replace: %v", err)
-		}
-	}
-	replace(track("", 1), track("", 2), track("", 3))
-	replace(track("", 1))
+	replace(t, st, track("", 1, "chapter"), track("", 2, "chapter"), track("", 3, "chapter"))
+	replace(t, st, track("", 1, "chapter"))
 
 	tracks, err := st.Queries.ListTracks(ctx, "v1")
 	if err != nil {
@@ -160,33 +176,70 @@ func TestReplaceTracksReplacesTheWholeTracklist(t *testing.T) {
 	}
 }
 
+// A failure partway through a replacement rolls the whole transaction back,
+// so the video keeps the tracklist it had.
+func TestAFailedReplacementKeepsThePreviousTracklist(t *testing.T) {
+	ctx := context.Background()
+	st, _ := open(t)
+	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("import video: %v", err)
+	}
+	replace(t, st, track("", 1, "chapter"), track("", 2, "chapter"))
+
+	err := st.InTx(ctx, func(tx *Tx) error {
+		return tx.ReplaceTracks(ctx, "v1", []generated.InsertTrackParams{track("", 1, "chapter"), track("", 2, "unseeded")})
+	})
+	if err == nil {
+		t.Fatal("replaced a tracklist with a track naming an unseeded source")
+	}
+
+	tracks, err := st.Queries.ListTracks(ctx, "v1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tracks) != 2 {
+		t.Fatalf("tracks after a failed replacement = %d, want the previous 2", len(tracks))
+	}
+}
+
 func TestAFailedTransactionLeavesNothingBehind(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
-	err := st.InTx(ctx, func(q *generated.Queries) error {
-		if err := q.UpsertVideo(ctx, video("v1")); err != nil {
+	err := st.InTx(ctx, func(tx *Tx) error {
+		if err := tx.ImportVideo(ctx, video("v1")); err != nil {
 			return err
 		}
-		return q.InsertTrack(ctx, track("missing", 1))
+		return tx.InsertTrack(ctx, track("missing", 1, "chapter"))
 	})
 	if err == nil {
 		t.Fatal("the transaction committed a track for a missing video")
 	}
-	if n, _ := st.Queries.CountVideos(ctx); n != 0 {
+	if n := countVideos(t, st); n != 0 {
 		t.Fatalf("videos after a rolled-back transaction = %d, want 0", n)
 	}
 }
 
-func video(id string) generated.UpsertVideoParams {
-	return generated.UpsertVideoParams{VideoID: id, Title: "A Mix", ChannelTitle: "A Channel"}
+func replace(t *testing.T, st *Store, tracks ...generated.InsertTrackParams) {
+	t.Helper()
+	ctx := context.Background()
+	err := st.InTx(ctx, func(tx *Tx) error {
+		return tx.ReplaceTracks(ctx, "v1", tracks)
+	})
+	if err != nil {
+		t.Fatalf("replace: %v", err)
+	}
 }
 
-func track(videoID string, position int64) generated.InsertTrackParams {
+func video(id string) generated.ImportVideoParams {
+	return generated.ImportVideoParams{VideoID: id, Title: "A Mix", ChannelTitle: "A Channel"}
+}
+
+func track(videoID string, position int64, source string) generated.InsertTrackParams {
 	return generated.InsertTrackParams{
 		VideoID:  videoID,
 		Position: position,
 		Title:    "A Track",
 		RawText:  "00:00 A Track",
-		Source:   "chapter",
+		Source:   source,
 	}
 }

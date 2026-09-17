@@ -5,7 +5,9 @@ ON CONFLICT (source) DO UPDATE SET
     label = excluded.label,
     description = excluded.description;
 
--- name: UpsertVideo :exec
+-- name: ImportVideo :exec
+-- Writes every column, so it is only for a copy of a whole row. A caller holding
+-- some of a video's columns would overwrite the rest.
 INSERT INTO videos (
     video_id, title, channel_title, duration_seconds, description, upload_date, is_unavailable, enriched_ts
 )
@@ -61,6 +63,14 @@ VALUES (?, ?, ?)
 ON CONFLICT (video_id) DO UPDATE SET
     attempted_ts = excluded.attempted_ts,
     reason = excluded.reason;
+
+-- name: GetEnrichFailure :one
+SELECT
+    video_id,
+    attempted_ts,
+    reason
+FROM enrich_failures
+WHERE video_id = ?;
 
 -- name: CountVideos :one
 SELECT count(*) FROM videos;

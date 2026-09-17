@@ -21,37 +21,54 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// trackSources is the vocabulary tracks.source draws from. It is upserted on
-// every open, so no database is left unable to take a track.
+// trackSources is the vocabulary tracks.source draws from, upserted on every
+// open. It matches the Python tool's seed, so every track a Python mirror can
+// hold has its source here.
 var trackSources = []generated.UpsertTrackSourceParams{
-	{Source: "chapter", Label: "Chapter", Description: "A YouTube chapter marker, with real timestamps"},
+	{Source: "chapter", Label: "Chapter", Description: "YouTube chapter marker, carries real timestamps"},
 	{Source: "description", Label: "Description", Description: "Parsed from the video description"},
+	{Source: "llm", Label: "Claude", Description: "Extracted by Claude from unstructured text"},
+	{Source: "manual", Label: "Manual", Description: "Entered by hand"},
 }
 
 // Store is a database with its migrations applied and its lookups seeded.
 type Store struct {
 	db *sql.DB
 
-	// Queries runs against the connection pool. InTx hands out a copy bound to
-	// one transaction.
+	// Queries runs against the connection pool, one statement at a time. Writes
+	// that have to land together go through InTx.
 	Queries *generated.Queries
 }
 
-// Path is DATABASE_PATH, or api.db in ypl's directory under $XDG_STATE_HOME.
-// The Python tool's mirror is ypl.db in that same directory.
+// Tx is one transaction's queries, with the writes that are only correct
+// inside a transaction.
+type Tx struct {
+	*generated.Queries
+}
+
+// Path is DATABASE_PATH, or api.db in ypl's directory under $XDG_DATA_HOME.
+// The database is data rather than state: the server keeps the only copy of
+// what it stores.
 func Path() (string, error) {
 	if path := os.Getenv("DATABASE_PATH"); path != "" {
 		return path, nil
 	}
-	state := os.Getenv("XDG_STATE_HOME")
-	if state == "" {
+	data := os.Getenv("XDG_DATA_HOME")
+	if data == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("find the state directory: %w", err)
+			return "", fmt.Errorf("find the data directory: %w", err)
 		}
-		state = filepath.Join(home, ".local", "state")
+		data = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(state, "ypl", "api.db"), nil
+	return filepath.Join(data, "ypl", "api.db"), nil
+}
+
+// URI is the file: URI naming path, with query as its parameters. It carries no
+// host, so a relative path stays a path: `file://api.db` would make SQLite read
+// api.db as the URI's authority.
+func URI(path, query string) string {
+	return (&url.URL{Scheme: "file", Path: path, OmitHost: true, RawQuery: query}).String()
 }
 
 // Open opens the database at path, creating it and its directory if needed,
@@ -60,7 +77,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create the database directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", dsn(path))
+	// Pragmas go in the URI because a pragma set with a statement configures
+	// only the pooled connection that ran it. The driver applies these to every
+	// connection as it opens.
+	db, err := sql.Open("sqlite", URI(path, "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -83,12 +103,12 @@ func (s *Store) Close() error {
 
 // InTx runs fn inside one transaction, committing when fn returns nil and
 // rolling back otherwise.
-func (s *Store) InTx(ctx context.Context, fn func(*generated.Queries) error) error {
+func (s *Store) InTx(ctx context.Context, fn func(*Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	if err := fn(s.Queries.WithTx(tx)); err != nil {
+	if err := fn(&Tx{Queries: s.Queries.WithTx(tx)}); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -100,25 +120,17 @@ func (s *Store) InTx(ctx context.Context, fn func(*generated.Queries) error) err
 
 // ReplaceTracks sets a video's tracklist to tracks, removing every track it
 // held before. Each track's VideoID is set from videoID.
-func ReplaceTracks(ctx context.Context, q *generated.Queries, videoID string, tracks []generated.InsertTrackParams) error {
-	if err := q.DeleteTracks(ctx, videoID); err != nil {
+func (tx *Tx) ReplaceTracks(ctx context.Context, videoID string, tracks []generated.InsertTrackParams) error {
+	if err := tx.DeleteTracks(ctx, videoID); err != nil {
 		return fmt.Errorf("delete tracks of %s: %w", videoID, err)
 	}
 	for _, track := range tracks {
 		track.VideoID = videoID
-		if err := q.InsertTrack(ctx, track); err != nil {
-			return fmt.Errorf("insert track %d of %s: %w", track.Position, videoID, err)
+		if err := tx.InsertTrack(ctx, track); err != nil {
+			return fmt.Errorf("insert track %d of %s from source %q: %w", track.Position, videoID, track.Source, err)
 		}
 	}
 	return nil
-}
-
-// dsn names the file and its pragmas together. A pragma set with a statement
-// configures only the pooled connection that ran it, while the driver applies
-// these to every connection as it opens.
-func dsn(path string) string {
-	pragmas := "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
-	return (&url.URL{Scheme: "file", Path: path, RawQuery: pragmas}).String()
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

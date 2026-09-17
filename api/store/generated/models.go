@@ -37,7 +37,7 @@ type Video struct {
 	Title           string
 	ChannelTitle    string
 	DurationSeconds sql.NullInt64
-	Description     string
+	Description     sql.NullString
 	UploadDate      sql.NullString
 	IsUnavailable   bool
 	EnrichedTs      sql.NullString
