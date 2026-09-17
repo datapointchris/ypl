@@ -13,10 +13,9 @@ tasks:
       - task --list
 
   # A worktree is a clean checkout, so everything gitignored is absent. The
-  # Python environment comes back from the lockfile, and .planning is relinked
-  # to wherever the primary checkout points. PRIMARY resolves from any worktree
-  # because they share one git directory, and the link is left alone where
-  # there is nothing to point at.
+  # Python environment comes back from the lockfile. .planning is linked to the
+  # same target as the primary checkout's link, only where nothing is there yet.
+  # PRIMARY resolves from any worktree because they share one git directory.
   setup:
     desc: Make a fresh checkout runnable
     vars:
@@ -24,7 +23,27 @@ tasks:
         sh: git rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||'
     cmds:
       - uv sync --all-extras --dev
-      - '[ -L "{{.PRIMARY}}/.planning" ] && ln -sfn "$(readlink "{{.PRIMARY}}/.planning")" .planning || true'
+      - |
+        target=$(readlink "{{.PRIMARY}}/.planning") || exit 0
+        if [ ! -e .planning ] && [ ! -L .planning ]; then
+          ln -s "$target" .planning
+        elif [ "$(readlink .planning)" != "$target" ]; then
+          echo "warning: .planning already exists and does not link to $target; left as it is" >&2
+        fi
+
+  # The pre-commit hooks against every file: the same hooks, at the same pinned
+  # versions, that a commit runs against the files it stages.
+  lint:
+    desc: Run every pre-commit hook against every file
+    cmds:
+      - pre-commit run --all-files
+
+  test:
+    desc: Test every subsystem
+    cmds:
+      - task: py:test
+      - task: api:test
+      - task: cli:test
 
   # ---------------------------------------------------------------------------
   # Python tool, at the repository root
@@ -34,13 +53,6 @@ tasks:
     desc: Run the Python test suite
     cmds:
       - uv run pytest
-
-  py:lint:
-    desc: Lint, format-check and type-check the Python tool
-    cmds:
-      - uv run ruff check .
-      - uv run ruff format --check .
-      - uv run mypy .
 
   # ---------------------------------------------------------------------------
   # API, module github.com/datapointchris/ypl/api
@@ -64,13 +76,6 @@ tasks:
     cmds:
       - go test ./...
 
-  api:lint:
-    desc: Vet and lint the API
-    dir: api
-    cmds:
-      - go vet ./...
-      - golangci-lint run
-
   # ---------------------------------------------------------------------------
   # CLI, module github.com/datapointchris/ypl/cli
   # ---------------------------------------------------------------------------
@@ -79,35 +84,10 @@ tasks:
     desc: Build the CLI to bin/ypl
     dir: cli
     cmds:
-      - go build -ldflags "-s -w -X github.com/datapointchris/ypl/cli/cmd.version={{.CLI_VERSION}}" -o ../bin/ypl .
+      - go build -ldflags "-s -w -X github.com/datapointchris/ypl/cli/internal/cli.version={{.CLI_VERSION}}" -o ../bin/ypl .
 
   cli:test:
     desc: Run the CLI test suite
     dir: cli
     cmds:
       - go test ./...
-
-  cli:lint:
-    desc: Vet and lint the CLI
-    dir: cli
-    cmds:
-      - go vet ./...
-      - golangci-lint run
-
-  # ---------------------------------------------------------------------------
-  # Every subsystem
-  # ---------------------------------------------------------------------------
-
-  lint:
-    desc: Lint every subsystem
-    cmds:
-      - task: py:lint
-      - task: api:lint
-      - task: cli:lint
-
-  test:
-    desc: Test every subsystem
-    cmds:
-      - task: py:test
-      - task: api:test
-      - task: cli:test
