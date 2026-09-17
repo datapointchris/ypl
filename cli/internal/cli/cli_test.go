@@ -352,6 +352,61 @@ func TestSyncRunsListReadsTheNewestRuns(t *testing.T) {
 	}
 }
 
+// A read that stopped at its limit and a read that reached the end put the same
+// rows on screen, so the one that stopped has to say so and name the flag that
+// reads further.
+func TestATruncatedListSaysSoAndNamesTheFlagThatWidensIt(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		path string
+		body string
+	}{
+		{[]string{"plays", "list", "--limit", "1"}, "/api/v1/plays", `{"data": [` + play(1) + `], "has_more": true}`},
+		{[]string{"sync", "runs", "list", "--limit", "1"}, "/api/v1/sync/runs", `{"data": [` + run(2, "ok") + `], "has_more": true}`},
+	} {
+		f := newFixture(t, serves(map[string]string{c.path: c.body}))
+		got := f.run(c.args...)
+		if got.code != 0 {
+			t.Fatalf("%v exited %d: %s%s", c.args, got.code, got.out, got.err)
+		}
+		if !strings.Contains(got.err, "--limit") {
+			t.Errorf("%v read a truncated page and said %q, want it to name --limit", c.args, got.err)
+		}
+	}
+}
+
+// A complete read says nothing, or the sentence stops meaning anything.
+func TestACompleteListSaysNothingAboutMore(t *testing.T) {
+	f := newFixture(t, serves(map[string]string{
+		"/api/v1/plays": `{"data": [` + play(1) + `], "has_more": false}`,
+	}))
+
+	if got := f.run("plays", "list"); strings.Contains(got.err, "--limit") {
+		t.Fatalf("a complete read named --limit anyway: %q", got.err)
+	}
+}
+
+// A video YouTube will not serve is filtered out of the enrichment queue, so
+// promising a later read tells a reader to wait for something that cannot
+// happen.
+func TestAnUnavailableVideoIsNotPromisedALaterRead(t *testing.T) {
+	gone := `{"id": "u", "title": "Gone", "channel_title": "Four", "duration_seconds": null,
+		"upload_date": null, "is_unavailable": true, "enriched_ts": null, "track_count": 0,
+		"artists": [], "playlists": [], "description": null, "tracks": []}`
+	f := newFixture(t, serves(map[string]string{"/api/v1/videos/u": gone}))
+
+	got := f.run("videos", "show", "u")
+	if got.code != 0 {
+		t.Fatalf("exited %d: %s%s", got.code, got.out, got.err)
+	}
+	if strings.Contains(got.out, "later run") || strings.Contains(got.out, "not read this one yet") {
+		t.Fatalf("an unavailable video was promised a read that cannot happen:\n%s", got.out)
+	}
+	if !strings.Contains(got.out, "will not serve") {
+		t.Fatalf("the reason it has no tracklist is not stated:\n%s", got.out)
+	}
+}
+
 // A consumer writes one filter against a collection, or it writes a filter and
 // a null guard and finds out which it needed the day a read matches nothing.
 func TestAnEmptyCollectionIsAnEmptyListAndNeverNull(t *testing.T) {
