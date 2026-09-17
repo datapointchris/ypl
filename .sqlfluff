@@ -6,7 +6,7 @@
 # terminators.
 rules = ambiguous, references, structure, convention.terminator
 
-# Two rules inside those families are layout opinions too.
+# Three rules inside those families are layout opinions too.
 #
 # RF04 (keywords as identifiers) fails on columns named `name`, `state`, `type`
 # and `action`. It catches nothing unparsable or ambiguous, and satisfying it on
@@ -16,7 +16,11 @@ rules = ambiguous, references, structure, convention.terminator
 # AM04 (unknown result column count) fires on `SELECT *`, which under sqlc is
 # the type-safe form: sqlc reads the schema and generates a struct per query, so
 # the column set is known at build time rather than restated by hand.
-exclude_rules = RF04, AM04
+#
+# ST06 (select target order) wants plain columns before calculations, and counts
+# any CAST as plain, so `CAST(count(x) AS INTEGER)` after `max(y)` fails it. The
+# order of a select list changes nothing a query returns.
+exclude_rules = RF04, AM04, ST06
 
 # Line length is a layout opinion, and generated migrations routinely exceed it.
 max_line_length = 0
@@ -31,3 +35,10 @@ templater = placeholder
 
 [sqlfluff:templater:placeholder]
 param_regex = sqlc\.(n?arg|slice)\(\w+\)
+
+# RF02 reads a function call in an ORDER BY as a column reference, and calls it
+# unqualified when its text holds no dot, so `ORDER BY random()` fails in a query
+# that joins. A reference holding a bracket is a call and never a column. A
+# column passed to the call is its own reference and is still checked.
+[sqlfluff:rules:references.qualification]
+ignore_words_regex = \(
