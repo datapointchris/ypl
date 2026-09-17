@@ -14,6 +14,54 @@ type EnrichFailure struct {
 	Reason      string
 }
 
+type Playlist struct {
+	PlaylistID  string
+	Title       string
+	Description string
+	Privacy     string
+}
+
+type PlaylistItem struct {
+	ItemID     string
+	PlaylistID string
+	Position   int64
+	VideoID    string
+}
+
+type PlaylistPrivacy struct {
+	Privacy     string
+	Label       string
+	Description string
+}
+
+type SyncFailure struct {
+	SyncFailureID int64
+	RunID         int64
+	PlaylistID    sql.NullString
+	Error         string
+}
+
+type SyncOutcome struct {
+	Outcome     string
+	Label       string
+	Description string
+}
+
+type SyncRun struct {
+	RunID            int64
+	StartedTs        string
+	FinishedTs       string
+	QuotaDate        string
+	Outcome          string
+	Playlists        int64
+	PlaylistsDeleted int64
+	PlaylistsSkipped int64
+	ItemsAdded       int64
+	ItemsRemoved     int64
+	Requests         int64
+	Units            int64
+}
+
 type Track struct {
 	TrackID      int64
 	VideoID      string

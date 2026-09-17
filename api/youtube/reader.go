@@ -118,6 +118,11 @@ func playlistFrom(resource *ytapi.Playlist) (Playlist, error) {
 	if resource.Snippet == nil || resource.Status == nil {
 		return Playlist{}, fmt.Errorf("%w: playlist %s lacks its snippet or status", ErrUnexpectedResponse, resource.Id)
 	}
+	switch resource.Status.PrivacyStatus {
+	case "public", "unlisted", "private":
+	default:
+		return Playlist{}, fmt.Errorf("%w: playlist %s has privacy status %q", ErrUnexpectedResponse, resource.Id, resource.Status.PrivacyStatus)
+	}
 	return Playlist{
 		ID:          PlaylistID(resource.Id),
 		Title:       resource.Snippet.Title,

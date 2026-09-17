@@ -88,7 +88,7 @@ func TestRunReturnsTheBindError(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
 	defer slog.SetDefault(previous)
 
-	err = run(context.Background(), taken.Addr().String())
+	err = run(context.Background(), taken.Addr().String(), func(context.Context) {})
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("run on an occupied port = %v, want EADDRINUSE", err)
 	}
@@ -106,7 +106,7 @@ func TestServeAnswersUntilCanceledThenReturnsNil(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, ln) }()
+	go func() { done <- serve(ctx, ln, func(context.Context) {}) }()
 
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	resp, err := client.Get("http://" + ln.Addr().String() + "/ready")
@@ -129,13 +129,65 @@ func TestServeAnswersUntilCanceledThenReturnsNil(t *testing.T) {
 	}
 }
 
+// The work runs until serve stops, and serve returns only after it has.
+func TestServeStopsItsWorkBeforeReturning(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	finished := false
+
+	done := make(chan error, 1)
+	go func() {
+		done <- serve(ctx, ln, func(ctx context.Context) {
+			close(started)
+			<-ctx.Done()
+			time.Sleep(50 * time.Millisecond)
+			finished = true
+		})
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil || !finished {
+			t.Fatalf("serve = %v with the work finished %v, want nil after the work returned", err, finished)
+		}
+	case <-time.After(shutdownGrace):
+		t.Fatal("serve did not return after its context was canceled")
+	}
+}
+
+func TestSyncIntervalDefaultsToAnHourAndRefusesAnythingButAPositiveDuration(t *testing.T) {
+	t.Setenv("SYNC_INTERVAL", "")
+	if got, err := syncInterval(); err != nil || got != time.Hour {
+		t.Fatalf("syncInterval unset = %v, %v, want 1h", got, err)
+	}
+	t.Setenv("SYNC_INTERVAL", "30m")
+	if got, err := syncInterval(); err != nil || got != 30*time.Minute {
+		t.Fatalf("syncInterval 30m = %v, %v, want 30m", got, err)
+	}
+	for _, raw := range []string{"0s", "-1h", "hourly"} {
+		t.Setenv("SYNC_INTERVAL", raw)
+		if _, err := syncInterval(); err == nil {
+			t.Errorf("syncInterval %q succeeded, want a refusal", raw)
+		}
+	}
+}
+
 func TestSecondSignalEndsTheDrain(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts the service as a child process")
 	}
 
 	child := exec.Command(os.Args[0], "-test.run=^$")
-	child.Env = append(os.Environ(), serveChild+"=1", "PORT=0", "DATABASE_PATH="+filepath.Join(t.TempDir(), "api.db"))
+	// The credentials are placeholders, and every request the sync makes goes to
+	// a proxy port nothing listens on, so no request leaves the machine.
+	child.Env = append(os.Environ(), serveChild+"=1", "PORT=0", "DATABASE_PATH="+filepath.Join(t.TempDir(), "api.db"),
+		"YOUTUBE_CLIENT_ID=id", "YOUTUBE_CLIENT_SECRET=secret", "YOUTUBE_REFRESH_TOKEN=token",
+		"HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1", "NO_PROXY=")
 	stdout, err := child.StdoutPipe()
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)

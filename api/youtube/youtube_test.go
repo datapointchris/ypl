@@ -166,6 +166,27 @@ func TestEveryKnownPrivacyStatusIsReadAndAnyOtherRefused(t *testing.T) {
 	}
 }
 
+func TestEveryKnownPlaylistPrivacyIsReadAndAnyOtherRefused(t *testing.T) {
+	for _, privacy := range []string{"public", "unlisted", "private", "someFuturePrivacy"} {
+		t.Run(privacy, func(t *testing.T) {
+			api := newFakeAPI(t)
+			api.playlists = []map[string]any{fakePlaylist(t, "PLA")}
+			api.playlists[0]["status"] = map[string]any{"privacyStatus": privacy}
+
+			playlists, err := api.channel().Playlists(context.Background())
+			if privacy == "someFuturePrivacy" {
+				if !errors.Is(err, ErrUnexpectedResponse) {
+					t.Fatalf("Playlists = %v, want ErrUnexpectedResponse", err)
+				}
+				return
+			}
+			if err != nil || playlists[0].Privacy != privacy {
+				t.Fatalf("Playlists = %+v, %v, want privacy %s", playlists, err, privacy)
+			}
+		})
+	}
+}
+
 func TestAReadThatDisagreesWithItsTotalIsRefused(t *testing.T) {
 	for _, total := range []int{3, 1} {
 		api := newFakeAPI(t)

@@ -31,6 +31,39 @@ var trackSources = []generated.UpsertTrackSourceParams{
 	{Source: "manual", Label: "Manual", Description: "Entered by hand"},
 }
 
+// How a sync run ended, the vocabulary sync_runs.outcome draws from.
+const (
+	OutcomeOK         = "ok"
+	OutcomePartial    = "partial"
+	OutcomeQuotaSpent = "quota_spent"
+	OutcomeFailed     = "failed"
+	OutcomeCanceled   = "canceled"
+)
+
+// syncOutcomes is the sync_outcomes vocabulary, upserted on every open.
+var syncOutcomes = []generated.UpsertSyncOutcomeParams{
+	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was read and stored"},
+	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and at least one playlist was not stored or the interval's runs read more than a day's quota"},
+	{Outcome: OutcomeQuotaSpent, Label: "Quota spent", Description: "YouTube refused a request for the day's quota, in this run or an earlier one on the same Pacific date"},
+	{Outcome: OutcomeFailed, Label: "Failed", Description: "An error ended the run before it finished"},
+	{Outcome: OutcomeCanceled, Label: "Canceled", Description: "The run was canceled before it finished"},
+}
+
+// playlistPrivacies is the playlist_privacies vocabulary, upserted on every
+// open. It holds each privacy YouTube reports for a playlist.
+var playlistPrivacies = []generated.UpsertPlaylistPrivacyParams{
+	{Privacy: "public", Label: "Public", Description: "Anyone can find and watch the playlist"},
+	{Privacy: "unlisted", Label: "Unlisted", Description: "Anyone with the link can watch the playlist"},
+	{Privacy: "private", Label: "Private", Description: "Only the channel can see the playlist"},
+}
+
+// PlaylistItem is one item of a playlist as YouTube holds it: its playlistItem id
+// and the video in it.
+type PlaylistItem struct {
+	ItemID  string
+	VideoID string
+}
+
 // Store is a database with its migrations applied and its lookups seeded.
 type Store struct {
 	db *sql.DB
@@ -133,6 +166,21 @@ func (tx *Tx) ReplaceTracks(ctx context.Context, videoID string, tracks []genera
 	return nil
 }
 
+// ReplacePlaylistItems sets the items of the playlist playlistID to items, in
+// order, removing every item it held before.
+func (tx *Tx) ReplacePlaylistItems(ctx context.Context, playlistID string, items []PlaylistItem) error {
+	if err := tx.DeletePlaylistItems(ctx, playlistID); err != nil {
+		return fmt.Errorf("delete the items of %s: %w", playlistID, err)
+	}
+	for position, item := range items {
+		row := generated.InsertPlaylistItemParams{ItemID: item.ItemID, PlaylistID: playlistID, Position: int64(position), VideoID: item.VideoID}
+		if err := tx.InsertPlaylistItem(ctx, row); err != nil {
+			return fmt.Errorf("insert item %s at %d in %s: %w", item.ItemID, position, playlistID, err)
+		}
+	}
+	return nil
+}
+
 func migrate(ctx context.Context, db *sql.DB) error {
 	fsys, err := fs.Sub(migrations, "migrations")
 	if err != nil {
@@ -152,6 +200,16 @@ func (s *Store) seed(ctx context.Context) error {
 	for _, source := range trackSources {
 		if err := s.Queries.UpsertTrackSource(ctx, source); err != nil {
 			return fmt.Errorf("seed track source %s: %w", source.Source, err)
+		}
+	}
+	for _, outcome := range syncOutcomes {
+		if err := s.Queries.UpsertSyncOutcome(ctx, outcome); err != nil {
+			return fmt.Errorf("seed sync outcome %s: %w", outcome.Outcome, err)
+		}
+	}
+	for _, privacy := range playlistPrivacies {
+		if err := s.Queries.UpsertPlaylistPrivacy(ctx, privacy); err != nil {
+			return fmt.Errorf("seed playlist privacy %s: %w", privacy.Privacy, err)
 		}
 	}
 	return nil
