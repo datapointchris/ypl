@@ -48,6 +48,8 @@ type Refusal struct {
 	VideoIDs []string
 }
 
+// Error is the server's own sentence, and the status where the answer carried
+// none — a proxy's page or an identity provider's redirect.
 func (r *Refusal) Error() string {
 	if r.Message != "" {
 		return r.Message

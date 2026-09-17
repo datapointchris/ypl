@@ -1,0 +1,60 @@
+{
+  "id": "a",
+  "title": "Zebra",
+  "channel_title": "One",
+  "duration_seconds": 3600,
+  "upload_date": "2020-01-01",
+  "is_unavailable": false,
+  "enriched_ts": "2026-01-01T00:00:00Z",
+  "track_count": 4,
+  "artists": [
+    "Björk",
+    "Âme",
+    "Moby"
+  ],
+  "playlists": [
+    {
+      "id": "PLA",
+      "title": "Alpha"
+    }
+  ],
+  "description": "A long set",
+  "tracks": [
+    {
+      "position": 1,
+      "start_seconds": 0,
+      "end_seconds": null,
+      "artist": "Björk",
+      "title": "Track",
+      "raw_text": "Björk - Track",
+      "source": "chapter"
+    },
+    {
+      "position": 2,
+      "start_seconds": 600,
+      "end_seconds": null,
+      "artist": "Moby",
+      "title": "Track",
+      "raw_text": "Moby - Track",
+      "source": "chapter"
+    },
+    {
+      "position": 3,
+      "start_seconds": 1200,
+      "end_seconds": null,
+      "artist": "Björk",
+      "title": "Track",
+      "raw_text": "Björk - Track",
+      "source": "chapter"
+    },
+    {
+      "position": 4,
+      "start_seconds": 1800,
+      "end_seconds": null,
+      "artist": "Âme",
+      "title": "Track",
+      "raw_text": "Âme - Track",
+      "source": "chapter"
+    }
+  ]
+}

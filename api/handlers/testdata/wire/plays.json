@@ -1,0 +1,15 @@
+{
+  "data": [
+    {
+      "id": "01920000-0000-7000-8000-000000000001",
+      "handle": 1,
+      "played_ts": "2026-09-01T10:00:00Z",
+      "video": {
+        "id": "a",
+        "title": "Zebra",
+        "channel_title": "One"
+      }
+    }
+  ],
+  "has_more": false
+}

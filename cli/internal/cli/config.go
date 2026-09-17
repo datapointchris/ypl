@@ -19,8 +19,25 @@ func newConfigCommand() *cobra.Command {
 			"installation.",
 		RunE: requireSubcommand,
 	}
-	cmd.AddCommand(newConfigShowCommand(), newConfigPathCommand())
+	cmd.AddCommand(newConfigShowCommand(), newConfigPathCommand(), newConfigExampleCommand())
 	return cmd
+}
+
+func newConfigExampleCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "example",
+		Short: "Print a config file to fill in",
+		Long: "Print the annotated config file, so a fresh machine has something to copy\n" +
+			"rather than a format to reconstruct. It writes nothing; `ypl config path`\n" +
+			"says where to put it.",
+		Example: "  ypl config example                        see what the file holds\n" +
+			"  ypl config example > \"$(ypl config path)\"  write it, on a machine with none",
+		Args: usageArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, _ = fmt.Fprint(cmd.OutOrStdout(), config.Example())
+			return nil
+		},
+	}
 }
 
 // resolvedSetting is one row of `ypl config show`, carrying where the value

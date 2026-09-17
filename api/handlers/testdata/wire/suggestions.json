@@ -1,0 +1,34 @@
+[
+  {
+    "channel_title": "One",
+    "duration_seconds": 3600,
+    "id": "a",
+    "last_played_ts": "2026-09-01T10:00:00Z",
+    "play_count": 1,
+    "title": "Zebra"
+  },
+  {
+    "channel_title": "Two",
+    "duration_seconds": 1800,
+    "id": "b",
+    "last_played_ts": null,
+    "play_count": 0,
+    "title": "apple"
+  },
+  {
+    "channel_title": "Two",
+    "duration_seconds": null,
+    "id": "c",
+    "last_played_ts": null,
+    "play_count": 0,
+    "title": "Évora"
+  },
+  {
+    "channel_title": "Three",
+    "duration_seconds": 1800,
+    "id": "e",
+    "last_played_ts": null,
+    "play_count": 0,
+    "title": "Aardvark"
+  }
+]

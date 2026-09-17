@@ -43,10 +43,14 @@ const (
 type Layer string
 
 const (
-	LayerEnv     Layer = "environment"
-	LayerFile    Layer = "config file"
+	// LayerEnv is an environment variable, which outranks the rest.
+	LayerEnv Layer = "environment"
+	// LayerFile is the config file.
+	LayerFile Layer = "config file"
+	// LayerDefault is what the CLI falls back to with nothing set.
 	LayerDefault Layer = "default"
-	LayerUnset   Layer = "unset"
+	// LayerUnset is a setting nothing gave a value and nothing defaults.
+	LayerUnset Layer = "unset"
 )
 
 // Setting is one value the CLI resolves, with the layer that set it and the
@@ -209,13 +213,36 @@ type ErrNotConfigured struct {
 	Path    string
 }
 
+// Error names the command that writes the file rather than only the file. A
+// reader holding this has nothing to copy otherwise: they would have to learn
+// the key spellings from the command that just refused and get the syntax right
+// unaided.
 func (e *ErrNotConfigured) Error() string {
 	named := make([]string, len(e.Missing))
 	for i, setting := range e.Missing {
 		named[i] = fmt.Sprintf("%s (or %s)", setting.Key, setting.Env)
 	}
-	return fmt.Sprintf("ypl has not been told %s — set each in %s, or in the environment",
-		strings.Join(named, " or "), e.Path)
+	return fmt.Sprintf("ypl has not been told %s — `ypl config example` prints a file to fill in, and `ypl config path` says where it goes",
+		strings.Join(named, " or "))
+}
+
+// Example is the config file annotated, for someone with none. It is generated
+// from the same declarations Load resolves, so a setting cannot be added
+// without appearing here.
+func Example() string {
+	var written strings.Builder
+	written.WriteString("# Where the ypl server is, and which identity provider signs the tokens it\n")
+	written.WriteString("# takes. Neither has a default: each names one installation.\n")
+	for _, d := range declared {
+		written.WriteString("\n# " + d.env + " overrides this.\n")
+		switch {
+		case d.required:
+			_, _ = fmt.Fprintf(&written, "%s = \"\"\n", d.key)
+		default:
+			_, _ = fmt.Fprintf(&written, "# %s = %q\n", d.key, d.resolve(file{}).Value)
+		}
+	}
+	return written.String()
 }
 
 // Check is the refusal for a command that cannot run on this config, and nil

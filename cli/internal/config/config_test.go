@@ -114,18 +114,36 @@ func TestATrailingSlashOnTheServerIsDropped(t *testing.T) {
 }
 
 // A reader holding an empty value cannot see which of the two places they
-// forgot, so the refusal names both for each setting.
-func TestTheRefusalNamesEveryMissingSettingAndBothPlacesItIsSet(t *testing.T) {
+// forgot, so the refusal names each setting and both. It names commands rather
+// than a path, since a path is something to reconstruct and a command is
+// something to run.
+func TestTheRefusalNamesEveryMissingSettingAndTheCommandsThatFixIt(t *testing.T) {
 	withFile(t, "")
 
-	cfg := load(t)
-	err := cfg.Check()
+	err := load(t).Check()
 	if err == nil {
 		t.Fatal("a config with no server and no issuer passed its own check")
 	}
-	for _, want := range []string{KeyAPIBase, "YPL_API_BASE", KeyIssuer, "YPL_OIDC_ISSUER", cfg.Path} {
+	for _, want := range []string{
+		KeyAPIBase, "YPL_API_BASE", KeyIssuer, "YPL_OIDC_ISSUER",
+		"ypl config example", "ypl config path",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not name %s: %s", want, err)
+		}
+	}
+}
+
+// The example is generated from the same declarations Load resolves, so a
+// setting cannot be added without appearing in the file someone copies.
+func TestTheExampleNamesEverySettingAndItsEnvironmentVariable(t *testing.T) {
+	written := Example()
+	for _, d := range declared {
+		if !strings.Contains(written, d.key) {
+			t.Errorf("the example does not name %s", d.key)
+		}
+		if !strings.Contains(written, d.env) {
+			t.Errorf("the example does not name %s", d.env)
 		}
 	}
 }

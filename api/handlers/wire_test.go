@@ -1,0 +1,109 @@
+package handlers
+
+import (
+	"bytes"
+	"cmp"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+)
+
+// update rewrites the wire documents instead of checking them.
+var update = flag.Bool("update", false, "rewrite the wire documents in testdata/wire")
+
+// The wire documents are what the server actually answers, written to disk so
+// the CLI's own suite can decode them.
+//
+// Both modules otherwise assert against JSON each wrote by hand, which agrees
+// with itself and with nothing else: renaming a field on a response struct here
+// leaves both suites green and breaks every command in the client. Neither
+// module may import the other — that is the point of the client carrying its own
+// shapes — so a file one writes and the other reads is what crosses the seam.
+func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	// A play, so the plays document carries a row rather than an empty page.
+	// Its id is fixed, since the document is compared byte for byte.
+	played := f.do(http.MethodPost, "/api/v1/plays",
+		`{"id": "01920000-0000-7000-8000-000000000001", "video_id": "a", "played_ts": "2026-09-01T10:00:00Z"}`)
+	if played.Code != http.StatusCreated {
+		t.Fatalf("storing a play answered %d: %s", played.Code, played.Body)
+	}
+
+	for _, doc := range []struct {
+		name   string
+		target string
+		// sorted orders the rows by id before writing. A draw reshuffles among
+		// videos last played at the same moment and every never-played video
+		// ties, so its order is deliberately unstable. The field names are what
+		// crosses the seam and sorting leaves those alone.
+		sorted bool
+	}{
+		{name: "playlists", target: "/api/v1/playlists"},
+		{name: "playlist", target: "/api/v1/playlists/PLA"},
+		{name: "playlist-items", target: "/api/v1/playlists/PLA/items"},
+		{name: "videos", target: "/api/v1/videos"},
+		{name: "video", target: "/api/v1/videos/a"},
+		{name: "plays", target: "/api/v1/plays"},
+		{name: "suggestions", target: "/api/v1/suggestions?limit=4", sorted: true},
+		{name: "sync-runs", target: "/api/v1/sync/runs"},
+		{name: "status", target: "/api/v1/status"},
+	} {
+		rec := f.get(doc.target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s answered %d: %s", doc.target, rec.Code, rec.Body)
+		}
+		body := rec.Body.Bytes()
+		if doc.sorted {
+			body = sortedByID(t, body)
+		}
+		var pretty bytes.Buffer
+		if err := json.Indent(&pretty, bytes.TrimSpace(body), "", "  "); err != nil {
+			t.Fatalf("%s did not answer JSON: %v", doc.target, err)
+		}
+		// Exactly one, since the answer's own encoder already ends with one and
+		// the end-of-file hook would strip the second back out from under this.
+		pretty.WriteByte('\n')
+
+		path := filepath.Join("testdata", "wire", doc.name+".json")
+		if *update {
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatalf("make testdata/wire: %v", err)
+			}
+			if err := os.WriteFile(path, pretty.Bytes(), 0o644); err != nil {
+				t.Fatalf("write %s: %v", path, err)
+			}
+			continue
+		}
+		stored, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s — run `go test ./handlers -update` to write it: %v", path, err)
+		}
+		if !bytes.Equal(stored, pretty.Bytes()) {
+			t.Errorf("%s no longer answers what %s holds; run `go test ./handlers -update` and check what moved", doc.target, path)
+		}
+	}
+}
+
+// sortedByID is a JSON array ordered by each member's id, for a document whose
+// own order is a draw.
+func sortedByID(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var rows []map[string]any
+	if err := json.Unmarshal(body, &rows); err != nil {
+		t.Fatalf("sorting a document that is not an array: %v", err)
+	}
+	slices.SortFunc(rows, func(a, b map[string]any) int {
+		return cmp.Compare(fmt.Sprint(a["id"]), fmt.Sprint(b["id"]))
+	})
+	sorted, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatalf("re-encode the sorted document: %v", err)
+	}
+	return sorted
+}

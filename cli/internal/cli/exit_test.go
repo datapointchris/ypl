@@ -3,6 +3,7 @@ package cli
 import (
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -73,25 +74,50 @@ func TestAnUnknownSortIsTheServersToRefuse(t *testing.T) {
 func TestARefusedLimitIsCaughtBeforeAnythingIsAsked(t *testing.T) {
 	f := newFixture(t, serves(nil))
 
-	f.run("plays", "list", "--limit", "0")
+	// Paired with the exit code and the sentence: any pre-request failure makes
+	// no requests, so the absence alone cannot tell this one from a typo in the
+	// verb.
+	got := f.run("plays", "list", "--limit", "-1")
+	if got.code != 2 {
+		t.Fatalf("exited %d, want 2", got.code)
+	}
+	if !strings.Contains(got.err, "negative") {
+		t.Errorf("stderr = %q, want it to name what was wrong with the value", got.err)
+	}
 	if len(f.asked) != 0 {
 		t.Fatalf("a refused limit still made %d requests", len(f.asked))
 	}
 }
 
+// namespaces walks the assembled tree for every node expecting another word
+// after it. Listing them instead would be complete today and silently short the
+// day a command is added, which is the population this test is named for.
+func namespaces(cmd *cobra.Command, path []string) [][]string {
+	here := path
+	if cmd.Name() != "ypl" {
+		here = append(append([]string{}, path...), cmd.Name())
+	}
+	if !cmd.HasSubCommands() {
+		return nil
+	}
+	found := [][]string{here}
+	for _, child := range cmd.Commands() {
+		if child.Name() == "help" || child.Name() == "completion" {
+			continue
+		}
+		found = append(found, namespaces(child, here)...)
+	}
+	return found
+}
+
 // A namespace expects another word after it, so bare shows help and exits 0
 // rather than failing at someone walking down the tree a word at a time.
 func TestEveryNamespaceShowsHelpWhenGivenNothing(t *testing.T) {
-	for _, args := range [][]string{
-		{},
-		{"playlists"},
-		{"videos"},
-		{"plays"},
-		{"sync"},
-		{"sync", "runs"},
-		{"auth"},
-		{"config"},
-	} {
+	found := namespaces(newRootCommand(&app{}), nil)
+	if len(found) < 8 {
+		t.Fatalf("walked %d namespaces, want every node with subcommands", len(found))
+	}
+	for _, args := range found {
 		f := newFixture(t, serves(nil))
 		got := f.run(args...)
 		if got.code != 0 {
@@ -240,7 +266,25 @@ func TestAReadWithNothingInItSaysSoAndNamesWhatToRunNext(t *testing.T) {
 
 // hinted is every `ypl ...` a command wrote, which is what it told the reader to
 // run next.
-var hinted = regexp.MustCompile("`ypl ([a-z][a-z ]*[a-z])`")
+//
+// Bounded by the backticks that delimit a hint rather than by the letters
+// today's hints happen to use. An alphabet bound cannot see a hint carrying a
+// flag, a placeholder or a hyphen — and a hyphenated verb the tree does not
+// have is exactly what this gate exists to catch.
+var hinted = regexp.MustCompile("`ypl ([^`]+)`")
+
+// words is the command part of a hint: everything before the first flag or
+// placeholder, which are arguments rather than names in the tree.
+func words(hint string) []string {
+	var named []string
+	for _, word := range strings.Fields(hint) {
+		if strings.HasPrefix(word, "-") || strings.HasPrefix(word, "<") || strings.HasPrefix(word, "[") {
+			break
+		}
+		named = append(named, word)
+	}
+	return named
+}
 
 // A hint naming a command the tool does not have is worse than no hint, because
 // it reads as authoritative and spends the attention the reader had left. The
@@ -248,13 +292,15 @@ var hinted = regexp.MustCompile("`ypl ([a-z][a-z ]*[a-z])`")
 // reading a tree the binary never assembles passes while the binary is broken.
 func TestEverySuggestedCommandExists(t *testing.T) {
 	said := map[string]bool{}
+	// Each invocation is required to produce a hint of its own. A floor across
+	// the whole set is satisfied by any one survivor, so dropping the backticks
+	// from three of four sentences would leave it green.
 	for _, args := range [][]string{
 		{"playlists", "list"},
 		{"videos", "list", "--artist", "nobody"},
 		{"plays", "list"},
 		{"sync", "runs", "list"},
 		{"next"},
-		{"config", "show"},
 		{"auth", "status"},
 		{"auth", "token"},
 	} {
@@ -266,12 +312,27 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 			"/api/v1/sync/runs":   `{"data": [], "has_more": false}`,
 		}))
 		got := f.run(args...)
-		for _, found := range hinted.FindAllStringSubmatch(got.out+got.err, -1) {
+		here := hinted.FindAllStringSubmatch(got.out+got.err, -1)
+		if len(here) == 0 {
+			t.Errorf("%v named no command to run next", args)
+		}
+		for _, found := range here {
 			said[found[1]] = true
 		}
 	}
-	if len(said) == 0 {
-		t.Fatal("no command named a next command, so this gate is measuring nothing")
+
+	// The unconfigured refusal is the other hint-producing path, and the one a
+	// first run meets.
+	unconfigured := newFixture(t, serves(nil))
+	t.Setenv("YPL_API_BASE", "")
+	t.Setenv("YPL_OIDC_ISSUER", "")
+	refusal := unconfigured.run("config", "show")
+	found := hinted.FindAllStringSubmatch(refusal.out+refusal.err, -1)
+	if len(found) == 0 {
+		t.Error("the unconfigured refusal named no command that would configure it")
+	}
+	for _, one := range found {
+		said[one[1]] = true
 	}
 
 	// Find returns the deepest command it matched plus the words left over, and
@@ -280,10 +341,42 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 	// unconsumed, which is exactly the hint this gate exists to catch.
 	root := newRootCommand(&app{})
 	for hint := range said {
-		found, rest, err := root.Find(strings.Fields(hint))
+		named := words(hint)
+		if len(named) == 0 {
+			t.Errorf("a command told the reader to run `ypl %s`, which names no command at all", hint)
+			continue
+		}
+		found, rest, err := root.Find(named)
 		if err != nil || len(rest) > 0 || found == root {
 			t.Errorf("a command told the reader to run `ypl %s`, which the tree does not have", hint)
 		}
+	}
+}
+
+// The gate reads a hint by its delimiters, so a flag, a placeholder or a hyphen
+// in the verb does not make one invisible to it.
+func TestTheHintGateReadsEveryShapeOfHint(t *testing.T) {
+	for _, c := range []struct {
+		sentence string
+		want     []string
+	}{
+		{"`ypl status` says what it holds.", []string{"status"}},
+		{"`ypl videos list --json` is the whole library", []string{"videos", "list"}},
+		{"`ypl playlists show <playlist>` names one", []string{"playlists", "show"}},
+		{"`ypl sync runs list -n 5` shows the newest", []string{"sync", "runs", "list"}},
+	} {
+		found := hinted.FindStringSubmatch(c.sentence)
+		if found == nil {
+			t.Errorf("%q matched nothing", c.sentence)
+			continue
+		}
+		if got := words(found[1]); !slices.Equal(got, c.want) {
+			t.Errorf("%q named %v, want %v", c.sentence, got, c.want)
+		}
+	}
+	// A hyphenated verb the tree does not have is the shape the gate is for.
+	if found := hinted.FindStringSubmatch("`ypl playlists refresh-all` re-reads them"); found == nil {
+		t.Error("a hyphenated verb was invisible to the gate")
 	}
 }
 
@@ -294,6 +387,26 @@ func TestTheRejectedTokenHintIsAmongTheCheckedOnes(t *testing.T) {
 
 	if got := f.run("playlists", "list"); !hinted.MatchString(got.err) {
 		t.Fatalf("stderr = %q, want a `ypl ...` the gate can check", got.err)
+	}
+}
+
+// "1 videos" is a rendering fault a reader notices, and one noticed costs the
+// rest of the line its credibility.
+func TestCountNamesOneThingSingly(t *testing.T) {
+	for _, c := range []struct {
+		n     int64
+		thing string
+		want  string
+	}{
+		{0, "video", "0 videos"},
+		{1, "video", "1 video"},
+		{2, "video", "2 videos"},
+		{1, "playlist", "1 playlist"},
+		{11, "track", "11 tracks"},
+	} {
+		if got := count(c.n, c.thing); got != c.want {
+			t.Errorf("count(%d, %q) = %q, want %q", c.n, c.thing, got, c.want)
+		}
 	}
 }
 
