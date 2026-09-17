@@ -29,6 +29,11 @@ empty playlist still taking one.
 The server edits playlists through the Data API as well. Creating, renaming or deleting a playlist,
 and inserting, moving or deleting an item, costs 50 units a request.
 
+The server syncs every `SYNC_INTERVAL`, an hour when unset. Each run reads every playlist, merges
+it with the server's copy, and pushes the server's edits back. A day's writes stop short of the
+quota by what a full day of runs spends on reads, and resume after the quota resets at midnight
+Pacific.
+
 ## Install
 
 ```bash
