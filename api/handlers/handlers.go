@@ -168,11 +168,19 @@ func newCollator() *collate.Collator {
 type referenceError struct {
 	name, value string
 	candidates  []string
+	// nearby is what a reference reached nothing exactly enough for would have
+	// reached had the verb allowed it, which is the difference between a
+	// playlist that is not there and one named too loosely to change.
+	nearby []string
 }
 
 func (e referenceError) Error() string {
-	if len(e.candidates) > 0 {
+	switch {
+	case len(e.candidates) > 0:
 		return fmt.Sprintf("%s %q names more than one: %s", e.name, e.value, strings.Join(e.candidates, ", "))
+	case len(e.nearby) > 0:
+		return fmt.Sprintf("%s %q is part of %s; a %s is changed by its whole title or its id, never by part of one",
+			e.name, e.value, strings.Join(e.nearby, ", "), e.name)
 	}
 	return fmt.Sprintf("%s %q names nothing the store holds", e.name, e.value)
 }
@@ -188,12 +196,16 @@ func paramRow(err error, param referenceError) error {
 
 // writeItemError answers a failed read of the resource the path names: its row
 // not being there is a 404 naming what, a reference naming more than one row a
-// 400, and anything else a 500.
+// 400, and anything else a 500. A reference that named a row too loosely for
+// this verb keeps its own sentence, since "not found" is the one thing that is
+// not true about it.
 func (h *Handlers) writeItemError(w http.ResponseWriter, r *http.Request, err error, what string) {
 	var ref referenceError
 	switch {
 	case errors.As(err, &ref) && len(ref.candidates) > 0:
 		wire.Refuse(w, http.StatusBadRequest, wire.CodeAmbiguousReference, "%s", ref.Error())
+	case errors.As(err, &ref) && len(ref.nearby) > 0:
+		wire.Refuse(w, http.StatusNotFound, wire.CodeNotFound, "%s", ref.Error())
 	case errors.Is(err, sql.ErrNoRows), errors.As(err, &ref):
 		wire.Refuse(w, http.StatusNotFound, wire.CodeNotFound, "%s not found", what)
 	default:

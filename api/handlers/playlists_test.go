@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -269,6 +270,34 @@ func TestAFragmentOfATitleReachesNoVerbThatDestroys(t *testing.T) {
 	}
 	if n := f.youtube.writes(); n != 0 {
 		t.Fatalf("YouTube saw %d writes for a fragment, want none", n)
+	}
+}
+
+// The playlist a fragment reaches is there, so telling a rename or a delete it
+// names nothing sends somebody looking for a playlist they are already looking
+// at. The refusal names the title their fragment is part of, and the id that
+// reaches it.
+func TestTheRefusalOfAFragmentNamesTheTitleItIsPartOf(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+
+	for _, rec := range []*httptest.ResponseRecorder{
+		f.do(http.MethodDelete, "/api/v1/playlists/lph", ""),
+		f.do(http.MethodPatch, "/api/v1/playlists/lph", `{"title": "Renamed"}`),
+	} {
+		body := decode[wireRefusal](t, rec, http.StatusNotFound)
+		if !strings.Contains(body.Error, "Alpha") || !strings.Contains(body.Error, "PLA") {
+			t.Errorf("refused with %q, want the title the fragment is part of and its id", body.Error)
+		}
+		if strings.Contains(body.Error, "names nothing") {
+			t.Errorf("refused with %q, and the playlist is there", body.Error)
+		}
+	}
+
+	// A reference that really does name nothing keeps the sentence that says so.
+	body := decode[wireRefusal](t, f.do(http.MethodDelete, "/api/v1/playlists/nothing-like-this", ""), http.StatusNotFound)
+	if !strings.Contains(body.Error, "not found") {
+		t.Errorf("refused with %q, want it to say the playlist is not there", body.Error)
 	}
 }
 

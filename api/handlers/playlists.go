@@ -144,10 +144,21 @@ func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string
 			return slug(row.Title) == slug(ref)
 		})
 	}
-	if len(found) == 0 && how == loosely && slug(ref) != "" {
-		found = playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
+	if len(found) == 0 && slug(ref) != "" {
+		holding := playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
 			return strings.Contains(slug(row.Title), slug(ref))
 		})
+		// A verb that changes a playlist is told which titles hold what it sent,
+		// rather than that nothing does. Both are refusals and only one of them
+		// is true: the playlist is there, and the reference is not precise
+		// enough for a verb that cannot be undone. Saying it names nothing sends
+		// the caller looking for a playlist they are already looking at.
+		if how == exactly && len(holding) > 0 {
+			return "", referenceError{name: name, value: ref, nearby: titlesOf(holding)}
+		}
+		if how == loosely {
+			found = holding
+		}
 	}
 	switch len(found) {
 	case 0:
@@ -155,11 +166,17 @@ func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string
 	case 1:
 		return found[0].PlaylistID, nil
 	}
-	candidates := make([]string, len(found))
-	for i, row := range found {
-		candidates[i] = fmt.Sprintf("%q (%s)", row.Title, row.PlaylistID)
+	return "", referenceError{name: name, value: ref, candidates: titlesOf(found)}
+}
+
+// titlesOf names each row the way a refusal names it: the title somebody typed
+// part of, and the id that reaches it whatever the title is.
+func titlesOf(rows []generated.ListPlaylistReferencesRow) []string {
+	named := make([]string, len(rows))
+	for i, row := range rows {
+		named[i] = fmt.Sprintf("%q (%s)", row.Title, row.PlaylistID)
 	}
-	return "", referenceError{name: name, value: ref, candidates: candidates}
+	return named
 }
 
 // playlistsTitled is every row of rows that matches.
