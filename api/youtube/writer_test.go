@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ func TestCreatePlaylistMakesAPrivatePlaylist(t *testing.T) {
 	api := newFakeAPI(t)
 	channel := api.channel()
 
-	id, err := channel.CreatePlaylist(context.Background(), PlaylistDetails{Title: "Late Night", Description: "Slow sets"})
+	created, err := channel.CreatePlaylist(context.Background(), PlaylistDetails{Title: "Late Night", Description: "Slow sets"})
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
@@ -24,9 +25,101 @@ func TestCreatePlaylistMakesAPrivatePlaylist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Playlists: %v", err)
 	}
-	want := Playlist{ID: id, Title: "Late Night", Description: "Slow sets", Privacy: "private"}
-	if id == "" || !slices.Equal(listed, []Playlist{want}) {
-		t.Fatalf("playlists %+v, want %+v with an id", listed, want)
+	want := Playlist{ID: created.ID, Title: "Late Night", Description: "Slow sets", Privacy: "private"}
+	if created.ID == "" || created != want || !slices.Equal(listed, []Playlist{want}) {
+		t.Fatalf("created %+v and listed %+v, want %+v with an id", created, listed, want)
+	}
+}
+
+// YouTube trims the text it stores, so a write returns what its answer says
+// rather than what was sent.
+func TestAPlaylistWriteReturnsTheTextYouTubeStored(t *testing.T) {
+	api := newFakeAPI(t)
+	api.playlists = []map[string]any{fakePlaylist(t, "PLA")}
+	channel := api.channel()
+	ctx := context.Background()
+
+	created, err := channel.CreatePlaylist(ctx, PlaylistDetails{Title: "  Late Night  ", Description: "Slow sets\n"})
+	if err != nil || created.Title != "Late Night" || created.Description != "Slow sets" {
+		t.Fatalf("CreatePlaylist = %+v, %v, want the title and description trimmed", created, err)
+	}
+	updated, err := channel.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: " Renamed ", Description: "\nAbout PLA "})
+	if err != nil || updated != (PlaylistDetails{Title: "Renamed", Description: "About PLA"}) {
+		t.Fatalf("UpdatePlaylist = %+v, %v, want the title and description trimmed", updated, err)
+	}
+}
+
+func TestPlaylistReadsOnePlaylistByItsID(t *testing.T) {
+	api := newFakeAPI(t)
+	api.playlists = []map[string]any{fakePlaylist(t, "PLA"), fakePlaylist(t, "PLB")}
+	channel := api.channel()
+	ctx := context.Background()
+
+	got, err := channel.Playlist(ctx, "PLB")
+	if want := (Playlist{ID: "PLB", Title: "Playlist PLB", Description: "About PLB", Privacy: "private"}); err != nil || got != want {
+		t.Fatalf("Playlist(PLB) = %+v, %v, want %+v", got, err, want)
+	}
+	if _, err := channel.Playlist(ctx, "PLgone"); !errors.Is(err, ErrPlaylistNotFound) || errors.Is(err, ErrRefused) {
+		t.Fatalf("Playlist of an id YouTube does not hold = %v, want ErrPlaylistNotFound and no refusal", err)
+	}
+	if requests, units := channel.Requests(), channel.Units(); requests != 2 || units != 2 {
+		t.Fatalf("counted %d requests and %d units, want 2 reads at 1 unit each", requests, units)
+	}
+}
+
+func TestAnUpdateRightAfterACreateIsSentAgain(t *testing.T) {
+	api := newFakeAPI(t)
+	channel := api.channel()
+	ctx := context.Background()
+
+	created, err := channel.CreatePlaylist(ctx, PlaylistDetails{Title: "New"})
+	if err != nil {
+		t.Fatalf("CreatePlaylist: %v", err)
+	}
+	if _, err := channel.UpdatePlaylist(ctx, created.ID, PlaylistDetails{Title: "Renamed"}); err != nil {
+		t.Fatalf("UpdatePlaylist: %v", err)
+	}
+	if !slices.Equal(api.pauses, []time.Duration{time.Second}) || channel.Requests() != 3 {
+		t.Fatalf("paused %v over %d requests, want one second before the second update", api.pauses, channel.Requests())
+	}
+	if got, err := channel.Playlist(ctx, created.ID); err != nil || got.Title != "Renamed" {
+		t.Fatalf("Playlist = %+v, %v, want it renamed", got, err)
+	}
+}
+
+// Every 4xx answer is a refusal, whether or not its reason has a sentinel, and
+// nothing without an answer is.
+func TestEveryRefusalIsErrRefusedAndNothingElseIs(t *testing.T) {
+	api := newFakeAPI(t)
+	api.playlists = []map[string]any{fakePlaylist(t, "PLA")}
+	api.deletedPlaylists["PLdeleted"] = true
+	channel := api.channel()
+	ctx := context.Background()
+
+	_, err := channel.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: strings.Repeat("x", MaxTitleLength+1)})
+	if message, ok := RefusalMessage(err); !errors.Is(err, ErrRefused) || !ok || message != "Invalid playlist snippet." {
+		t.Errorf("an overlong title = %v with message %q, want ErrRefused with YouTube's message", err, message)
+	}
+	if err := channel.DeletePlaylist(ctx, "PLdeleted"); !errors.Is(err, ErrRefused) || !errors.Is(err, ErrPlaylistNotFound) {
+		t.Errorf("a delete of a deleted playlist = %v, want ErrRefused and ErrPlaylistNotFound", err)
+	}
+
+	api.answer = &fakeAnswer{status: http.StatusConflict, body: string(api.recorded["playlists.update SERVICE_UNAVAILABLE"])}
+	if _, err := channel.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: "Renamed"}); !errors.Is(err, ErrRefused) {
+		t.Errorf("an update aborted on every attempt = %v, want ErrRefused", err)
+	}
+
+	api.answer = &fakeAnswer{status: http.StatusInternalServerError, body: `{"error":{"code":500,"message":"backend","errors":[{"reason":"backendError","domain":"global"}]}}`}
+	if _, err := channel.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: "Renamed"}); err == nil || errors.Is(err, ErrRefused) {
+		t.Errorf("a 500 = %v, want an error that is not ErrRefused", err)
+	} else if _, ok := RefusalMessage(err); ok {
+		t.Errorf("a 500 carries a refusal message")
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := channel.UpdatePlaylist(canceled, "PLA", PlaylistDetails{Title: "Renamed"}); err == nil || errors.Is(err, ErrRefused) {
+		t.Errorf("a request that got no answer = %v, want an error that is not ErrRefused", err)
 	}
 }
 
@@ -36,11 +129,11 @@ func TestTheFirstInsertIntoANewPlaylistIsSentAgain(t *testing.T) {
 	channel := api.channel()
 	ctx := context.Background()
 
-	playlist, err := channel.CreatePlaylist(ctx, PlaylistDetails{Title: "New"})
+	created, err := channel.CreatePlaylist(ctx, PlaylistDetails{Title: "New"})
 	if err != nil {
 		t.Fatalf("CreatePlaylist: %v", err)
 	}
-	if _, err := channel.InsertItem(ctx, playlist, "vidA", 0); err != nil {
+	if _, err := channel.InsertItem(ctx, created.ID, "vidA", 0); err != nil {
 		t.Fatalf("InsertItem: %v", err)
 	}
 	if !slices.Equal(api.pauses, []time.Duration{time.Second}) {
@@ -49,12 +142,12 @@ func TestTheFirstInsertIntoANewPlaylistIsSentAgain(t *testing.T) {
 	if requests, units := channel.Requests(), channel.Units(); requests != 3 || units != 150 {
 		t.Fatalf("counted %d requests and %d units, want a create and two insert attempts: 3 and 150", requests, units)
 	}
-	assertVideos(t, channel, playlist, "vidA")
+	assertVideos(t, channel, created.ID, "vidA")
 }
 
-// Only an insert was measured to leave nothing behind when YouTube aborts it, so
-// only an insert is sent again.
-func TestOnlyAnAbortedInsertIsSentAgain(t *testing.T) {
+// Only an item insert and a playlist update were measured to leave nothing
+// behind when YouTube aborts them, so only those are sent again.
+func TestOnlyAWriteMeasuredLeavingNothingIsSentAgain(t *testing.T) {
 	item := Item{ID: "PLA-item-000", PlaylistID: "PLA", VideoID: "vid000"}
 	writes := map[string]struct {
 		write    func(context.Context, *Channel) error
@@ -65,8 +158,9 @@ func TestOnlyAnAbortedInsertIsSentAgain(t *testing.T) {
 			return err
 		}, attempts: 1},
 		"UpdatePlaylist": {write: func(ctx context.Context, c *Channel) error {
-			return c.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: "Renamed"})
-		}, attempts: 1},
+			_, err := c.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: "Renamed"})
+			return err
+		}, attempts: 4},
 		"DeletePlaylist": {write: func(ctx context.Context, c *Channel) error { return c.DeletePlaylist(ctx, "PLA") }, attempts: 1},
 		"MoveItem":       {write: func(ctx context.Context, c *Channel) error { return c.MoveItem(ctx, item, 1) }, attempts: 1},
 		"DeleteItem":     {write: func(ctx context.Context, c *Channel) error { return c.DeleteItem(ctx, item.ID) }, attempts: 1},
@@ -307,7 +401,7 @@ func TestUpdatePlaylistSetsTheDetailsAndKeepsThePrivacy(t *testing.T) {
 	channel := api.channel()
 	ctx := context.Background()
 
-	if err := channel.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: "Renamed", Description: "About PLA"}); err != nil {
+	if _, err := channel.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: "Renamed", Description: "About PLA"}); err != nil {
 		t.Fatalf("UpdatePlaylist: %v", err)
 	}
 	listed, err := channel.Playlists(ctx)
@@ -327,7 +421,7 @@ func TestAnEmptyDescriptionIsSentAsEmpty(t *testing.T) {
 	api.playlists = []map[string]any{fakePlaylist(t, "PLA")}
 	channel := api.channel()
 
-	if err := channel.UpdatePlaylist(context.Background(), "PLA", PlaylistDetails{Title: "Renamed"}); err != nil {
+	if _, err := channel.UpdatePlaylist(context.Background(), "PLA", PlaylistDetails{Title: "Renamed"}); err != nil {
 		t.Fatalf("UpdatePlaylist: %v", err)
 	}
 	api.mu.Lock()
@@ -385,26 +479,30 @@ func TestUnitsAreEachRequestsMethodPrice(t *testing.T) {
 	if err := channel.DeleteItem(ctx, items[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := channel.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: "Renamed"}); err != nil {
+	if _, err := channel.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: "Renamed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := channel.Playlist(ctx, "PLA"); err != nil {
 		t.Fatal(err)
 	}
 	if err := channel.DeletePlaylist(ctx, "PLA"); err != nil {
 		t.Fatal(err)
 	}
 
-	// One playlists page and two items pages at 1 unit, six writes at 50.
-	if requests, units := channel.Requests(), channel.Units(); requests != 9 || units != 303 {
-		t.Fatalf("counted %d requests and %d units, want 9 and 303", requests, units)
+	// One playlists page, two items pages and a read by id at 1 unit, six
+	// writes at 50.
+	if requests, units := channel.Requests(), channel.Units(); requests != 10 || units != 304 {
+		t.Fatalf("counted %d requests and %d units, want 10 and 304", requests, units)
 	}
 	if served := api.requests.Load(); served != channel.Requests() {
 		t.Fatalf("the fake served %d requests and the channel counted %d", served, channel.Requests())
 	}
 }
 
-// A write reads only the id from YouTube's answer, so an answer in a shape this
-// package does not know still returns the id of what was written. These bodies
-// are not recorded ones.
-func TestAWriteAnswerReturnsTheIDWhateverElseItCarries(t *testing.T) {
+// An item write reads only the id from YouTube's answer, so an answer in a
+// shape this package does not know still returns the id of what was written.
+// These bodies are not recorded ones.
+func TestAnItemWriteAnswerReturnsTheIDWhateverElseItCarries(t *testing.T) {
 	api := newFakeAPI(t)
 	api.answer = &fakeAnswer{status: http.StatusOK, body: `{"kind":"youtube#playlistItem","id":"PLA-new","status":{"privacyStatus":"membersOnly"}}`}
 	channel := api.channel()
@@ -417,9 +515,23 @@ func TestAWriteAnswerReturnsTheIDWhateverElseItCarries(t *testing.T) {
 	if id, err := channel.AppendItem(context.Background(), "PLA", "vidA"); !errors.Is(err, ErrUnexpectedResponse) || id != "" {
 		t.Fatalf("AppendItem answered with no id = %q, %v, want ErrUnexpectedResponse", id, err)
 	}
-	api.answer = &fakeAnswer{status: http.StatusOK, body: `{"kind":"youtube#playlist"}`}
-	if id, err := channel.CreatePlaylist(context.Background(), PlaylistDetails{Title: "New"}); !errors.Is(err, ErrUnexpectedResponse) || id != "" {
-		t.Fatalf("CreatePlaylist answered with no id = %q, %v, want ErrUnexpectedResponse", id, err)
+}
+
+// A playlist write returns what YouTube stored, so an answer lacking it is
+// unexpected although the write was made. These bodies are not recorded ones.
+func TestAPlaylistWriteAnswerLackingWhatItStoredIsUnexpected(t *testing.T) {
+	api := newFakeAPI(t)
+	channel := api.channel()
+	ctx := context.Background()
+
+	for _, body := range []string{`{"kind":"youtube#playlist"}`, `{"kind":"youtube#playlist","id":"PLnew"}`} {
+		api.answer = &fakeAnswer{status: http.StatusOK, body: body}
+		if created, err := channel.CreatePlaylist(ctx, PlaylistDetails{Title: "New"}); !errors.Is(err, ErrUnexpectedResponse) || created != (Playlist{}) {
+			t.Errorf("CreatePlaylist answered %s = %+v, %v, want ErrUnexpectedResponse", body, created, err)
+		}
+		if updated, err := channel.UpdatePlaylist(ctx, "PLA", PlaylistDetails{Title: "Renamed"}); !errors.Is(err, ErrUnexpectedResponse) || updated != (PlaylistDetails{}) {
+			t.Errorf("UpdatePlaylist answered %s = %+v, %v, want ErrUnexpectedResponse", body, updated, err)
+		}
 	}
 }
 
@@ -449,6 +561,19 @@ func TestTheFakeAnswersWritesAsTheDataAPIDoes(t *testing.T) {
 	}).Context(ctx).Do()
 	if err != nil || renamed.Snippet.Description != "" || renamed.Status != nil {
 		t.Errorf("an update naming only a title = %+v, %v, want the description cleared and no status", renamed, err)
+	}
+
+	padded, err := service.Playlists.Update([]string{"snippet"}, &ytapi.Playlist{
+		Id: "PLA", Snippet: &ytapi.PlaylistSnippet{Title: " " + strings.Repeat("x", 150) + " ", Description: "renamed\n"},
+	}).Context(ctx).Do()
+	if err != nil || padded.Snippet.Title != strings.Repeat("x", 150) || padded.Snippet.Description != "renamed" {
+		t.Errorf("an update of 150 characters with a space either side = %+v, %v, want it accepted and answered trimmed", padded, err)
+	}
+	accented, err := service.Playlists.Update([]string{"snippet"}, &ytapi.Playlist{
+		Id: "PLA", Snippet: &ytapi.PlaylistSnippet{Title: strings.Repeat("é", 150), Description: strings.Repeat("é", 2501)},
+	}).Context(ctx).Do()
+	if err != nil || accented.Snippet.Title != strings.Repeat("é", 150) {
+		t.Errorf("an update of 150 accented letters and a description of 2,501 = %+v, %v, want it accepted", accented, err)
 	}
 
 	ghost, err := service.Playlists.Update([]string{"snippet"}, &ytapi.Playlist{
@@ -489,6 +614,68 @@ func TestTheFakeAnswersWritesAsTheDataAPIDoes(t *testing.T) {
 				return err
 			},
 			code: http.StatusBadRequest, reason: "playlistTitleRequired",
+		},
+		"a playlist update with a title of 151 characters": {
+			do: func() error {
+				_, err := service.Playlists.Update([]string{"snippet"}, &ytapi.Playlist{
+					Id: "PLA", Snippet: &ytapi.PlaylistSnippet{Title: strings.Repeat("x", 151)},
+				}).Context(ctx).Do()
+				return err
+			},
+			code: http.StatusBadRequest, reason: "invalidPlaylistSnippet",
+		},
+		"a playlist update with a title of 76 letters each carrying a combining accent": {
+			do: func() error {
+				_, err := service.Playlists.Update([]string{"snippet"}, &ytapi.Playlist{
+					Id: "PLA", Snippet: &ytapi.PlaylistSnippet{Title: strings.Repeat("é", 76)},
+				}).Context(ctx).Do()
+				return err
+			},
+			code: http.StatusBadRequest, reason: "invalidPlaylistSnippet",
+		},
+		"a playlist update with a description of 5,001 characters": {
+			do: func() error {
+				_, err := service.Playlists.Update([]string{"snippet"}, &ytapi.Playlist{
+					Id: "PLA", Snippet: &ytapi.PlaylistSnippet{Title: "limits", Description: strings.Repeat("x", 5001)},
+				}).Context(ctx).Do()
+				return err
+			},
+			code: http.StatusBadRequest, reason: "invalidPlaylistSnippet",
+		},
+		"a playlist update with a title of a < b > c": {
+			do: func() error {
+				_, err := service.Playlists.Update([]string{"snippet"}, &ytapi.Playlist{
+					Id: "PLA", Snippet: &ytapi.PlaylistSnippet{Title: "a < b > c"},
+				}).Context(ctx).Do()
+				return err
+			},
+			code: http.StatusBadRequest, reason: "invalidPlaylistSnippet",
+		},
+		"a playlist insert with a title of 200 characters": {
+			do: func() error {
+				_, err := service.Playlists.Insert([]string{"snippet", "status"}, &ytapi.Playlist{
+					Snippet: &ytapi.PlaylistSnippet{Title: strings.Repeat("y", 200)},
+					Status:  &ytapi.PlaylistStatus{PrivacyStatus: "private"},
+				}).Context(ctx).Do()
+				return err
+			},
+			code: http.StatusBadRequest, reason: "invalidPlaylistSnippet",
+		},
+		"an update sent right after the playlist's create": {
+			do: func() error {
+				created, err := service.Playlists.Insert([]string{"snippet", "status"}, &ytapi.Playlist{
+					Snippet: &ytapi.PlaylistSnippet{Title: "ypl abort measure"},
+					Status:  &ytapi.PlaylistStatus{PrivacyStatus: "private"},
+				}).Context(ctx).Do()
+				if err != nil {
+					return err
+				}
+				_, err = service.Playlists.Update([]string{"snippet"}, &ytapi.Playlist{
+					Id: created.Id, Snippet: &ytapi.PlaylistSnippet{Title: "ypl abort probe"},
+				}).Context(ctx).Do()
+				return err
+			},
+			code: http.StatusConflict, reason: "SERVICE_UNAVAILABLE",
 		},
 	}
 	for name, c := range refusals {

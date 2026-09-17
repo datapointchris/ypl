@@ -38,6 +38,11 @@ const (
 	CodePlayConflict Code = "play_conflict"
 
 	// 422
+	CodeTitleRequired       Code = "title_required"
+	CodeTitleTooLong        Code = "title_too_long"
+	CodeDescriptionTooLong  Code = "description_too_long"
+	CodeNoChanges           Code = "no_changes"
+	CodeYouTubeRefused      Code = "youtube_refused"
 	CodeInvalidPlayID       Code = "invalid_play_id"
 	CodeVideoIDRequired     Code = "video_id_required"
 	CodeVideoNotStored      Code = "video_not_stored"
@@ -46,10 +51,17 @@ const (
 	CodePlayedTsInTheFuture Code = "played_ts_in_the_future"
 
 	// 500
-	CodeInternal Code = "internal"
+	CodeInternal               Code = "internal"
+	CodeYouTubeWriteUnrecorded Code = "youtube_write_unrecorded"
+
+	// 502
+	CodeYouTubeWriteFailed Code = "youtube_write_failed"
+	CodeYouTubeReadFailed  Code = "youtube_read_failed"
 
 	// 503
 	CodeIdentityProviderUnavailable Code = "identity_provider_unavailable"
+	CodeYouTubeQuotaSpent           Code = "youtube_quota_spent"
+	CodeShuttingDown                Code = "shutting_down"
 )
 
 // Refusal is the body of every answer that refuses a request.

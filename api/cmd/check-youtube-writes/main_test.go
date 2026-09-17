@@ -76,30 +76,31 @@ func (s *stubChannel) Items(_ context.Context, playlistID youtube.PlaylistID) ([
 	return slices.Clone(s.items[playlistID]), nil
 }
 
-func (s *stubChannel) CreatePlaylist(ctx context.Context, details youtube.PlaylistDetails) (youtube.PlaylistID, error) {
+func (s *stubChannel) CreatePlaylist(ctx context.Context, details youtube.PlaylistDetails) (youtube.Playlist, error) {
 	s.createContextErr = ctx.Err()
 	_, err := s.call("CreatePlaylist")
 	if err != nil && !s.createLostAnswer {
-		return "", err
+		return youtube.Playlist{}, err
 	}
-	s.playlists = append(s.playlists, youtube.Playlist{ID: "PLcheck", Title: details.Title, Description: details.Description, Privacy: "private"})
+	created := youtube.Playlist{ID: "PLcheck", Title: details.Title, Description: details.Description, Privacy: "private"}
+	s.playlists = append(s.playlists, created)
 	s.items["PLcheck"] = nil
 	if err != nil {
-		return "", err
+		return youtube.Playlist{}, err
 	}
-	return "PLcheck", nil
+	return created, nil
 }
 
-func (s *stubChannel) UpdatePlaylist(_ context.Context, id youtube.PlaylistID, details youtube.PlaylistDetails) error {
+func (s *stubChannel) UpdatePlaylist(_ context.Context, id youtube.PlaylistID, details youtube.PlaylistDetails) (youtube.PlaylistDetails, error) {
 	if ignored, err := s.call("UpdatePlaylist", id); err != nil || ignored {
-		return err
+		return youtube.PlaylistDetails{}, err
 	}
 	index := slices.IndexFunc(s.playlists, func(p youtube.Playlist) bool { return p.ID == id })
 	s.playlists[index].Title, s.playlists[index].Description = details.Title, details.Description
 	if s.updateDropsDescription {
 		s.playlists[index].Description = ""
 	}
-	return nil
+	return youtube.PlaylistDetails{Title: s.playlists[index].Title, Description: s.playlists[index].Description}, nil
 }
 
 func (s *stubChannel) DeletePlaylist(ctx context.Context, id youtube.PlaylistID) error {

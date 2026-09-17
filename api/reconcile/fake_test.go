@@ -17,13 +17,20 @@ import (
 )
 
 // fakeChannel is a channel's playlists held in memory, read as youtube.Channel
-// reads them: each list call costs 1 unit a page of 50, and a playlist that is
-// gone answers ErrPlaylistNotFound.
+// reads them: each list call costs 1 unit a page of 50, a read by id costs 1,
+// and a playlist that is gone answers ErrPlaylistNotFound.
 type fakeChannel struct {
 	playlists []youtube.Playlist
 	items     map[youtube.PlaylistID][]youtube.Item
-	// itemsErrors is the error Items of a playlist returns.
+	// unseen holds each playlist every read passes over, as a read sent within
+	// seconds of the playlist's create does, and unlisted each one only the
+	// listing passes over.
+	unseen   map[youtube.PlaylistID]bool
+	unlisted map[youtube.PlaylistID]bool
+	// itemsErrors is the error Items of a playlist returns, and byIDErrors the
+	// error Playlist does.
 	itemsErrors map[youtube.PlaylistID]error
+	byIDErrors  map[youtube.PlaylistID]error
 	// playlistsError is the error Playlists returns.
 	playlistsError error
 	// quota is how many units are served before every request is refused with
@@ -34,9 +41,9 @@ type fakeChannel struct {
 	beforeList  func(n int)
 	beforeItems func(n int)
 
-	lists, itemReads int
-	requests, units  int64
-	nextItem         int
+	lists, itemReads, byIDReads int
+	requests, units             int64
+	nextItem                    int
 }
 
 // newFakeChannel holds a playlist per entry of playlists, named by id and holding
@@ -44,7 +51,10 @@ type fakeChannel struct {
 func newFakeChannel(playlists map[youtube.PlaylistID]string) *fakeChannel {
 	f := &fakeChannel{
 		items:       map[youtube.PlaylistID][]youtube.Item{},
+		unseen:      map[youtube.PlaylistID]bool{},
+		unlisted:    map[youtube.PlaylistID]bool{},
 		itemsErrors: map[youtube.PlaylistID]error{},
+		byIDErrors:  map[youtube.PlaylistID]error{},
 	}
 	for _, id := range slices.Sorted(maps.Keys(playlists)) {
 		f.playlists = append(f.playlists, youtube.Playlist{ID: id, Title: "Playlist " + string(id), Privacy: "private"})
@@ -103,7 +113,22 @@ func (f *fakeChannel) Playlists(ctx context.Context) ([]youtube.Playlist, error)
 	if f.playlistsError != nil {
 		return nil, f.playlistsError
 	}
-	return slices.Clone(f.playlists), nil
+	return slices.DeleteFunc(slices.Clone(f.playlists), func(p youtube.Playlist) bool { return f.unseen[p.ID] || f.unlisted[p.ID] }), nil
+}
+
+func (f *fakeChannel) Playlist(ctx context.Context, id youtube.PlaylistID) (youtube.Playlist, error) {
+	f.byIDReads++
+	if err := f.charge(ctx, 1); err != nil {
+		return youtube.Playlist{}, err
+	}
+	if err := f.byIDErrors[id]; err != nil {
+		return youtube.Playlist{}, err
+	}
+	index := slices.IndexFunc(f.playlists, func(p youtube.Playlist) bool { return p.ID == id })
+	if index < 0 || f.unseen[id] {
+		return youtube.Playlist{}, fmt.Errorf("read playlist %s: %w", id, youtube.ErrPlaylistNotFound)
+	}
+	return f.playlists[index], nil
 }
 
 func (f *fakeChannel) Items(ctx context.Context, playlist youtube.PlaylistID) ([]youtube.Item, error) {
@@ -118,7 +143,7 @@ func (f *fakeChannel) Items(ctx context.Context, playlist youtube.PlaylistID) ([
 	if err := f.itemsErrors[playlist]; err != nil {
 		return nil, err
 	}
-	if !ok {
+	if !ok || f.unseen[playlist] {
 		return nil, fmt.Errorf("list items of playlist %s: %w", playlist, youtube.ErrPlaylistNotFound)
 	}
 	read := make([]youtube.Item, len(held))
@@ -127,6 +152,39 @@ func (f *fakeChannel) Items(ctx context.Context, playlist youtube.PlaylistID) ([
 		read[i] = item
 	}
 	return read, nil
+}
+
+// CreatePlaylist, UpdatePlaylist and DeletePlaylist make the API's writes on the
+// channel, at 50 units each, so a test can serve the API over it.
+func (f *fakeChannel) CreatePlaylist(ctx context.Context, details youtube.PlaylistDetails) (youtube.Playlist, error) {
+	if err := f.charge(ctx, 50); err != nil {
+		return youtube.Playlist{}, err
+	}
+	created := youtube.Playlist{ID: youtube.PlaylistID(fmt.Sprintf("PLnew%d", len(f.playlists))), Title: details.Title, Description: details.Description, Privacy: "private"}
+	f.playlists = append(f.playlists, created)
+	f.items[created.ID] = []youtube.Item{}
+	return created, nil
+}
+
+func (f *fakeChannel) UpdatePlaylist(ctx context.Context, id youtube.PlaylistID, details youtube.PlaylistDetails) (youtube.PlaylistDetails, error) {
+	if err := f.charge(ctx, 50); err != nil {
+		return youtube.PlaylistDetails{}, err
+	}
+	if index := slices.IndexFunc(f.playlists, func(p youtube.Playlist) bool { return p.ID == id }); index >= 0 {
+		f.playlists[index].Title, f.playlists[index].Description = details.Title, details.Description
+	}
+	return details, nil
+}
+
+func (f *fakeChannel) DeletePlaylist(ctx context.Context, id youtube.PlaylistID) error {
+	if err := f.charge(ctx, 50); err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(f.playlists, func(p youtube.Playlist) bool { return p.ID == id }) {
+		return fmt.Errorf("delete playlist %s: %w", id, youtube.ErrPlaylistNotFound)
+	}
+	f.deletePlaylist(id)
+	return nil
 }
 
 func (f *fakeChannel) Requests() int64 { return f.requests }

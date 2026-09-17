@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 
 	"github.com/datapointchris/ypl/api/store/generated"
+	"github.com/datapointchris/ypl/api/youtube"
 )
 
 //go:embed migrations/*.sql
@@ -49,6 +51,39 @@ var syncOutcomes = []generated.UpsertSyncOutcomeParams{
 	{Outcome: OutcomeQuotaSpent, Label: "Quota spent", Description: "YouTube refused a request for the day's quota, in this run or an earlier one on the same Pacific date"},
 	{Outcome: OutcomeFailed, Label: "Failed", Description: "An error ended the run before it finished"},
 	{Outcome: OutcomeCanceled, Label: "Canceled", Description: "The run was canceled before it finished"},
+}
+
+// How a write sent to YouTube ended, the vocabulary youtube_writes.outcome draws
+// from.
+const (
+	WritePending    = "pending"
+	WriteApplied    = "applied"
+	WriteAbsent     = "absent"
+	WriteRefused    = "refused"
+	WriteQuotaSpent = "quota_spent"
+	WriteUnanswered = "unanswered"
+)
+
+// youtubeWriteOutcomes is the youtube_write_outcomes vocabulary, upserted on
+// every open.
+var youtubeWriteOutcomes = []generated.UpsertYouTubeWriteOutcomeParams{
+	{Outcome: WritePending, Label: "Pending", Description: "Recorded before the write was sent, with no answer recorded: the write is in flight, or the server stopped before recording its answer"},
+	{Outcome: WriteApplied, Label: "Applied", Description: "YouTube answered that it made the write"},
+	{Outcome: WriteAbsent, Label: "Target absent", Description: "YouTube answered that the playlist or item the write named does not exist"},
+	{Outcome: WriteRefused, Label: "Refused", Description: "YouTube refused the write and did not make it"},
+	{Outcome: WriteQuotaSpent, Label: "Quota spent", Description: "YouTube refused the write because the day's quota is spent"},
+	{Outcome: WriteUnanswered, Label: "Unanswered", Description: "No answer arrived, or none that says what YouTube did, so YouTube may or may not have made the write"},
+}
+
+// youtubeWriteMethods is the youtube_write_methods vocabulary, upserted on every
+// open. It holds each write the youtube package makes.
+var youtubeWriteMethods = []generated.UpsertYouTubeWriteMethodParams{
+	{Method: youtube.MethodPlaylistsInsert, Label: "Create a playlist", Description: "Creates a private playlist with a title and a description"},
+	{Method: youtube.MethodPlaylistsUpdate, Label: "Change a playlist's details", Description: "Sets a playlist's title and description together"},
+	{Method: youtube.MethodPlaylistsDelete, Label: "Delete a playlist", Description: "Deletes a playlist and every item in it"},
+	{Method: youtube.MethodPlaylistItemsInsert, Label: "Add a video", Description: "Adds a video to a playlist, at a position or at its end"},
+	{Method: youtube.MethodPlaylistItemsUpdate, Label: "Move an item", Description: "Moves an item to a position in its playlist"},
+	{Method: youtube.MethodPlaylistItemsDelete, Label: "Remove an item", Description: "Removes an item from its playlist"},
 }
 
 // playlistPrivacies is the playlist_privacies vocabulary, upserted on every
@@ -256,5 +291,93 @@ func (s *Store) seed(ctx context.Context) error {
 			return fmt.Errorf("seed playlist privacy %s: %w", privacy.Privacy, err)
 		}
 	}
+	for _, outcome := range youtubeWriteOutcomes {
+		if err := s.Queries.UpsertYouTubeWriteOutcome(ctx, outcome); err != nil {
+			return fmt.Errorf("seed YouTube write outcome %s: %w", outcome.Outcome, err)
+		}
+	}
+	for _, method := range youtubeWriteMethods {
+		if err := s.Queries.UpsertYouTubeWriteMethod(ctx, method); err != nil {
+			return fmt.Errorf("seed YouTube write method %s: %w", method.Method, err)
+		}
+	}
 	return nil
+}
+
+// Timestamp is t as the store holds a time: UTC, to the second, in RFC 3339.
+// Times held this way order as text.
+func Timestamp(t time.Time) string {
+	return t.UTC().Format(time.RFC3339)
+}
+
+// BeginWrite records a pending write of method to the playlist playlistID, or
+// to no playlist yet when playlistID is empty, sent at sentAt, and returns its
+// id. It is recorded before the write is sent.
+func (s *Store) BeginWrite(ctx context.Context, method, playlistID string, sentAt time.Time) (int64, error) {
+	id, err := s.Queries.InsertYouTubeWrite(ctx, generated.InsertYouTubeWriteParams{
+		Method:     method,
+		PlaylistID: sql.NullString{String: playlistID, Valid: playlistID != ""},
+		SentTs:     Timestamp(sentAt),
+		QuotaDate:  youtube.QuotaDate(sentAt),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("record the %s write before sending it: %w", method, err)
+	}
+	return id, nil
+}
+
+// Settlement is how a pending write ended.
+type Settlement struct {
+	WriteID int64
+	// PlaylistID is the playlist the write named or created, and empty for a
+	// create that returned none.
+	PlaylistID string
+	Outcome    string
+	SettledAt  time.Time
+	// Requests and Units are what the write's attempts cost.
+	Requests, Units int64
+	// Err is why the write did not apply, and nil for an applied one.
+	Err error
+}
+
+// SettleWrite records how a pending write ended. It fails for a write that is
+// not pending.
+func (tx *Tx) SettleWrite(ctx context.Context, s Settlement) error {
+	params := generated.SettleYouTubeWriteParams{
+		WriteID:    s.WriteID,
+		PlaylistID: sql.NullString{String: s.PlaylistID, Valid: s.PlaylistID != ""},
+		Outcome:    s.Outcome,
+		SettledTs:  sql.NullString{String: Timestamp(s.SettledAt), Valid: true},
+		Requests:   sql.NullInt64{Int64: s.Requests, Valid: true},
+		Units:      sql.NullInt64{Int64: s.Units, Valid: true},
+	}
+	if s.Err != nil {
+		params.Error = sql.NullString{String: s.Err.Error(), Valid: true}
+	}
+	settled, err := tx.SettleYouTubeWrite(ctx, params)
+	switch {
+	case err != nil:
+		return fmt.Errorf("settle write %d as %s: %w", s.WriteID, s.Outcome, err)
+	case settled != 1:
+		return fmt.Errorf("settle write %d as %s: no pending write has that id", s.WriteID, s.Outcome)
+	}
+	return nil
+}
+
+// WriteNewerThanRead is the method of the latest write to the playlist
+// playlistID that a read sent at readAt may not show: one YouTube answered by
+// making it, or by reporting the playlist absent, and that settled later than
+// youtube.ReadLag before readAt. ok is false when no write did.
+func WriteNewerThanRead(ctx context.Context, q *generated.Queries, playlistID string, readAt time.Time) (method string, ok bool, err error) {
+	row, err := q.LatestPlaylistWriteSettledAfter(ctx, generated.LatestPlaylistWriteSettledAfterParams{
+		PlaylistID:   sql.NullString{String: playlistID, Valid: true},
+		SettledAfter: sql.NullString{String: Timestamp(readAt.Add(-youtube.ReadLag)), Valid: true},
+	})
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("read the latest write to playlist %s: %w", playlistID, err)
+	}
+	return row.Method, true, nil
 }

@@ -287,6 +287,48 @@ func (q *Queries) GetPlaylist(ctx context.Context, playlistID string) (Playlist,
 	return i, err
 }
 
+const getPlaylistSummary = `-- name: GetPlaylistSummary :one
+SELECT
+    p.playlist_id,
+    p.title,
+    p.description,
+    p.privacy,
+    CAST(count(pi.item_id) AS INTEGER) AS item_count,
+    CAST(coalesce(sum(v.is_unavailable), 0) AS INTEGER) AS unavailable_count,
+    CAST(count(v.enriched_ts) AS INTEGER) AS enriched_count
+FROM playlists AS p
+LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
+LEFT JOIN videos AS v ON pi.video_id = v.video_id
+WHERE p.playlist_id = ?
+GROUP BY p.playlist_id
+`
+
+type GetPlaylistSummaryRow struct {
+	PlaylistID       string
+	Title            string
+	Description      string
+	Privacy          string
+	ItemCount        int64
+	UnavailableCount int64
+	EnrichedCount    int64
+}
+
+// One playlist with the counts ListPlaylistSummaries gives each.
+func (q *Queries) GetPlaylistSummary(ctx context.Context, playlistID string) (GetPlaylistSummaryRow, error) {
+	row := q.db.QueryRowContext(ctx, getPlaylistSummary, playlistID)
+	var i GetPlaylistSummaryRow
+	err := row.Scan(
+		&i.PlaylistID,
+		&i.Title,
+		&i.Description,
+		&i.Privacy,
+		&i.ItemCount,
+		&i.UnavailableCount,
+		&i.EnrichedCount,
+	)
+	return i, err
+}
+
 const getSyncRun = `-- name: GetSyncRun :one
 SELECT
     run_id,
@@ -351,6 +393,40 @@ func (q *Queries) GetVideo(ctx context.Context, videoID string) (Video, error) {
 		&i.UploadDate,
 		&i.IsUnavailable,
 		&i.EnrichedTs,
+	)
+	return i, err
+}
+
+const getYouTubeWrite = `-- name: GetYouTubeWrite :one
+SELECT
+    write_id,
+    method,
+    playlist_id,
+    sent_ts,
+    quota_date,
+    outcome,
+    settled_ts,
+    requests,
+    units,
+    error
+FROM youtube_writes
+WHERE write_id = ?
+`
+
+func (q *Queries) GetYouTubeWrite(ctx context.Context, writeID int64) (YoutubeWrite, error) {
+	row := q.db.QueryRowContext(ctx, getYouTubeWrite, writeID)
+	var i YoutubeWrite
+	err := row.Scan(
+		&i.WriteID,
+		&i.Method,
+		&i.PlaylistID,
+		&i.SentTs,
+		&i.QuotaDate,
+		&i.Outcome,
+		&i.SettledTs,
+		&i.Requests,
+		&i.Units,
+		&i.Error,
 	)
 	return i, err
 }
@@ -532,6 +608,64 @@ func (q *Queries) InsertTrack(ctx context.Context, arg InsertTrackParams) error 
 		arg.Source,
 	)
 	return err
+}
+
+const insertYouTubeWrite = `-- name: InsertYouTubeWrite :one
+INSERT INTO youtube_writes (method, playlist_id, sent_ts, quota_date, outcome)
+VALUES (?1, ?2, ?3, ?4, 'pending')
+RETURNING write_id
+`
+
+type InsertYouTubeWriteParams struct {
+	Method     string
+	PlaylistID sql.NullString
+	SentTs     string
+	QuotaDate  string
+}
+
+// Records a write as pending, before it is sent.
+func (q *Queries) InsertYouTubeWrite(ctx context.Context, arg InsertYouTubeWriteParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, insertYouTubeWrite,
+		arg.Method,
+		arg.PlaylistID,
+		arg.SentTs,
+		arg.QuotaDate,
+	)
+	var write_id int64
+	err := row.Scan(&write_id)
+	return write_id, err
+}
+
+const latestPlaylistWriteSettledAfter = `-- name: LatestPlaylistWriteSettledAfter :one
+SELECT
+    method,
+    outcome
+FROM youtube_writes
+WHERE
+    playlist_id = ?1
+    AND outcome IN ('applied', 'absent')
+    AND settled_ts > ?2
+ORDER BY settled_ts DESC, write_id DESC
+LIMIT 1
+`
+
+type LatestPlaylistWriteSettledAfterParams struct {
+	PlaylistID   sql.NullString
+	SettledAfter sql.NullString
+}
+
+type LatestPlaylistWriteSettledAfterRow struct {
+	Method  string
+	Outcome string
+}
+
+// The latest write to the playlist that settled after settled_after with
+// YouTube's answer that it made the write, or that the playlist does not exist.
+func (q *Queries) LatestPlaylistWriteSettledAfter(ctx context.Context, arg LatestPlaylistWriteSettledAfterParams) (LatestPlaylistWriteSettledAfterRow, error) {
+	row := q.db.QueryRowContext(ctx, latestPlaylistWriteSettledAfter, arg.PlaylistID, arg.SettledAfter)
+	var i LatestPlaylistWriteSettledAfterRow
+	err := row.Scan(&i.Method, &i.Outcome)
+	return i, err
 }
 
 const listLibraryVideos = `-- name: ListLibraryVideos :many
@@ -1373,6 +1507,68 @@ func (q *Queries) ListVideoPlaylists(ctx context.Context, videoID sql.NullString
 	return items, nil
 }
 
+const settleYouTubeWrite = `-- name: SettleYouTubeWrite :execrows
+UPDATE youtube_writes SET
+    playlist_id = ?1,
+    outcome = ?2,
+    settled_ts = ?3,
+    requests = ?4,
+    units = ?5,
+    error = ?6
+WHERE write_id = ?7 AND outcome = 'pending'
+`
+
+type SettleYouTubeWriteParams struct {
+	PlaylistID sql.NullString
+	Outcome    string
+	SettledTs  sql.NullString
+	Requests   sql.NullInt64
+	Units      sql.NullInt64
+	Error      sql.NullString
+	WriteID    int64
+}
+
+// Records how a pending write ended, and changes nothing for a write already
+// settled.
+func (q *Queries) SettleYouTubeWrite(ctx context.Context, arg SettleYouTubeWriteParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, settleYouTubeWrite,
+		arg.PlaylistID,
+		arg.Outcome,
+		arg.SettledTs,
+		arg.Requests,
+		arg.Units,
+		arg.Error,
+		arg.WriteID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updatePlaylistDetails = `-- name: UpdatePlaylistDetails :execrows
+UPDATE playlists SET
+    title = ?1,
+    description = ?2
+WHERE playlist_id = ?3
+`
+
+type UpdatePlaylistDetailsParams struct {
+	Title       string
+	Description string
+	PlaylistID  string
+}
+
+// Sets a stored playlist's title and description, and changes nothing when no
+// playlist has the id.
+func (q *Queries) UpdatePlaylistDetails(ctx context.Context, arg UpdatePlaylistDetailsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updatePlaylistDetails, arg.Title, arg.Description, arg.PlaylistID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const upsertAvailableVideo = `-- name: UpsertAvailableVideo :exec
 INSERT INTO videos (video_id, title, channel_title, is_unavailable)
 VALUES (?, ?, ?, 0)
@@ -1513,5 +1709,43 @@ type UpsertUnavailableVideoParams struct {
 // keeps its title and channel, which YouTube no longer reports.
 func (q *Queries) UpsertUnavailableVideo(ctx context.Context, arg UpsertUnavailableVideoParams) error {
 	_, err := q.db.ExecContext(ctx, upsertUnavailableVideo, arg.VideoID, arg.Title)
+	return err
+}
+
+const upsertYouTubeWriteMethod = `-- name: UpsertYouTubeWriteMethod :exec
+INSERT INTO youtube_write_methods (method, label, description)
+VALUES (?, ?, ?)
+ON CONFLICT (method) DO UPDATE SET
+    label = excluded.label,
+    description = excluded.description
+`
+
+type UpsertYouTubeWriteMethodParams struct {
+	Method      string
+	Label       string
+	Description string
+}
+
+func (q *Queries) UpsertYouTubeWriteMethod(ctx context.Context, arg UpsertYouTubeWriteMethodParams) error {
+	_, err := q.db.ExecContext(ctx, upsertYouTubeWriteMethod, arg.Method, arg.Label, arg.Description)
+	return err
+}
+
+const upsertYouTubeWriteOutcome = `-- name: UpsertYouTubeWriteOutcome :exec
+INSERT INTO youtube_write_outcomes (outcome, label, description)
+VALUES (?, ?, ?)
+ON CONFLICT (outcome) DO UPDATE SET
+    label = excluded.label,
+    description = excluded.description
+`
+
+type UpsertYouTubeWriteOutcomeParams struct {
+	Outcome     string
+	Label       string
+	Description string
+}
+
+func (q *Queries) UpsertYouTubeWriteOutcome(ctx context.Context, arg UpsertYouTubeWriteOutcomeParams) error {
+	_, err := q.db.ExecContext(ctx, upsertYouTubeWriteOutcome, arg.Outcome, arg.Label, arg.Description)
 	return err
 }

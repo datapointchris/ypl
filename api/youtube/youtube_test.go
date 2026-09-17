@@ -290,8 +290,8 @@ func TestYouTubesQuotaRefusalIsErrQuotaSpent(t *testing.T) {
 
 	channel := api.channel()
 
-	if _, err := channel.Playlists(context.Background()); !errors.Is(err, ErrQuotaSpent) {
-		t.Errorf("Playlists on YouTube's quotaExceeded = %v, want ErrQuotaSpent", err)
+	if _, err := channel.Playlists(context.Background()); !errors.Is(err, ErrQuotaSpent) || !errors.Is(err, ErrRefused) {
+		t.Errorf("Playlists on YouTube's quotaExceeded = %v, want ErrQuotaSpent and ErrRefused", err)
 	}
 	if _, err := channel.InsertItem(context.Background(), "PLA", "vidA", 0); !errors.Is(err, ErrQuotaSpent) {
 		t.Errorf("InsertItem on YouTube's quotaExceeded = %v, want ErrQuotaSpent", err)
@@ -348,6 +348,20 @@ func TestTheFakeAnswersAsTheDataAPIDoes(t *testing.T) {
 	}
 	if playlists.PageInfo.TotalResults <= int64(len(playlists.Items)) {
 		t.Errorf("playlists total %d with %d listed, want a total above the count", playlists.PageInfo.TotalResults, len(playlists.Items))
+	}
+
+	byID := func(id string) *ytapi.PlaylistListResponse {
+		response, err := server.Playlists.List([]string{"snippet", "status"}).Id(id).MaxResults(50).Context(ctx).Do()
+		if err != nil {
+			t.Fatalf("a read of %s by id: %v", id, err)
+		}
+		return response
+	}
+	if held := byID("PLB"); len(held.Items) != 1 || held.Items[0].Id != "PLB" || held.PageInfo.TotalResults != 1 || held.NextPageToken != "" {
+		t.Errorf("a read by id of a playlist held = %+v, want it alone with a total of 1 and no next page", held)
+	}
+	if unknown := byID("PLnoSuchPlaylist"); len(unknown.Items) != 0 || unknown.PageInfo.TotalResults != 0 {
+		t.Errorf("a read by id of an id nothing has = %+v, want no playlists and a total of 0", unknown)
 	}
 
 	refusals := map[string]struct {

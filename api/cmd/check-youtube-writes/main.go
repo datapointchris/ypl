@@ -75,8 +75,8 @@ const (
 type channel interface {
 	Playlists(ctx context.Context) ([]youtube.Playlist, error)
 	Items(ctx context.Context, playlistID youtube.PlaylistID) ([]youtube.Item, error)
-	CreatePlaylist(ctx context.Context, details youtube.PlaylistDetails) (youtube.PlaylistID, error)
-	UpdatePlaylist(ctx context.Context, id youtube.PlaylistID, details youtube.PlaylistDetails) error
+	CreatePlaylist(ctx context.Context, details youtube.PlaylistDetails) (youtube.Playlist, error)
+	UpdatePlaylist(ctx context.Context, id youtube.PlaylistID, details youtube.PlaylistDetails) (youtube.PlaylistDetails, error)
 	DeletePlaylist(ctx context.Context, id youtube.PlaylistID) error
 	InsertItem(ctx context.Context, playlist youtube.PlaylistID, video youtube.VideoID, position int64) (youtube.ItemID, error)
 	MoveItem(ctx context.Context, item youtube.Item, position int64) error
@@ -172,11 +172,12 @@ func check(ctx context.Context, ch channel, settle func(context.Context) error, 
 // deletes it.
 func createAndCheck(ctx context.Context, ch channel, settle func(context.Context) error, videos []youtube.VideoID, rep *report) error {
 	created, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedTime)
-	id, err := ch.CreatePlaylist(created, youtube.PlaylistDetails{Title: title, Description: description})
+	playlist, err := ch.CreatePlaylist(created, youtube.PlaylistDetails{Title: title, Description: description})
 	cancel()
 	if err != nil {
 		return errors.Join(err, sweep(ctx, ch, rep))
 	}
+	id := playlist.ID
 	rep.Playlist = &id
 
 	failure := writeAndReadBack(ctx, ch, settle, id, videos)
@@ -200,7 +201,7 @@ func writeAndReadBack(ctx context.Context, ch channel, settle func(context.Conte
 	if err != nil {
 		return err
 	}
-	if err := ch.UpdatePlaylist(ctx, playlist, youtube.PlaylistDetails{Title: renamed, Description: description}); err != nil {
+	if _, err := ch.UpdatePlaylist(ctx, playlist, youtube.PlaylistDetails{Title: renamed, Description: description}); err != nil {
 		return err
 	}
 	// An insert that ignored its position would leave the first video first.

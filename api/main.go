@@ -34,8 +34,11 @@ import (
 )
 
 // shutdownGrace bounds how long in-flight requests get to finish after the
-// first SIGINT or SIGTERM.
-const shutdownGrace = 10 * time.Second
+// first SIGINT or SIGTERM. No playlist write begins once the drain starts, and
+// one begun before it ends within handlers.WriteDuration, so the grace outlasts
+// every write with 5 seconds to answer. A container's stop timeout has to be
+// longer still.
+const shutdownGrace = handlers.WriteDuration + 5*time.Second
 
 // defaultSyncInterval is the wait between sync runs when SYNC_INTERVAL is unset.
 // A run reads every page of every playlist at a unit a page, so a day of runs
@@ -78,20 +81,26 @@ func start(ctx context.Context) error {
 	defer func() { _ = st.Close() }()
 	slog.Info("database ready", "path", path)
 
-	channel, err := youtube.NewChannel(ctx, creds)
+	// The sync and the API each get a channel, because a run counts its own
+	// requests and units from its channel's totals.
+	syncChannel, err := youtube.NewChannel(ctx, creds)
 	if err != nil {
 		return err
 	}
-	worker := reconcile.NewWorker(reconcile.NewRunner(st, channel, interval), interval, slog.Default())
+	apiChannel, err := youtube.NewChannel(ctx, creds)
+	if err != nil {
+		return err
+	}
+	worker := reconcile.NewWorker(reconcile.NewRunner(st, syncChannel, interval), interval, slog.Default())
 	provider := auth.NewConnecting(issuer, clientIDPrefix)
-	api := handler(handlers.New(st, slog.Default()), provider)
+	api := handlers.New(st, apiChannel, slog.Default())
 	work := func(ctx context.Context) {
 		var wg sync.WaitGroup
 		wg.Go(func() { worker.Run(ctx) })
 		wg.Go(func() { provider.Run(ctx, slog.Default()) })
 		wg.Wait()
 	}
-	return run(ctx, ":"+envOr("PORT", "8080"), api, work)
+	return run(ctx, ":"+envOr("PORT", "8080"), handler(api, provider), work, api.Drain)
 }
 
 // defaultClientIDPrefix starts the id of every client whose tokens the API
@@ -124,20 +133,20 @@ func syncInterval() (time.Duration, error) {
 
 // run binds addr and serves h on it, doing work beside the server. A port that
 // cannot be bound is returned before anything is logged as listening.
-func run(ctx context.Context, addr string, h http.Handler, work func(context.Context)) error {
+func run(ctx context.Context, addr string, h http.Handler, work func(context.Context), drain func()) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	return serve(ctx, ln, h, work)
+	return serve(ctx, ln, h, work, drain)
 }
 
 // serve answers requests on ln with h, and does work beside them, until ctx
-// ends or the first SIGINT or SIGTERM arrives. It then cancels work and drains
-// requests for up to shutdownGrace, and returns once work has returned. The
-// signal handler is released as the drain starts, so a second signal ends the
-// process immediately.
-func serve(ctx context.Context, ln net.Listener, h http.Handler, work func(context.Context)) error {
+// ends or the first SIGINT or SIGTERM arrives. It then cancels work, calls
+// drain, and drains requests for up to shutdownGrace, and returns once work has
+// returned. The signal handler is released as the drain starts, so a second
+// signal ends the process immediately.
+func serve(ctx context.Context, ln net.Listener, h http.Handler, work func(context.Context), drain func()) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -170,6 +179,7 @@ func serve(ctx context.Context, ln net.Listener, h http.Handler, work func(conte
 	}
 	stop()
 	cancelWork()
+	drain()
 
 	slog.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
