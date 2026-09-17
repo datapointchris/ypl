@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -17,6 +19,13 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	jose "github.com/go-jose/go-jose/v4"
+
+	"github.com/datapointchris/ypl/api/auth"
+	"github.com/datapointchris/ypl/api/handlers"
+	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 // serveChild makes this test binary run the real main when a test starts it as
@@ -29,6 +38,34 @@ func TestMain(m *testing.M) {
 		return
 	}
 	os.Exit(m.Run())
+}
+
+func alwaysReady() bool { return true }
+
+func TestReadyAnswersOnlyOnceItsCheckReportsReady(t *testing.T) {
+	ready := false
+	mux := routes(func() bool { return ready })
+	for _, c := range []struct {
+		ready  bool
+		code   int
+		status string
+	}{
+		{false, http.StatusServiceUnavailable, "starting"},
+		{true, http.StatusOK, "ok"},
+	} {
+		ready = c.ready
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", http.NoBody))
+		var body map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != c.code || body["status"] != c.status {
+			t.Errorf("/ready while ready is %v = %d %s, want %d with status %s", c.ready, rec.Code, rec.Body, c.code, c.status)
+		}
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", http.NoBody))
+	if rec.Code != http.StatusOK {
+		t.Errorf("/health = %d, want 200 whatever ready reports", rec.Code)
+	}
 }
 
 func TestProbesAnswerGetAndHeadAndRefuseWrites(t *testing.T) {
@@ -45,7 +82,7 @@ func TestProbesAnswerGetAndHeadAndRefuseWrites(t *testing.T) {
 	for _, path := range []string{"/health", "/ready"} {
 		for _, tc := range cases {
 			rec := httptest.NewRecorder()
-			routes().ServeHTTP(rec, httptest.NewRequest(tc.method, path, http.NoBody))
+			routes(alwaysReady).ServeHTTP(rec, httptest.NewRequest(tc.method, path, http.NoBody))
 			if rec.Code != tc.want {
 				t.Errorf("%s %s = %d, want %d", tc.method, path, rec.Code, tc.want)
 			}
@@ -55,7 +92,7 @@ func TestProbesAnswerGetAndHeadAndRefuseWrites(t *testing.T) {
 
 func TestProbeBodyIsJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
-	routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", http.NoBody))
+	routes(alwaysReady).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", http.NoBody))
 
 	if got, want := rec.Body.String(), "{\"status\":\"ok\"}\n"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
@@ -88,7 +125,7 @@ func TestRunReturnsTheBindError(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
 	defer slog.SetDefault(previous)
 
-	err = run(context.Background(), taken.Addr().String(), func(context.Context) {})
+	err = run(context.Background(), taken.Addr().String(), routes(alwaysReady), func(context.Context) {})
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("run on an occupied port = %v, want EADDRINUSE", err)
 	}
@@ -106,7 +143,7 @@ func TestServeAnswersUntilCanceledThenReturnsNil(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, ln, func(context.Context) {}) }()
+	go func() { done <- serve(ctx, ln, routes(alwaysReady), func(context.Context) {}) }()
 
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	resp, err := client.Get("http://" + ln.Addr().String() + "/ready")
@@ -141,7 +178,7 @@ func TestServeStopsItsWorkBeforeReturning(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, ln, func(ctx context.Context) {
+		done <- serve(ctx, ln, routes(alwaysReady), func(ctx context.Context) {
 			close(started)
 			<-ctx.Done()
 			time.Sleep(50 * time.Millisecond)
@@ -177,31 +214,214 @@ func TestSyncIntervalDefaultsToAnHourAndRefusesAnythingButAPositiveDuration(t *t
 	}
 }
 
-func TestSecondSignalEndsTheDrain(t *testing.T) {
-	if testing.Short() {
-		t.Skip("starts the service as a child process")
+func TestIdentityProviderRequiresAnIssuerAndDefaultsThePrefix(t *testing.T) {
+	t.Setenv("OIDC_ISSUER", "")
+	if _, _, err := identityProvider(); err == nil {
+		t.Fatal("identityProvider with OIDC_ISSUER unset succeeded, want a refusal")
 	}
 
-	child := exec.Command(os.Args[0], "-test.run=^$")
+	t.Setenv("OIDC_ISSUER", "https://id.example")
+	t.Setenv("CLI_CLIENT_ID_PREFIX", "")
+	if issuer, prefix, err := identityProvider(); err != nil || issuer != "https://id.example" || prefix != "ypl-cli-" {
+		t.Fatalf("identityProvider = %q, %q, %v, want the issuer and ypl-cli-", issuer, prefix, err)
+	}
+	t.Setenv("CLI_CLIENT_ID_PREFIX", "ypl-test-")
+	if _, prefix, err := identityProvider(); err != nil || prefix != "ypl-test-" {
+		t.Fatalf("identityProvider prefix = %q, %v, want ypl-test-", prefix, err)
+	}
+}
+
+// acceptOnly is ready, and accepts the one token it holds and rejects every
+// other.
+type acceptOnly string
+
+func (a acceptOnly) Verify(_ context.Context, raw string) (auth.Identity, error) {
+	if raw != string(a) {
+		return auth.Identity{}, auth.ErrUnauthorized
+	}
+	return auth.Identity{Subject: "user", ClientID: "ypl-cli-test"}, nil
+}
+
+func (acceptOnly) Ready() bool { return true }
+
+func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "api.db"))
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	h := handler(handlers.New(st, slog.Default()), acceptOnly("good"))
+
+	cases := []struct {
+		path, token string
+		want        int
+	}{
+		{"/api/v1/playlists", "", http.StatusUnauthorized},
+		{"/api/v1/playlists", "bad", http.StatusUnauthorized},
+		{"/api/v1/playlists", "good", http.StatusOK},
+		{"/api/v1/status", "good", http.StatusOK},
+		{"/health", "", http.StatusOK},
+		{"/ready", "", http.StatusOK},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, c.path, http.NoBody)
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("GET %s with token %q = %d, want %d", c.path, c.token, rec.Code, c.want)
+		}
+	}
+}
+
+// identityProviderStub serves a discovery document naming itself as the issuer
+// and a JWKS holding one signing key, which is all the service reads from the
+// provider before it is ready.
+func identityProviderStub(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		self := "http://" + r.Host
+		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": self, "jwks_uri": self + "/jwks.json"})
+	})
+	mux.HandleFunc("/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{
+			{Key: key.Public(), KeyID: "main", Algorithm: string(jose.RS256), Use: "sig"},
+		}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// child is the service started as a child process against the identity
+// provider issuer.
+type child struct {
+	cmd      *exec.Cmd
+	logs     *bufio.Scanner
+	port     string
+	database string
+	client   *http.Client
+}
+
+func startChild(t *testing.T, issuer string) *child {
+	t.Helper()
+	database := filepath.Join(t.TempDir(), "api.db")
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	// The credentials are placeholders, and every request the sync makes goes to
-	// a proxy port nothing listens on, so no request leaves the machine.
-	child.Env = append(os.Environ(), serveChild+"=1", "PORT=0", "DATABASE_PATH="+filepath.Join(t.TempDir(), "api.db"),
+	// a proxy port nothing listens on, so no request leaves the machine. The
+	// identity provider is on the loopback address, which Go never proxies.
+	cmd.Env = append(os.Environ(), serveChild+"=1", "PORT=0", "DATABASE_PATH="+database,
 		"YOUTUBE_CLIENT_ID=id", "YOUTUBE_CLIENT_SECRET=secret", "YOUTUBE_REFRESH_TOKEN=token",
+		"OIDC_ISSUER="+issuer,
 		"HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1", "NO_PROXY=")
-	stdout, err := child.StdoutPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
 	}
-	if err := child.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		t.Fatalf("start child: %v", err)
 	}
-	defer func() { _ = child.Process.Kill() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
 
 	logs := bufio.NewScanner(stdout)
 	addr := awaitLog(t, logs, "listening")["addr"]
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("listening addr %q: %v", addr, err)
+	}
+	return &child{cmd: cmd, logs: logs, port: port, database: database, client: &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}}
+}
+
+// get answers GET path with the bearer token, when one is given, and the body.
+func (c *child) get(t *testing.T, path, token string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1:"+c.port+path, http.NoBody)
+	if err != nil {
+		t.Fatalf("request %s: %v", path, err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var body bytes.Buffer
+	_, _ = body.ReadFrom(resp.Body)
+	return resp.StatusCode, body.Bytes()
+}
+
+// awaitReady asks /ready until it answers 200.
+func (c *child) awaitReady(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if code, _ := c.get(t, "/ready", ""); code == http.StatusOK {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("/ready did not answer 200 with the identity provider up")
+}
+
+// The sync needs no token, so a provider that is down when the service starts
+// leaves it serving, not ready, and refusing tokens as the provider's outage.
+func TestAProviderDownAtStartLeavesTheServiceServing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts the service as a child process")
+	}
+	c := startChild(t, "http://127.0.0.1:1")
+
+	if code, _ := c.get(t, "/health", ""); code != http.StatusOK {
+		t.Errorf("/health = %d, want 200", code)
+	}
+	if code, _ := c.get(t, "/ready", ""); code != http.StatusServiceUnavailable {
+		t.Errorf("/ready = %d, want 503 while the provider is unread", code)
+	}
+	code, body := c.get(t, "/api/v1/status", "a.b.c")
+	var refusal wire.Refusal
+	if err := json.Unmarshal(body, &refusal); err != nil || code != http.StatusServiceUnavailable || refusal.Code != wire.CodeIdentityProviderUnavailable {
+		t.Errorf("/api/v1/status with a token = %d %s, want 503 %s", code, body, wire.CodeIdentityProviderUnavailable)
+	}
+
+	// YouTube is unreachable too, so the sync's first run records a failure,
+	// which is what shows it ran.
+	st, err := store.Open(context.Background(), c.database)
+	if err != nil {
+		t.Fatalf("open the child's store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		runs, err := st.Queries.ListNewestSyncRuns(context.Background(), 1)
+		if err == nil && len(runs) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no sync run was recorded with the provider down: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestSecondSignalEndsTheDrain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts the service as a child process")
+	}
+	c := startChild(t, identityProviderStub(t))
+	c.awaitReady(t)
+	child, logs, port := c.cmd, c.logs, c.port
+
+	if code, _ := c.get(t, "/api/v1/status", ""); code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/v1/status without a token = %d, want 401", code)
 	}
 
 	// A request whose headers never finish keeps the connection active, so

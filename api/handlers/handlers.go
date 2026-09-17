@@ -1,0 +1,237 @@
+// Package handlers serves the API's resources as JSON over the store: the
+// playlists and videos the sync stores, plays, suggestions of what to play
+// next, and the sync's own runs.
+//
+// A value the store does not hold is null, and a collection with no members is
+// []. A collection that grows without bound is paged: its body is {"data": [...],
+// "has_more": ...}, and the next page is the same request with starting_after
+// set to the last id on this one. Every refusal, a request no route answers
+// included, is the envelope package wire writes.
+package handlers
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/text/collate"
+	"golang.org/x/text/language"
+
+	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/wire"
+)
+
+// Handlers answers the API's requests from one store.
+type Handlers struct {
+	store *store.Store
+	log   *slog.Logger
+	now   func() time.Time
+}
+
+// New is Handlers over st, logging the cause of every failure it answers with a
+// 500 to log.
+func New(st *store.Store, log *slog.Logger) *Handlers {
+	return &Handlers{store: st, log: log, now: time.Now}
+}
+
+// route is one method on one path and the handler answering it.
+type route struct {
+	method, path string
+	handle       http.HandlerFunc
+}
+
+// routes is every request the API answers.
+func (h *Handlers) routes() []route {
+	return []route{
+		{http.MethodGet, "/api/v1/playlists", h.listPlaylists},
+		{http.MethodGet, "/api/v1/playlists/{id}", h.showPlaylist},
+		{http.MethodGet, "/api/v1/videos", h.listVideos},
+		{http.MethodGet, "/api/v1/videos/{id}", h.showVideo},
+		{http.MethodPost, "/api/v1/plays", h.createPlay},
+		{http.MethodGet, "/api/v1/plays", h.listPlays},
+		{http.MethodGet, "/api/v1/plays/{id}", h.showPlay},
+		{http.MethodGet, "/api/v1/suggestions", h.listSuggestions},
+		{http.MethodGet, "/api/v1/sync/runs", h.listSyncRuns},
+		{http.MethodGet, "/api/v1/status", h.showStatus},
+	}
+}
+
+// Register adds every route to mux. A path under /api/v1/ that no route
+// matches is a 404, and a method no route on its path takes is a 405 naming
+// the methods it does take.
+func (h *Handlers) Register(mux *http.ServeMux) {
+	allowed := make(map[string][]string)
+	for _, rt := range h.routes() {
+		mux.HandleFunc(rt.method+" "+rt.path, rt.handle)
+		allowed[rt.path] = append(allowed[rt.path], rt.method)
+	}
+	for path, methods := range allowed {
+		mux.HandleFunc(path, methodNotAllowed(methods))
+	}
+	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
+		wire.Refuse(w, http.StatusNotFound, wire.CodeRouteNotFound, "no route answers %s", r.URL.Path)
+	})
+}
+
+func methodNotAllowed(methods []string) http.HandlerFunc {
+	allow := slices.Clone(methods)
+	if slices.Contains(allow, http.MethodGet) {
+		allow = append(allow, http.MethodHead)
+	}
+	slices.Sort(allow)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", strings.Join(allow, ", "))
+		wire.Refuse(w, http.StatusMethodNotAllowed, wire.CodeMethodNotAllowed, "%s takes %s, not %s", r.URL.Path, strings.Join(allow, ", "), r.Method)
+	}
+}
+
+// page is one page of a paged collection. HasMore is true when rows follow the
+// last one in Data.
+type page[T any] struct {
+	Data    []T  `json:"data"`
+	HasMore bool `json:"has_more"`
+}
+
+// pageOf is the page holding the first limit of rows, which the store was asked
+// for one more of than limit so the page can say whether more follow.
+func pageOf[T any](rows []T, limit int64) page[T] {
+	if int64(len(rows)) > limit {
+		return page[T]{Data: rows[:limit], HasMore: true}
+	}
+	return page[T]{Data: rows, HasMore: false}
+}
+
+// newCollator orders names the way a reader expects them sorted: by the Unicode
+// Collation Algorithm, where case and accents decide only between names
+// otherwise equal. A Collator is not safe for concurrent use, so each request
+// makes its own.
+func newCollator() *collate.Collator {
+	return collate.New(language.Und)
+}
+
+// referenceError is a query parameter or path segment naming no row the store
+// holds, or naming more than one.
+type referenceError struct {
+	name, value string
+	candidates  []int64
+}
+
+func (e referenceError) Error() string {
+	if len(e.candidates) > 0 {
+		return fmt.Sprintf("%s %q names more than one: %v", e.name, e.value, e.candidates)
+	}
+	return fmt.Sprintf("%s %q names nothing the store holds", e.name, e.value)
+}
+
+// paramRow is err from reading the row a query parameter names, with a row
+// that is not there as a referenceError naming the parameter.
+func paramRow(err error, param referenceError) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return param
+	}
+	return err
+}
+
+// writeItemError answers a failed read of the resource the path names: its row
+// not being there is a 404 naming what, a reference naming more than one row a
+// 400, and anything else a 500.
+func (h *Handlers) writeItemError(w http.ResponseWriter, r *http.Request, err error, what string) {
+	var ref referenceError
+	switch {
+	case errors.As(err, &ref) && len(ref.candidates) > 0:
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeAmbiguousReference, "%s", ref.Error())
+	case errors.Is(err, sql.ErrNoRows), errors.As(err, &ref):
+		wire.Refuse(w, http.StatusNotFound, wire.CodeNotFound, "%s not found", what)
+	default:
+		h.writeInternalError(w, r, err)
+	}
+}
+
+// writeListError answers a failed read of a collection: a query parameter
+// naming nothing is a 400, as is one naming more than one row, and anything
+// else a 500.
+func (h *Handlers) writeListError(w http.ResponseWriter, r *http.Request, err error) {
+	var ref referenceError
+	switch {
+	case errors.As(err, &ref) && len(ref.candidates) > 0:
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeAmbiguousReference, "%s", ref.Error())
+	case errors.As(err, &ref):
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeUnknownReference, "%s", ref.Error())
+	default:
+		h.writeInternalError(w, r, err)
+	}
+}
+
+// writeInternalError answers a 500, logging err rather than sending it.
+func (h *Handlers) writeInternalError(w http.ResponseWriter, r *http.Request, err error) {
+	h.log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+	wire.Refuse(w, http.StatusInternalServerError, wire.CodeInternal, "internal error")
+}
+
+// pageSize is how many rows a list answers: fallback when limit is absent, and
+// at most most.
+type pageSize struct {
+	fallback, most int64
+}
+
+var (
+	playsPage       = pageSize{fallback: 20, most: 100}
+	runsPage        = pageSize{fallback: 20, most: 100}
+	suggestionsDraw = pageSize{fallback: 1, most: 100}
+)
+
+// limitParam is the query parameter limit as a count within size. ok is false
+// once it has answered a 400.
+func limitParam(w http.ResponseWriter, r *http.Request, size pageSize) (int64, bool) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return size.fallback, true
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 1 || n > size.most {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidLimit, "limit %q is not a whole number from 1 to %d", raw, size.most)
+		return 0, false
+	}
+	return n, true
+}
+
+// optionalCount is the query parameter name as a whole number of at least 0, or
+// an invalid NullInt64 when it is absent. ok is false once it has answered a
+// 400.
+func optionalCount(w http.ResponseWriter, r *http.Request, name string) (sql.NullInt64, bool) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return sql.NullInt64{}, true
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 0 {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "%s %q is not a whole number of at least 0", name, raw)
+		return sql.NullInt64{}, false
+	}
+	return sql.NullInt64{Int64: n, Valid: true}, true
+}
+
+func optionalText(r *http.Request, name string) sql.NullString {
+	raw := r.URL.Query().Get(name)
+	return sql.NullString{String: raw, Valid: raw != ""}
+}
+
+func nullableInt(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	return &v.Int64
+}
+
+func nullableText(v sql.NullString) *string {
+	if !v.Valid {
+		return nil
+	}
+	return &v.String
+}

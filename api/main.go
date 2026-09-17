@@ -4,6 +4,12 @@
 // YOUTUBE_REFRESH_TOKEN name, answers liveness and readiness probes, logs JSON
 // to stdout, and drains in-flight requests and the sync run on SIGINT or
 // SIGTERM.
+//
+// It answers /api/v1 only to a request carrying an access token the identity
+// provider OIDC_ISSUER signed for a client whose id starts with
+// CLI_CLIENT_ID_PREFIX (ypl-cli- when unset). The provider is read beside the
+// sync rather than before it, so a provider that is down holds back only the
+// requests that need a token.
 package main
 
 import (
@@ -15,11 +21,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/datapointchris/ypl/api/auth"
+	"github.com/datapointchris/ypl/api/handlers"
 	"github.com/datapointchris/ypl/api/reconcile"
 	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/wire"
 	"github.com/datapointchris/ypl/api/youtube"
 )
 
@@ -40,9 +50,10 @@ func main() {
 	}
 }
 
-// start reads the credentials and the sync interval, and opens the database,
-// applying its migrations, before the port is bound, so the service answers
-// /ready only once its schema is current.
+// start reads the configuration and opens the database, applying its
+// migrations, before the port is bound. It then serves while the sync runs and
+// the identity provider's discovery document and keys are read. /ready answers
+// 200 once they are, which is when a token can be verified.
 func start(ctx context.Context) error {
 	path, err := store.Path()
 	if err != nil {
@@ -53,6 +64,10 @@ func start(ctx context.Context) error {
 		return err
 	}
 	interval, err := syncInterval()
+	if err != nil {
+		return err
+	}
+	issuer, clientIDPrefix, err := identityProvider()
 	if err != nil {
 		return err
 	}
@@ -68,7 +83,29 @@ func start(ctx context.Context) error {
 		return err
 	}
 	worker := reconcile.NewWorker(reconcile.NewRunner(st, channel, interval), interval, slog.Default())
-	return run(ctx, ":"+envOr("PORT", "8080"), worker.Run)
+	provider := auth.NewConnecting(issuer, clientIDPrefix)
+	api := handler(handlers.New(st, slog.Default()), provider)
+	work := func(ctx context.Context) {
+		var wg sync.WaitGroup
+		wg.Go(func() { worker.Run(ctx) })
+		wg.Go(func() { provider.Run(ctx, slog.Default()) })
+		wg.Wait()
+	}
+	return run(ctx, ":"+envOr("PORT", "8080"), api, work)
+}
+
+// defaultClientIDPrefix starts the id of every client whose tokens the API
+// accepts when CLI_CLIENT_ID_PREFIX is unset.
+const defaultClientIDPrefix = "ypl-cli-"
+
+// identityProvider is OIDC_ISSUER, which has no default, and
+// CLI_CLIENT_ID_PREFIX, or defaultClientIDPrefix when it is unset.
+func identityProvider() (issuer, clientIDPrefix string, err error) {
+	issuer = os.Getenv("OIDC_ISSUER")
+	if issuer == "" {
+		return "", "", errors.New("OIDC_ISSUER is unset: set it to the identity provider whose keys sign the CLI's access tokens")
+	}
+	return issuer, envOr("CLI_CLIENT_ID_PREFIX", defaultClientIDPrefix), nil
 }
 
 // syncInterval is SYNC_INTERVAL as a duration, or defaultSyncInterval when it is
@@ -85,27 +122,27 @@ func syncInterval() (time.Duration, error) {
 	return interval, nil
 }
 
-// run binds addr and serves on it, doing work beside the server. A port that
+// run binds addr and serves h on it, doing work beside the server. A port that
 // cannot be bound is returned before anything is logged as listening.
-func run(ctx context.Context, addr string, work func(context.Context)) error {
+func run(ctx context.Context, addr string, h http.Handler, work func(context.Context)) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	return serve(ctx, ln, work)
+	return serve(ctx, ln, h, work)
 }
 
-// serve answers requests on ln, and does work beside them, until ctx ends or
-// the first SIGINT or SIGTERM arrives. It then cancels work and drains requests
-// for up to shutdownGrace, and returns once work has returned. The signal
-// handler is released as the drain starts, so a second signal ends the process
-// immediately.
-func serve(ctx context.Context, ln net.Listener, work func(context.Context)) error {
+// serve answers requests on ln with h, and does work beside them, until ctx
+// ends or the first SIGINT or SIGTERM arrives. It then cancels work and drains
+// requests for up to shutdownGrace, and returns once work has returned. The
+// signal handler is released as the drain starts, so a second signal ends the
+// process immediately.
+func serve(ctx context.Context, ln net.Listener, h http.Handler, work func(context.Context)) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	srv := &http.Server{
-		Handler:           routes(),
+		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -146,20 +183,42 @@ func serve(ctx context.Context, ln net.Listener, work func(context.Context)) err
 	return nil
 }
 
-// routes serves /health and /ready. Authentication, when this service has it,
-// has to leave both reachable, so a container healthcheck can call them.
-func routes() *http.ServeMux {
+// tokenGate verifies tokens and says whether it can yet, as *auth.Connecting
+// does.
+type tokenGate interface {
+	auth.TokenVerifier
+	Ready() bool
+}
+
+// handler is every route: the probes, which answer without a token so a
+// container healthcheck can call them, and the API, which answers only a
+// request carrying a token gate accepts.
+func handler(api *handlers.Handlers, gate tokenGate) http.Handler {
+	mux := routes(gate.Ready)
+	api.Register(mux)
+	return auth.RequireBearer(gate, slog.Default())(mux)
+}
+
+// routes serves /health, which answers once the listener is bound, and /ready,
+// which answers 200 while ready reports true and 503 before that. The database
+// is open and migrated before the listener binds.
+func routes(ready func() bool) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", ok)
-	mux.HandleFunc("GET /ready", ok)
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		probe(w, http.StatusOK, "ok")
+	})
+	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, _ *http.Request) {
+		if !ready() {
+			probe(w, http.StatusServiceUnavailable, "starting")
+			return
+		}
+		probe(w, http.StatusOK, "ok")
+	})
 	return mux
 }
 
-// ok answers a probe. The database is open and migrated before the listener
-// binds, so the service is live and ready as soon as it is bound.
-func ok(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+func probe(w http.ResponseWriter, code int, status string) {
+	wire.JSON(w, code, map[string]string{"status": status})
 }
 
 // envOr reads key, treating an empty value as unset. An exported empty PORT

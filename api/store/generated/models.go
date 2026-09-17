@@ -14,6 +14,13 @@ type EnrichFailure struct {
 	Reason      string
 }
 
+type Play struct {
+	PlayID   string
+	Handle   int64
+	VideoID  string
+	PlayedTs string
+}
+
 type Playlist struct {
 	PlaylistID  string
 	Title       string

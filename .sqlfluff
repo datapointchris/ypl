@@ -31,3 +31,10 @@ templater = placeholder
 
 [sqlfluff:templater:placeholder]
 param_regex = sqlc\.(n?arg|slice)\(\w+\)
+
+# RF02 reads a function call in an ORDER BY as a column reference, and calls it
+# unqualified when its text holds no dot, so `ORDER BY random()` fails in a query
+# that joins. A reference holding a bracket is a call and never a column. A
+# column passed to the call is its own reference and is still checked.
+[sqlfluff:rules:references.qualification]
+ignore_words_regex = \(

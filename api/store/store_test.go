@@ -3,9 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/datapointchris/ypl/api/store/generated"
 )
@@ -216,6 +220,127 @@ func TestAFailedTransactionLeavesNothingBehind(t *testing.T) {
 	}
 	if n := countVideos(t, st); n != 0 {
 		t.Fatalf("videos after a rolled-back transaction = %d, want 0", n)
+	}
+}
+
+func TestAReadTransactionReadsOneSnapshot(t *testing.T) {
+	ctx := context.Background()
+	st, _ := open(t)
+	err := st.InReadTx(ctx, func(q *generated.Queries) error {
+		before, err := q.CountVideos(ctx)
+		if err != nil {
+			return err
+		}
+		if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
+			return err
+		}
+		after, err := q.CountVideos(ctx)
+		if err != nil {
+			return err
+		}
+		if before != 0 || after != 0 {
+			t.Errorf("videos read inside the transaction = %d then %d, want 0 both times", before, after)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("InReadTx: %v", err)
+	}
+	if n := countVideos(t, st); n != 1 {
+		t.Fatalf("videos after the read transaction = %d, want the 1 committed meanwhile", n)
+	}
+}
+
+// A second connection that does not wait for a lock shows whether the
+// transaction holds the write lock before its first write.
+func TestAWriteTransactionHoldsTheWriteLockFromItsStart(t *testing.T) {
+	ctx := context.Background()
+	st, path := open(t)
+	other, err := sql.Open("sqlite", URI(path, "_pragma=foreign_keys(1)&_pragma=busy_timeout(0)"))
+	if err != nil {
+		t.Fatalf("open a second connection: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+
+	err = st.InTx(ctx, func(tx *Tx) error {
+		if _, err := tx.CountVideos(ctx); err != nil {
+			return err
+		}
+		if err := generated.New(other).ImportVideo(ctx, video("v2")); sqliteCode(err) != sqlite3.SQLITE_BUSY {
+			t.Errorf("another connection's write while a write transaction was open = %v, want SQLITE_BUSY", err)
+		}
+		return tx.ImportVideo(ctx, video("v1"))
+	})
+	if err != nil {
+		t.Fatalf("a transaction that read before it wrote: %v", err)
+	}
+	if n := countVideos(t, st); n != 1 {
+		t.Fatalf("videos = %d, want the transaction's 1", n)
+	}
+}
+
+// sqliteCode is the primary SQLite result code err carries, or -1 when it
+// carries none.
+func sqliteCode(err error) int {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return -1
+	}
+	return se.Code() & 0xff
+}
+
+// With one connection in the pool, the write after the read transaction runs
+// on the connection the transaction used.
+func TestAReadTransactionRefusesAWriteAndLeavesItsConnectionWritable(t *testing.T) {
+	ctx := context.Background()
+	st, _ := open(t)
+	st.db.SetMaxOpenConns(1)
+
+	err := st.InReadTx(ctx, func(q *generated.Queries) error {
+		return q.ImportVideo(ctx, video("v1"))
+	})
+	if sqliteCode(err) != sqlite3.SQLITE_READONLY {
+		t.Fatalf("a write inside a read transaction = %v, want SQLITE_READONLY", err)
+	}
+	if err := st.Queries.ImportVideo(ctx, video("v2")); err != nil {
+		t.Fatalf("a write after the read transaction: %v", err)
+	}
+	if n := countVideos(t, st); n != 1 {
+		t.Fatalf("videos = %d, want only the write made after the read transaction", n)
+	}
+}
+
+func TestPlaysTakeHandlesInOrderAndARepeatTakesNone(t *testing.T) {
+	ctx := context.Background()
+	st, _ := open(t)
+	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("import video: %v", err)
+	}
+	for _, id := range []string{"p1", "p2", "p1", "p3"} {
+		if _, err := st.Queries.InsertPlay(ctx, generated.InsertPlayParams{PlayID: id, VideoID: "v1", PlayedTs: "2026-09-01T10:00:00Z"}); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	for id, want := range map[string]int64{"p1": 1, "p2": 2, "p3": 3} {
+		if got, err := st.Queries.GetPlay(ctx, id); err != nil || got.Handle != want {
+			t.Errorf("%s handle = %d, %v, want %d", id, got.Handle, err, want)
+		}
+	}
+}
+
+func TestAPlayTimeNotInUTCToTheSecondIsRefused(t *testing.T) {
+	ctx := context.Background()
+	st, _ := open(t)
+	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("import video: %v", err)
+	}
+	for _, ts := range []string{"2026-09-01T10:00:00.5Z", "2026-09-01T10:00:00+02:00", "2026-09-01 10:00:00", "2026-09-01T10:00:00z"} {
+		if _, err := st.Queries.InsertPlay(ctx, generated.InsertPlayParams{PlayID: ts, VideoID: "v1", PlayedTs: ts}); err == nil {
+			t.Errorf("a play at %q was stored", ts)
+		}
+	}
+	if _, err := st.Queries.InsertPlay(ctx, generated.InsertPlayParams{PlayID: "p", VideoID: "v1", PlayedTs: "2026-09-01T10:00:00Z"}); err != nil {
+		t.Fatalf("a play at 2026-09-01T10:00:00Z: %v", err)
 	}
 }
 

@@ -5,12 +5,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"embed"
 	"fmt"
 	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
@@ -113,7 +115,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	// Pragmas go in the URI because a pragma set with a statement configures
 	// only the pooled connection that ran it. The driver applies these to every
 	// connection as it opens.
-	db, err := sql.Open("sqlite", URI(path, "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"))
+	//
+	// _txlock=immediate makes a write transaction take the write lock as it
+	// begins. One that reads before it writes otherwise holds a snapshot that a
+	// commit on another connection makes stale, and its first write then fails
+	// with SQLITE_BUSY without busy_timeout waiting. A read-only transaction
+	// begins deferred whatever this says.
+	db, err := sql.Open("sqlite", URI(path, "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -149,6 +157,42 @@ func (s *Store) InTx(ctx context.Context, fn func(*Tx) error) error {
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+// InReadTx runs fn inside one read transaction and rolls it back when fn
+// returns. Every statement fn runs reads the database as it stood at fn's first
+// read, whatever commits on another connection meanwhile, and a write fn makes
+// fails with SQLITE_READONLY.
+//
+// The driver does not enforce a read-only transaction, so the connection is set
+// query_only for the transaction and reset before it returns to the pool. A
+// connection whose reset fails is closed rather than returned.
+func (s *Store) InReadTx(ctx context.Context, fn func(*generated.Queries) error) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("take a connection: %w", err)
+	}
+	defer release(conn)
+	if _, err := conn.ExecContext(ctx, "PRAGMA query_only = ON"); err != nil {
+		return fmt.Errorf("make the connection read-only: %w", err)
+	}
+	tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("begin read transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	return fn(s.Queries.WithTx(tx))
+}
+
+// release returns conn to the pool with writes allowed again, or closes it when
+// they cannot be.
+func release(conn *sql.Conn) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := conn.ExecContext(ctx, "PRAGMA query_only = OFF"); err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	_ = conn.Close()
 }
 
 // ReplaceTracks sets a video's tracklist to tracks, removing every track it

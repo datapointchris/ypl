@@ -197,3 +197,289 @@ ORDER BY sync_failure_id;
 -- How many runs on quota_date ended on YouTube's quota refusal.
 SELECT count(*) FROM sync_runs
 WHERE quota_date = ? AND outcome = 'quota_spent';
+
+-- name: ListPlaylistSummaries :many
+-- Each playlist with how many items it holds, how many of those hold an
+-- unavailable video, and how many hold a video enrichment has read, in no
+-- order. Names sort by Unicode collation, and SQLite's NOCASE folds only ASCII.
+SELECT
+    p.playlist_id,
+    p.title,
+    p.description,
+    p.privacy,
+    CAST(count(pi.item_id) AS INTEGER) AS item_count,
+    CAST(coalesce(sum(v.is_unavailable), 0) AS INTEGER) AS unavailable_count,
+    CAST(count(v.enriched_ts) AS INTEGER) AS enriched_count
+FROM playlists AS p
+LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
+LEFT JOIN videos AS v ON pi.video_id = v.video_id
+GROUP BY p.playlist_id;
+
+-- name: ListPlaylistEntries :many
+-- A playlist's items in order, each with its video and the video's track count.
+SELECT
+    pi.item_id,
+    pi.position,
+    v.video_id,
+    v.title,
+    v.channel_title,
+    v.duration_seconds,
+    v.upload_date,
+    v.is_unavailable,
+    v.enriched_ts,
+    CAST((SELECT count(*) FROM tracks AS t WHERE t.video_id = v.video_id) AS INTEGER) AS track_count
+FROM playlist_items AS pi
+INNER JOIN videos AS v ON pi.video_id = v.video_id
+WHERE pi.playlist_id = ?
+ORDER BY pi.position;
+
+-- name: ListLibraryVideos :many
+-- Every available video some playlist holds, narrowed by each filter that is
+-- not NULL: the playlist holding it, and its shortest and longest duration. A
+-- video whose duration is unknown satisfies neither bound.
+SELECT
+    v.video_id,
+    v.title,
+    v.channel_title,
+    v.duration_seconds,
+    v.upload_date,
+    v.enriched_ts,
+    CAST((SELECT count(*) FROM tracks AS t WHERE t.video_id = v.video_id) AS INTEGER) AS track_count
+FROM videos AS v
+WHERE
+    v.is_unavailable = 0
+    AND EXISTS (
+        SELECT 1 FROM playlist_items AS pi
+        WHERE
+            pi.video_id = v.video_id
+            AND (CAST(sqlc.narg(playlist_id) AS TEXT) IS NULL OR pi.playlist_id = sqlc.narg(playlist_id))
+    )
+    AND (CAST(sqlc.narg(min_seconds) AS INTEGER) IS NULL OR v.duration_seconds >= sqlc.narg(min_seconds))
+    AND (CAST(sqlc.narg(max_seconds) AS INTEGER) IS NULL OR v.duration_seconds <= sqlc.narg(max_seconds))
+ORDER BY v.video_id;
+
+-- name: ListVideoArtists :many
+-- Every video's artists, or only the video video_id's when it is not NULL, with
+-- how many of its tracks name each, in no order.
+SELECT
+    video_id,
+    artist,
+    CAST(count(*) AS INTEGER) AS appearances
+FROM tracks
+WHERE
+    artist IS NOT NULL AND artist != ''
+    AND (CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR video_id = sqlc.narg(video_id))
+GROUP BY video_id, artist;
+
+-- name: ListVideoPlaylists :many
+-- Every playlist holding each video, or only the video video_id when it is not
+-- NULL, in no order.
+SELECT DISTINCT
+    pi.video_id,
+    p.playlist_id,
+    p.title
+FROM playlist_items AS pi
+INNER JOIN playlists AS p ON pi.playlist_id = p.playlist_id
+WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR pi.video_id = sqlc.narg(video_id);
+
+-- name: InsertPlay :execrows
+-- Records a play under the next handle, and records nothing when a play with
+-- that id is already stored.
+INSERT INTO plays (play_id, handle, video_id, played_ts)
+VALUES (
+    sqlc.arg(play_id),
+    (SELECT coalesce(max(p.handle), 0) + 1 FROM plays AS p),
+    sqlc.arg(video_id),
+    sqlc.arg(played_ts)
+)
+ON CONFLICT (play_id) DO NOTHING;
+
+-- name: GetPlay :one
+-- A play with its video.
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE pl.play_id = ?;
+
+-- name: GetPlayByHandle :one
+-- The play with the handle, with its video.
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE pl.handle = ?;
+
+-- name: ListPlaysByTail :many
+-- Every play whose id ends with the eight characters tail, with its video.
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE substr(pl.play_id, -8) = sqlc.arg(tail)
+ORDER BY pl.handle;
+
+-- name: ListNewestPlays :many
+-- The newest plays, each with its video.
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+ORDER BY pl.played_ts DESC, pl.play_id DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListPlaysBefore :many
+-- The plays that follow the play at played_ts with the id play_id in the order
+-- newest first, each with its video. The row-value comparison is what lets
+-- SQLite seek plays_by_time to the cursor rather than scan to it.
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE (pl.played_ts, pl.play_id) < (sqlc.arg(played_ts), sqlc.arg(play_id))
+ORDER BY pl.played_ts DESC, pl.play_id DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListSuggestions :many
+-- Available videos some playlist holds, or the named playlist when it is not
+-- NULL, least recently played first and never played before any. Videos whose
+-- last play is the same come in a random order.
+SELECT
+    v.video_id,
+    v.title,
+    v.channel_title,
+    v.duration_seconds,
+    CAST(count(pl.play_id) AS INTEGER) AS play_count,
+    max(pl.played_ts) AS last_played_ts
+FROM videos AS v
+LEFT JOIN plays AS pl ON v.video_id = pl.video_id
+WHERE
+    v.is_unavailable = 0
+    AND EXISTS (
+        SELECT 1 FROM playlist_items AS pi
+        WHERE
+            pi.video_id = v.video_id
+            AND (CAST(sqlc.narg(playlist_id) AS TEXT) IS NULL OR pi.playlist_id = sqlc.narg(playlist_id))
+    )
+GROUP BY v.video_id
+ORDER BY max(pl.played_ts) IS NOT NULL, max(pl.played_ts), random()
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListNewestSyncRuns :many
+-- The newest runs.
+SELECT
+    run_id,
+    started_ts,
+    finished_ts,
+    quota_date,
+    outcome,
+    playlists,
+    playlists_deleted,
+    playlists_skipped,
+    items_added,
+    items_removed,
+    requests,
+    units
+FROM sync_runs
+ORDER BY run_id DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListSyncRunsBefore :many
+-- The runs before the run run_id, newest first.
+SELECT
+    run_id,
+    started_ts,
+    finished_ts,
+    quota_date,
+    outcome,
+    playlists,
+    playlists_deleted,
+    playlists_skipped,
+    items_added,
+    items_removed,
+    requests,
+    units
+FROM sync_runs
+WHERE run_id < sqlc.arg(run_id)
+ORDER BY run_id DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListSyncFailuresBetween :many
+-- The failures of every run from first_run_id to last_run_id, both included.
+SELECT
+    sync_failure_id,
+    run_id,
+    playlist_id,
+    error
+FROM sync_failures
+WHERE run_id BETWEEN sqlc.arg(first_run_id) AND sqlc.arg(last_run_id)
+ORDER BY run_id, sync_failure_id;
+
+-- name: GetLatestSyncRunWithOutcome :one
+SELECT
+    run_id,
+    started_ts,
+    finished_ts,
+    quota_date,
+    outcome,
+    playlists,
+    playlists_deleted,
+    playlists_skipped,
+    items_added,
+    items_removed,
+    requests,
+    units
+FROM sync_runs
+WHERE outcome = ?
+ORDER BY run_id DESC
+LIMIT 1;
+
+-- name: CountLibrary :one
+-- How many playlists, videos some playlist holds, of those videos how many are
+-- unavailable and how many enrichment has read, tracks and plays the store
+-- holds.
+SELECT
+    CAST((SELECT count(*) FROM playlists) AS INTEGER) AS playlists,
+    CAST((
+        SELECT count(*) FROM videos AS v
+        WHERE EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+    ) AS INTEGER) AS videos,
+    CAST((
+        SELECT count(*) FROM videos AS v
+        WHERE
+            v.is_unavailable = 1
+            AND EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+    ) AS INTEGER) AS unavailable_videos,
+    CAST((
+        SELECT count(*) FROM videos AS v
+        WHERE
+            v.enriched_ts IS NOT NULL
+            AND EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+    ) AS INTEGER) AS enriched_videos,
+    CAST((SELECT count(*) FROM tracks) AS INTEGER) AS tracks,
+    CAST((SELECT count(*) FROM plays) AS INTEGER) AS plays;

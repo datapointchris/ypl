@@ -21,6 +21,55 @@ func (q *Queries) CountEnrichFailures(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countLibrary = `-- name: CountLibrary :one
+SELECT
+    CAST((SELECT count(*) FROM playlists) AS INTEGER) AS playlists,
+    CAST((
+        SELECT count(*) FROM videos AS v
+        WHERE EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+    ) AS INTEGER) AS videos,
+    CAST((
+        SELECT count(*) FROM videos AS v
+        WHERE
+            v.is_unavailable = 1
+            AND EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+    ) AS INTEGER) AS unavailable_videos,
+    CAST((
+        SELECT count(*) FROM videos AS v
+        WHERE
+            v.enriched_ts IS NOT NULL
+            AND EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+    ) AS INTEGER) AS enriched_videos,
+    CAST((SELECT count(*) FROM tracks) AS INTEGER) AS tracks,
+    CAST((SELECT count(*) FROM plays) AS INTEGER) AS plays
+`
+
+type CountLibraryRow struct {
+	Playlists         int64
+	Videos            int64
+	UnavailableVideos int64
+	EnrichedVideos    int64
+	Tracks            int64
+	Plays             int64
+}
+
+// How many playlists, videos some playlist holds, of those videos how many are
+// unavailable and how many enrichment has read, tracks and plays the store
+// holds.
+func (q *Queries) CountLibrary(ctx context.Context) (CountLibraryRow, error) {
+	row := q.db.QueryRowContext(ctx, countLibrary)
+	var i CountLibraryRow
+	err := row.Scan(
+		&i.Playlists,
+		&i.Videos,
+		&i.UnavailableVideos,
+		&i.EnrichedVideos,
+		&i.Tracks,
+		&i.Plays,
+	)
+	return i, err
+}
+
 const countQuotaSpentRuns = `-- name: CountQuotaSpentRuns :one
 SELECT count(*) FROM sync_runs
 WHERE quota_date = ? AND outcome = 'quota_spent'
@@ -99,6 +148,120 @@ func (q *Queries) GetEnrichFailure(ctx context.Context, videoID string) (EnrichF
 	row := q.db.QueryRowContext(ctx, getEnrichFailure, videoID)
 	var i EnrichFailure
 	err := row.Scan(&i.VideoID, &i.AttemptedTs, &i.Reason)
+	return i, err
+}
+
+const getLatestSyncRunWithOutcome = `-- name: GetLatestSyncRunWithOutcome :one
+SELECT
+    run_id,
+    started_ts,
+    finished_ts,
+    quota_date,
+    outcome,
+    playlists,
+    playlists_deleted,
+    playlists_skipped,
+    items_added,
+    items_removed,
+    requests,
+    units
+FROM sync_runs
+WHERE outcome = ?
+ORDER BY run_id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestSyncRunWithOutcome(ctx context.Context, outcome string) (SyncRun, error) {
+	row := q.db.QueryRowContext(ctx, getLatestSyncRunWithOutcome, outcome)
+	var i SyncRun
+	err := row.Scan(
+		&i.RunID,
+		&i.StartedTs,
+		&i.FinishedTs,
+		&i.QuotaDate,
+		&i.Outcome,
+		&i.Playlists,
+		&i.PlaylistsDeleted,
+		&i.PlaylistsSkipped,
+		&i.ItemsAdded,
+		&i.ItemsRemoved,
+		&i.Requests,
+		&i.Units,
+	)
+	return i, err
+}
+
+const getPlay = `-- name: GetPlay :one
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE pl.play_id = ?
+`
+
+type GetPlayRow struct {
+	PlayID       string
+	Handle       int64
+	PlayedTs     string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// A play with its video.
+func (q *Queries) GetPlay(ctx context.Context, playID string) (GetPlayRow, error) {
+	row := q.db.QueryRowContext(ctx, getPlay, playID)
+	var i GetPlayRow
+	err := row.Scan(
+		&i.PlayID,
+		&i.Handle,
+		&i.PlayedTs,
+		&i.VideoID,
+		&i.Title,
+		&i.ChannelTitle,
+	)
+	return i, err
+}
+
+const getPlayByHandle = `-- name: GetPlayByHandle :one
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE pl.handle = ?
+`
+
+type GetPlayByHandleRow struct {
+	PlayID       string
+	Handle       int64
+	PlayedTs     string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// The play with the handle, with its video.
+func (q *Queries) GetPlayByHandle(ctx context.Context, handle int64) (GetPlayByHandleRow, error) {
+	row := q.db.QueryRowContext(ctx, getPlayByHandle, handle)
+	var i GetPlayByHandleRow
+	err := row.Scan(
+		&i.PlayID,
+		&i.Handle,
+		&i.PlayedTs,
+		&i.VideoID,
+		&i.Title,
+		&i.ChannelTitle,
+	)
 	return i, err
 }
 
@@ -234,6 +397,33 @@ func (q *Queries) ImportVideo(ctx context.Context, arg ImportVideoParams) error 
 	return err
 }
 
+const insertPlay = `-- name: InsertPlay :execrows
+INSERT INTO plays (play_id, handle, video_id, played_ts)
+VALUES (
+    ?1,
+    (SELECT coalesce(max(p.handle), 0) + 1 FROM plays AS p),
+    ?2,
+    ?3
+)
+ON CONFLICT (play_id) DO NOTHING
+`
+
+type InsertPlayParams struct {
+	PlayID   string
+	VideoID  string
+	PlayedTs string
+}
+
+// Records a play under the next handle, and records nothing when a play with
+// that id is already stored.
+func (q *Queries) InsertPlay(ctx context.Context, arg InsertPlayParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertPlay, arg.PlayID, arg.VideoID, arg.PlayedTs)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const insertPlaylistItem = `-- name: InsertPlaylistItem :exec
 INSERT INTO playlist_items (item_id, playlist_id, position, video_id)
 VALUES (?, ?, ?, ?)
@@ -344,6 +534,255 @@ func (q *Queries) InsertTrack(ctx context.Context, arg InsertTrackParams) error 
 	return err
 }
 
+const listLibraryVideos = `-- name: ListLibraryVideos :many
+SELECT
+    v.video_id,
+    v.title,
+    v.channel_title,
+    v.duration_seconds,
+    v.upload_date,
+    v.enriched_ts,
+    CAST((SELECT count(*) FROM tracks AS t WHERE t.video_id = v.video_id) AS INTEGER) AS track_count
+FROM videos AS v
+WHERE
+    v.is_unavailable = 0
+    AND EXISTS (
+        SELECT 1 FROM playlist_items AS pi
+        WHERE
+            pi.video_id = v.video_id
+            AND (CAST(?1 AS TEXT) IS NULL OR pi.playlist_id = ?1)
+    )
+    AND (CAST(?2 AS INTEGER) IS NULL OR v.duration_seconds >= ?2)
+    AND (CAST(?3 AS INTEGER) IS NULL OR v.duration_seconds <= ?3)
+ORDER BY v.video_id
+`
+
+type ListLibraryVideosParams struct {
+	PlaylistID sql.NullString
+	MinSeconds sql.NullInt64
+	MaxSeconds sql.NullInt64
+}
+
+type ListLibraryVideosRow struct {
+	VideoID         string
+	Title           string
+	ChannelTitle    string
+	DurationSeconds sql.NullInt64
+	UploadDate      sql.NullString
+	EnrichedTs      sql.NullString
+	TrackCount      int64
+}
+
+// Every available video some playlist holds, narrowed by each filter that is
+// not NULL: the playlist holding it, and its shortest and longest duration. A
+// video whose duration is unknown satisfies neither bound.
+func (q *Queries) ListLibraryVideos(ctx context.Context, arg ListLibraryVideosParams) ([]ListLibraryVideosRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLibraryVideos, arg.PlaylistID, arg.MinSeconds, arg.MaxSeconds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLibraryVideosRow
+	for rows.Next() {
+		var i ListLibraryVideosRow
+		if err := rows.Scan(
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+			&i.DurationSeconds,
+			&i.UploadDate,
+			&i.EnrichedTs,
+			&i.TrackCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNewestPlays = `-- name: ListNewestPlays :many
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+ORDER BY pl.played_ts DESC, pl.play_id DESC
+LIMIT ?1
+`
+
+type ListNewestPlaysRow struct {
+	PlayID       string
+	Handle       int64
+	PlayedTs     string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// The newest plays, each with its video.
+func (q *Queries) ListNewestPlays(ctx context.Context, maxRows int64) ([]ListNewestPlaysRow, error) {
+	rows, err := q.db.QueryContext(ctx, listNewestPlays, maxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListNewestPlaysRow
+	for rows.Next() {
+		var i ListNewestPlaysRow
+		if err := rows.Scan(
+			&i.PlayID,
+			&i.Handle,
+			&i.PlayedTs,
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNewestSyncRuns = `-- name: ListNewestSyncRuns :many
+SELECT
+    run_id,
+    started_ts,
+    finished_ts,
+    quota_date,
+    outcome,
+    playlists,
+    playlists_deleted,
+    playlists_skipped,
+    items_added,
+    items_removed,
+    requests,
+    units
+FROM sync_runs
+ORDER BY run_id DESC
+LIMIT ?1
+`
+
+// The newest runs.
+func (q *Queries) ListNewestSyncRuns(ctx context.Context, maxRows int64) ([]SyncRun, error) {
+	rows, err := q.db.QueryContext(ctx, listNewestSyncRuns, maxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SyncRun
+	for rows.Next() {
+		var i SyncRun
+		if err := rows.Scan(
+			&i.RunID,
+			&i.StartedTs,
+			&i.FinishedTs,
+			&i.QuotaDate,
+			&i.Outcome,
+			&i.Playlists,
+			&i.PlaylistsDeleted,
+			&i.PlaylistsSkipped,
+			&i.ItemsAdded,
+			&i.ItemsRemoved,
+			&i.Requests,
+			&i.Units,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlaylistEntries = `-- name: ListPlaylistEntries :many
+SELECT
+    pi.item_id,
+    pi.position,
+    v.video_id,
+    v.title,
+    v.channel_title,
+    v.duration_seconds,
+    v.upload_date,
+    v.is_unavailable,
+    v.enriched_ts,
+    CAST((SELECT count(*) FROM tracks AS t WHERE t.video_id = v.video_id) AS INTEGER) AS track_count
+FROM playlist_items AS pi
+INNER JOIN videos AS v ON pi.video_id = v.video_id
+WHERE pi.playlist_id = ?
+ORDER BY pi.position
+`
+
+type ListPlaylistEntriesRow struct {
+	ItemID          string
+	Position        int64
+	VideoID         string
+	Title           string
+	ChannelTitle    string
+	DurationSeconds sql.NullInt64
+	UploadDate      sql.NullString
+	IsUnavailable   bool
+	EnrichedTs      sql.NullString
+	TrackCount      int64
+}
+
+// A playlist's items in order, each with its video and the video's track count.
+func (q *Queries) ListPlaylistEntries(ctx context.Context, playlistID string) ([]ListPlaylistEntriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaylistEntries, playlistID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlaylistEntriesRow
+	for rows.Next() {
+		var i ListPlaylistEntriesRow
+		if err := rows.Scan(
+			&i.ItemID,
+			&i.Position,
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+			&i.DurationSeconds,
+			&i.UploadDate,
+			&i.IsUnavailable,
+			&i.EnrichedTs,
+			&i.TrackCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPlaylistIDs = `-- name: ListPlaylistIDs :many
 SELECT playlist_id FROM playlists
 ORDER BY playlist_id
@@ -409,6 +848,252 @@ func (q *Queries) ListPlaylistItems(ctx context.Context, playlistID string) ([]L
 	return items, nil
 }
 
+const listPlaylistSummaries = `-- name: ListPlaylistSummaries :many
+SELECT
+    p.playlist_id,
+    p.title,
+    p.description,
+    p.privacy,
+    CAST(count(pi.item_id) AS INTEGER) AS item_count,
+    CAST(coalesce(sum(v.is_unavailable), 0) AS INTEGER) AS unavailable_count,
+    CAST(count(v.enriched_ts) AS INTEGER) AS enriched_count
+FROM playlists AS p
+LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
+LEFT JOIN videos AS v ON pi.video_id = v.video_id
+GROUP BY p.playlist_id
+`
+
+type ListPlaylistSummariesRow struct {
+	PlaylistID       string
+	Title            string
+	Description      string
+	Privacy          string
+	ItemCount        int64
+	UnavailableCount int64
+	EnrichedCount    int64
+}
+
+// Each playlist with how many items it holds, how many of those hold an
+// unavailable video, and how many hold a video enrichment has read, in no
+// order. Names sort by Unicode collation, and SQLite's NOCASE folds only ASCII.
+func (q *Queries) ListPlaylistSummaries(ctx context.Context) ([]ListPlaylistSummariesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaylistSummaries)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlaylistSummariesRow
+	for rows.Next() {
+		var i ListPlaylistSummariesRow
+		if err := rows.Scan(
+			&i.PlaylistID,
+			&i.Title,
+			&i.Description,
+			&i.Privacy,
+			&i.ItemCount,
+			&i.UnavailableCount,
+			&i.EnrichedCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlaysBefore = `-- name: ListPlaysBefore :many
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE (pl.played_ts, pl.play_id) < (?1, ?2)
+ORDER BY pl.played_ts DESC, pl.play_id DESC
+LIMIT ?3
+`
+
+type ListPlaysBeforeParams struct {
+	PlayedTs string
+	PlayID   string
+	MaxRows  int64
+}
+
+type ListPlaysBeforeRow struct {
+	PlayID       string
+	Handle       int64
+	PlayedTs     string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// The plays that follow the play at played_ts with the id play_id in the order
+// newest first, each with its video. The row-value comparison is what lets
+// SQLite seek plays_by_time to the cursor rather than scan to it.
+func (q *Queries) ListPlaysBefore(ctx context.Context, arg ListPlaysBeforeParams) ([]ListPlaysBeforeRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaysBefore, arg.PlayedTs, arg.PlayID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlaysBeforeRow
+	for rows.Next() {
+		var i ListPlaysBeforeRow
+		if err := rows.Scan(
+			&i.PlayID,
+			&i.Handle,
+			&i.PlayedTs,
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlaysByTail = `-- name: ListPlaysByTail :many
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE substr(pl.play_id, -8) = ?1
+ORDER BY pl.handle
+`
+
+type ListPlaysByTailRow struct {
+	PlayID       string
+	Handle       int64
+	PlayedTs     string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// Every play whose id ends with the eight characters tail, with its video.
+func (q *Queries) ListPlaysByTail(ctx context.Context, tail string) ([]ListPlaysByTailRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaysByTail, tail)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlaysByTailRow
+	for rows.Next() {
+		var i ListPlaysByTailRow
+		if err := rows.Scan(
+			&i.PlayID,
+			&i.Handle,
+			&i.PlayedTs,
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSuggestions = `-- name: ListSuggestions :many
+SELECT
+    v.video_id,
+    v.title,
+    v.channel_title,
+    v.duration_seconds,
+    CAST(count(pl.play_id) AS INTEGER) AS play_count,
+    max(pl.played_ts) AS last_played_ts
+FROM videos AS v
+LEFT JOIN plays AS pl ON v.video_id = pl.video_id
+WHERE
+    v.is_unavailable = 0
+    AND EXISTS (
+        SELECT 1 FROM playlist_items AS pi
+        WHERE
+            pi.video_id = v.video_id
+            AND (CAST(?1 AS TEXT) IS NULL OR pi.playlist_id = ?1)
+    )
+GROUP BY v.video_id
+ORDER BY max(pl.played_ts) IS NOT NULL, max(pl.played_ts), random()
+LIMIT ?2
+`
+
+type ListSuggestionsParams struct {
+	PlaylistID sql.NullString
+	MaxRows    int64
+}
+
+type ListSuggestionsRow struct {
+	VideoID         string
+	Title           string
+	ChannelTitle    string
+	DurationSeconds sql.NullInt64
+	PlayCount       int64
+	LastPlayedTs    interface{}
+}
+
+// Available videos some playlist holds, or the named playlist when it is not
+// NULL, least recently played first and never played before any. Videos whose
+// last play is the same come in a random order.
+func (q *Queries) ListSuggestions(ctx context.Context, arg ListSuggestionsParams) ([]ListSuggestionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSuggestions, arg.PlaylistID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSuggestionsRow
+	for rows.Next() {
+		var i ListSuggestionsRow
+		if err := rows.Scan(
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+			&i.DurationSeconds,
+			&i.PlayCount,
+			&i.LastPlayedTs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSyncFailures = `-- name: ListSyncFailures :many
 SELECT
     sync_failure_id,
@@ -434,6 +1119,113 @@ func (q *Queries) ListSyncFailures(ctx context.Context, runID int64) ([]SyncFail
 			&i.RunID,
 			&i.PlaylistID,
 			&i.Error,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSyncFailuresBetween = `-- name: ListSyncFailuresBetween :many
+SELECT
+    sync_failure_id,
+    run_id,
+    playlist_id,
+    error
+FROM sync_failures
+WHERE run_id BETWEEN ?1 AND ?2
+ORDER BY run_id, sync_failure_id
+`
+
+type ListSyncFailuresBetweenParams struct {
+	FirstRunID int64
+	LastRunID  int64
+}
+
+// The failures of every run from first_run_id to last_run_id, both included.
+func (q *Queries) ListSyncFailuresBetween(ctx context.Context, arg ListSyncFailuresBetweenParams) ([]SyncFailure, error) {
+	rows, err := q.db.QueryContext(ctx, listSyncFailuresBetween, arg.FirstRunID, arg.LastRunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SyncFailure
+	for rows.Next() {
+		var i SyncFailure
+		if err := rows.Scan(
+			&i.SyncFailureID,
+			&i.RunID,
+			&i.PlaylistID,
+			&i.Error,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSyncRunsBefore = `-- name: ListSyncRunsBefore :many
+SELECT
+    run_id,
+    started_ts,
+    finished_ts,
+    quota_date,
+    outcome,
+    playlists,
+    playlists_deleted,
+    playlists_skipped,
+    items_added,
+    items_removed,
+    requests,
+    units
+FROM sync_runs
+WHERE run_id < ?1
+ORDER BY run_id DESC
+LIMIT ?2
+`
+
+type ListSyncRunsBeforeParams struct {
+	RunID   int64
+	MaxRows int64
+}
+
+// The runs before the run run_id, newest first.
+func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBeforeParams) ([]SyncRun, error) {
+	rows, err := q.db.QueryContext(ctx, listSyncRunsBefore, arg.RunID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SyncRun
+	for rows.Next() {
+		var i SyncRun
+		if err := rows.Scan(
+			&i.RunID,
+			&i.StartedTs,
+			&i.FinishedTs,
+			&i.QuotaDate,
+			&i.Outcome,
+			&i.Playlists,
+			&i.PlaylistsDeleted,
+			&i.PlaylistsSkipped,
+			&i.ItemsAdded,
+			&i.ItemsRemoved,
+			&i.Requests,
+			&i.Units,
 		); err != nil {
 			return nil, err
 		}
@@ -484,6 +1276,90 @@ func (q *Queries) ListTracks(ctx context.Context, videoID string) ([]Track, erro
 			&i.RawText,
 			&i.Source,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVideoArtists = `-- name: ListVideoArtists :many
+SELECT
+    video_id,
+    artist,
+    CAST(count(*) AS INTEGER) AS appearances
+FROM tracks
+WHERE
+    artist IS NOT NULL AND artist != ''
+    AND (CAST(?1 AS TEXT) IS NULL OR video_id = ?1)
+GROUP BY video_id, artist
+`
+
+type ListVideoArtistsRow struct {
+	VideoID     string
+	Artist      sql.NullString
+	Appearances int64
+}
+
+// Every video's artists, or only the video video_id's when it is not NULL, with
+// how many of its tracks name each, in no order.
+func (q *Queries) ListVideoArtists(ctx context.Context, videoID sql.NullString) ([]ListVideoArtistsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listVideoArtists, videoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVideoArtistsRow
+	for rows.Next() {
+		var i ListVideoArtistsRow
+		if err := rows.Scan(&i.VideoID, &i.Artist, &i.Appearances); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVideoPlaylists = `-- name: ListVideoPlaylists :many
+SELECT DISTINCT
+    pi.video_id,
+    p.playlist_id,
+    p.title
+FROM playlist_items AS pi
+INNER JOIN playlists AS p ON pi.playlist_id = p.playlist_id
+WHERE CAST(?1 AS TEXT) IS NULL OR pi.video_id = ?1
+`
+
+type ListVideoPlaylistsRow struct {
+	VideoID    string
+	PlaylistID string
+	Title      string
+}
+
+// Every playlist holding each video, or only the video video_id when it is not
+// NULL, in no order.
+func (q *Queries) ListVideoPlaylists(ctx context.Context, videoID sql.NullString) ([]ListVideoPlaylistsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listVideoPlaylists, videoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVideoPlaylistsRow
+	for rows.Next() {
+		var i ListVideoPlaylistsRow
+		if err := rows.Scan(&i.VideoID, &i.PlaylistID, &i.Title); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
