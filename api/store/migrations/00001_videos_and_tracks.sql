@@ -40,9 +40,11 @@ CREATE TABLE tracks (
     UNIQUE (video_id, position)
 );
 
--- Videos a full extraction says will never read: deleted, private,
--- members-only, region-locked. Kept apart from videos.is_unavailable, which is
--- what a playlist listing reports and which every read rewrites.
+-- Videos a full extraction did not store a tracklist for, with why and when to
+-- read them again. Most are read again: a tracklist can be posted after the
+-- video is, and a read can fail for a reason the next one does not meet. Kept
+-- apart from videos.is_unavailable, which is what a playlist listing reports
+-- and which every read rewrites.
 CREATE TABLE enrich_failures (
     video_id TEXT PRIMARY KEY REFERENCES videos (video_id) ON DELETE CASCADE,
     attempted_ts TEXT NOT NULL,

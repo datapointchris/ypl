@@ -49,7 +49,8 @@ func sourceMirror(t *testing.T) *sql.DB {
 			('v3', 1, 0, NULL, 'Other', 'Only', '00:00 Other - Only', 'chapter'),
 			('v4', 1, 60, 120, 'Someone', 'Named', 'Someone - Named', 'llm')`,
 		`INSERT INTO enrich_failures (video_id, attempted_ts, reason) VALUES
-			('v2', '2026-09-03T00:00:00+00:00', 'Video unavailable')`,
+			('v2', '2026-09-03T00:00:00+00:00', 'Video unavailable'),
+			('v4', '2026-09-05T12:00:00+02:00', 'ERROR: [youtube] v4: Private video. Sign in if you''ve been granted access to this video')`,
 	)
 	return db
 }
@@ -110,7 +111,7 @@ func TestAVideoInSeveralPlaylistsIsCopiedOnce(t *testing.T) {
 	st := target(t)
 	counts := importOK(t, sourceMirror(t), st, "PLA", "PLB")
 
-	if want := (Counts{Videos: 4, Tracks: 4, EnrichFailures: 1}); counts != want {
+	if want := (Counts{Videos: 4, Tracks: 4, EnrichFailures: 2}); counts != want {
 		t.Fatalf("counts = %+v, want %+v", counts, want)
 	}
 	videos, err := st.Queries.CountVideos(context.Background())
@@ -164,12 +165,19 @@ func TestImportCarriesEveryFieldAcross(t *testing.T) {
 		}
 	}
 
-	failure, err := st.Queries.GetEnrichFailure(ctx, "v2")
-	if err != nil {
-		t.Fatalf("get the enrich failure of v2: %v", err)
-	}
-	if want := (generated.EnrichFailure{VideoID: "v2", AttemptedTs: "2026-09-03T00:00:00+00:00", Reason: "Video unavailable"}); failure != want {
-		t.Errorf("enrich failure\n got %+v\nwant %+v", failure, want)
+	// A bare "Video unavailable" is read again from when it failed, and a private
+	// video never is.
+	for _, want := range []generated.EnrichFailure{
+		{VideoID: "v2", AttemptedTs: "2026-09-03T00:00:00+00:00", Reason: "Video unavailable", Attempts: 1, RetryTs: text("2026-09-03T00:00:00Z")},
+		{VideoID: "v4", AttemptedTs: "2026-09-05T12:00:00+02:00", Reason: "ERROR: [youtube] v4: Private video. Sign in if you've been granted access to this video", Attempts: 1},
+	} {
+		failure, err := st.Queries.GetEnrichFailure(ctx, want.VideoID)
+		if err != nil {
+			t.Fatalf("get the enrich failure of %s: %v", want.VideoID, err)
+		}
+		if failure != want {
+			t.Errorf("enrich failure\n got %+v\nwant %+v", failure, want)
+		}
 	}
 }
 

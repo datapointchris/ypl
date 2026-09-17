@@ -12,6 +12,7 @@ import (
 
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
+	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
 // ErrPlaylistNotInMirror is the refusal for a playlist id the mirror holds no
@@ -132,7 +133,7 @@ func copyVideo(ctx context.Context, source *sql.DB, tx *store.Tx, videoID string
 		return 0, false, err
 	}
 
-	failure := generated.UpsertEnrichFailureParams{VideoID: videoID}
+	failure := generated.UpsertEnrichFailureParams{VideoID: videoID, Attempts: 1}
 	err = source.QueryRowContext(ctx, "SELECT attempted_ts, reason FROM enrich_failures WHERE video_id = ?", videoID).
 		Scan(&failure.AttemptedTs, &failure.Reason)
 	switch {
@@ -140,6 +141,17 @@ func copyVideo(ctx context.Context, source *sql.DB, tx *store.Tx, videoID string
 		return len(tracks), false, nil
 	case err != nil:
 		return 0, false, fmt.Errorf("read the enrich failure of %s: %w", videoID, err)
+	}
+	// The mirror kept every failure whose message named a video closed to
+	// reading, a bare "Video unavailable" among them, which YouTube's rate
+	// limit also answers with. A failure that names no such reason is read
+	// again from when it failed.
+	if !ytdlp.Unreadable(failure.Reason) {
+		attempted, err := time.Parse(time.RFC3339, failure.AttemptedTs)
+		if err != nil {
+			return 0, false, fmt.Errorf("read the enrich failure of %s: attempted_ts %q: %w", videoID, failure.AttemptedTs, err)
+		}
+		failure.RetryTs = sql.NullString{String: store.Timestamp(attempted), Valid: true}
 	}
 	if err := tx.UpsertEnrichFailure(ctx, failure); err != nil {
 		return 0, false, fmt.Errorf("write the enrich failure of %s: %w", videoID, err)

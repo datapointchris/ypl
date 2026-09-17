@@ -28,11 +28,19 @@ type wireSyncRun struct {
 	Requests          int64             `json:"requests"`
 	Units             int64             `json:"units"`
 	WriteUnits        int64             `json:"write_units"`
+	VideoReads        int64             `json:"video_reads"`
+	VideosEnriched    int64             `json:"videos_enriched"`
+	TracksFound       int64             `json:"tracks_found"`
+	VideosUnreadable  int64             `json:"videos_unreadable"`
+	IsRateLimited     bool              `json:"is_rate_limited"`
+	EnrichmentPaused  bool              `json:"enrichment_paused"`
 	Failures          []wireSyncFailure `json:"failures"`
 }
 
 type wireSyncFailure struct {
+	Stage      string  `json:"stage"`
 	PlaylistID *string `json:"playlist_id"`
+	VideoID    *string `json:"video_id"`
 	Error      string  `json:"error"`
 }
 
@@ -52,9 +60,10 @@ type wireLibrary struct {
 }
 
 // withRuns stores four runs: the first failed, the second ended ok, the third
-// partial with a failure of PLA and one of the run as a whole, and the fourth
-// failed. Every run but the ok one carries a failure, so a page that read
-// another run's failures would hold one.
+// partial with a failure of PLA, one of the run as a whole and one of the read
+// of the video v9, and the fourth failed, rate limited. Every run but the ok one
+// carries a failure, so a page that read another run's failures would hold one.
+// The nth run from 0 read 2n videos and enriched n of them with 10n tracks.
 func (f *fixture) withRuns(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -63,28 +72,36 @@ func (f *fixture) withRuns(t *testing.T) {
 		failures []generated.InsertSyncFailureParams
 	}{
 		{store.OutcomeFailed, []generated.InsertSyncFailureParams{
-			{PlaylistID: sql.NullString{}, Error: "list playlists: token refused"},
+			{Stage: store.StageSync, PlaylistID: sql.NullString{}, Error: "list playlists: token refused"},
 		}},
 		{store.OutcomeOK, nil},
 		{store.OutcomePartial, []generated.InsertSyncFailureParams{
-			{PlaylistID: text("PLA"), Error: "read PLA: backend error"},
-			{PlaylistID: sql.NullString{}, Error: "list playlists: reads exceed the quota"},
+			{Stage: store.StageSync, PlaylistID: text("PLA"), Error: "read PLA: backend error"},
+			{Stage: store.StageSync, PlaylistID: sql.NullString{}, Error: "list playlists: reads exceed the quota"},
+			{Stage: store.StageEnrichment, VideoID: text("v9"), Error: "read video v9: yt-dlp: Unable to extract initial player response"},
+			{Stage: store.StageEnrichment, Error: "store the enrichment of v8: disk I/O error"},
 		}},
 		{store.OutcomeFailed, []generated.InsertSyncFailureParams{
-			{PlaylistID: sql.NullString{}, Error: "list playlists: connection refused"},
+			{Stage: store.StageSync, PlaylistID: sql.NullString{}, Error: "list playlists: connection refused"},
 		}},
 	}
 	err := f.st.InTx(ctx, func(tx *store.Tx) error {
 		for i, r := range runs {
 			id, err := tx.InsertSyncRun(ctx, generated.InsertSyncRunParams{
-				StartedTs:  "2026-09-17T10:00:00Z",
-				FinishedTs: "2026-09-17T10:00:05Z",
-				QuotaDate:  "2026-09-17",
-				Outcome:    r.outcome,
-				Playlists:  int64(36 + i),
-				ItemsAdded: int64(i),
-				Requests:   68,
-				Units:      68,
+				StartedTs:        "2026-09-17T10:00:00Z",
+				FinishedTs:       "2026-09-17T10:00:05Z",
+				QuotaDate:        "2026-09-17",
+				Outcome:          r.outcome,
+				Playlists:        int64(36 + i),
+				ItemsAdded:       int64(i),
+				Requests:         68,
+				Units:            68,
+				VideoReads:       int64(2 * i),
+				VideosEnriched:   int64(i),
+				TracksFound:      int64(10 * i),
+				VideosUnreadable: int64(i % 2),
+				IsRateLimited:    i == len(runs)-1,
+				EnrichmentPaused: i == 2,
 			})
 			if err != nil {
 				return err
@@ -116,10 +133,27 @@ func TestSyncRunsPageNewestFirstWithTheirFailures(t *testing.T) {
 		newest.Units != 68 || newest.QuotaDate != "2026-09-17" || newest.StartedTs != "2026-09-17T10:00:00Z" || newest.FinishedTs != "2026-09-17T10:00:05Z" {
 		t.Errorf("run 4 = %+v", newest)
 	}
+	if newest.VideoReads != 6 || newest.VideosEnriched != 3 || newest.TracksFound != 30 || newest.VideosUnreadable != 1 || !newest.IsRateLimited || first.Data[1].IsRateLimited {
+		t.Errorf("run 4's enrichment = %+v and run 3 rate limited %v, want 6 reads, 3 videos, 30 tracks, 1 unreadable, rate limited, and run 3 not", newest, first.Data[1].IsRateLimited)
+	}
+	// Run 3 made no read because an earlier refusal still held, and run 4 is the
+	// one whose own read drew a refusal. Neither carries the other's flag, and
+	// run 3's failures are the sync's rather than the pause.
+	if !first.Data[1].EnrichmentPaused || newest.EnrichmentPaused {
+		t.Errorf("run 3 paused = %v and run 4 paused = %v, want the pause on run 3 alone", first.Data[1].EnrichmentPaused, newest.EnrichmentPaused)
+	}
 	partial := first.Data[1].Failures
-	if len(partial) != 2 || partial[0].PlaylistID == nil || *partial[0].PlaylistID != "PLA" || partial[1].PlaylistID != nil ||
-		!strings.Contains(partial[1].Error, "quota") {
-		t.Errorf("run 3's failures = %+v, want PLA's then the run's", partial)
+	if len(partial) != 4 || partial[0].PlaylistID == nil || *partial[0].PlaylistID != "PLA" || partial[0].VideoID != nil ||
+		partial[1].PlaylistID != nil || partial[1].VideoID != nil || !strings.Contains(partial[1].Error, "quota") ||
+		partial[2].PlaylistID != nil || partial[2].VideoID == nil || *partial[2].VideoID != "v9" ||
+		partial[3].PlaylistID != nil || partial[3].VideoID != nil {
+		t.Errorf("run 3's failures = %+v, want PLA's, the sync's, v9's read, then the enrichment's", partial)
+	}
+	// The second and the fourth name no playlist and no video, so the stage is
+	// the only thing that says which half of the run each one failed.
+	if partial[1].Stage != store.StageSync || partial[3].Stage != store.StageEnrichment {
+		t.Errorf("the run's two failures naming nothing are staged %q and %q, want %q and %q",
+			partial[1].Stage, partial[3].Stage, store.StageSync, store.StageEnrichment)
 	}
 	if len(newest.Failures) != 1 {
 		t.Errorf("run 4's failures = %+v, want its one", newest.Failures)

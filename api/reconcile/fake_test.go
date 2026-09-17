@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/datapointchris/ypl/api/enrich"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/youtube"
 )
@@ -409,9 +410,22 @@ func newRunner(t *testing.T, f *fakeChannel) (*Runner, *store.Store, *clock) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	c := &clock{now: start}
-	r := NewRunner(st, f, time.Hour)
+	r := NewRunner(st, f, &fakeEnricher{}, time.Hour)
 	r.now = c.Now
 	return r, st, c
+}
+
+// fakeEnricher answers each run's enrichment with report and err, and counts
+// the runs it made.
+type fakeEnricher struct {
+	report enrich.Report
+	err    error
+	runs   int
+}
+
+func (e *fakeEnricher) Run(context.Context) (enrich.Report, error) {
+	e.runs++
+	return e.report, e.err
 }
 
 // mustRun makes a run, fails t if it could not be recorded, and fails t unless

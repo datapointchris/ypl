@@ -1,9 +1,9 @@
 // Package reconcile syncs the channel's playlists with the store both ways. A
 // run reads every playlist the channel owns and every item in each, merges each
-// read into the server's order of the playlist against the playlist's base, and
-// then pushes the server's order of every merged playlist back to YouTube, one
-// write at a time. Every run leaves a sync_runs row saying how it ended and what
-// it did.
+// read into the server's order of the playlist against the playlist's base,
+// pushes the server's order of every merged playlist back to YouTube, one write
+// at a time, and then reads tracklists for the videos enrichment has not read.
+// Every run leaves a sync_runs row saying how it ended and what it did.
 //
 // The API writes playlists too, and a read can predate a write YouTube has
 // answered. So a run changes nothing a read could not yet show: it keeps the
@@ -40,6 +40,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/datapointchris/ypl/api/enrich"
 	"github.com/datapointchris/ypl/api/merge"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
@@ -85,29 +86,42 @@ type Channel interface {
 	Units() int64
 }
 
+// Enricher reads tracklists for the videos waiting for them, as
+// *enrich.Enricher does.
+type Enricher interface {
+	Run(ctx context.Context) (enrich.Report, error)
+}
+
 // Runner makes sync runs against one store and one channel, one at a time.
 type Runner struct {
-	store   *store.Store
-	channel Channel
-	// interval is the wait between runs, and runsPerDay how many runs a day the
-	// worker makes at it.
+	store    *store.Store
+	channel  Channel
+	enricher Enricher
+	// interval is the wait between one run ending and the next beginning, and
+	// runsPerDay the most runs a day the worker makes at it. A run takes time of
+	// its own, most of it enrichment's reads, so the worker makes fewer. The
+	// quota guard reads runsPerDay, and counting runs that are never made errs
+	// toward refusing a write, which is the safe direction.
 	interval   time.Duration
 	runsPerDay int64
 	now        func() time.Time
 }
 
-// NewRunner is a Runner for runs every interval.
-func NewRunner(st *store.Store, channel Channel, interval time.Duration) *Runner {
+// NewRunner is a Runner for runs every interval, each ending with enricher's.
+func NewRunner(st *store.Store, channel Channel, enricher Enricher, interval time.Duration) *Runner {
 	return &Runner{
 		store:      st,
 		channel:    channel,
+		enricher:   enricher,
 		interval:   interval,
 		runsPerDay: int64((24*time.Hour + interval - 1) / interval),
 		now:        time.Now,
 	}
 }
 
-// Report is what one run did, as its sync_runs row records it.
+// Report is what one run did, as its sync_runs row records it. VideoReads,
+// VideosEnriched, TracksFound, VideosUnreadable, RateLimited and
+// EnrichmentPaused are what its enrichment did, as enrich.Report names them.
 type Report struct {
 	RunID             int64
 	Outcome           string
@@ -121,13 +135,23 @@ type Report struct {
 	Requests          int64
 	Units             int64
 	WriteUnits        int64
+	VideoReads        int
+	VideosEnriched    int
+	TracksFound       int
+	VideosUnreadable  int
+	RateLimited       bool
+	EnrichmentPaused  bool
 	Failures          []Failure
 }
 
-// Failure is one thing that went wrong in a run. Playlist is empty for a failure
-// of the whole run.
+// Failure is one thing that went wrong in a run. Stage is which half of the run
+// it happened in, Playlist the playlist a failure of the sync is about, and
+// Video the video a failure of enrichment is about. A failure of a whole stage
+// names neither, which is why it names the stage.
 type Failure struct {
+	Stage    string
 	Playlist youtube.PlaylistID
+	Video    youtube.VideoID
 	Err      error
 }
 
@@ -138,12 +162,48 @@ func (r *Runner) Run(ctx context.Context) (Report, error) {
 		Runner:    r,
 		ctx:       ctx,
 		started:   r.now(),
+		stage:     store.StageSync,
 		requests0: r.channel.Requests(),
 		units0:    r.channel.Units(),
 	}
 	run.date = youtube.QuotaDate(run.started)
 	run.execute()
+	run.enrich()
 	return run.record()
+}
+
+// enrich reads tracklists once the sync is done. A sync YouTube refused for the
+// day's quota leaves reads through yt-dlp as they were, so enrichment follows
+// it, and follows no sync that ended any other way before its end.
+func (run *run) enrich() {
+	if run.ended != nil && !errors.Is(run.ended, youtube.ErrQuotaSpent) {
+		return
+	}
+	run.stage = store.StageEnrichment
+	report, err := run.enricher.Run(run.ctx)
+	run.report.VideoReads = report.Reads
+	run.report.VideosEnriched = report.Enriched
+	run.report.TracksFound = report.Tracks
+	run.report.VideosUnreadable = report.Unreadable
+	run.report.RateLimited = report.RateLimited
+	run.report.EnrichmentPaused = report.Paused
+	for _, failure := range report.Failures {
+		run.report.Failures = append(run.report.Failures, Failure{
+			Stage: run.stage, Video: youtube.VideoID(failure.VideoID), Err: failure.Err,
+		})
+	}
+	if err == nil {
+		return
+	}
+	// A run that already ended records that ending as its outcome, so an error
+	// from enrichment reaches the row only as a failure of it. The ending
+	// enrichment runs after is a quota refusal, which makes that the ordinary
+	// case rather than the rare one.
+	if run.ended == nil {
+		run.ended = err
+		return
+	}
+	run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Err: err})
 }
 
 // run is the state of one run while it is made.
@@ -162,6 +222,9 @@ type run struct {
 	// ended is why the run stopped before its end: YouTube's quota refusal, the
 	// context ending, or a failure of the whole run.
 	ended error
+	// stage is which half of the run is happening, which every failure it
+	// records names.
+	stage string
 }
 
 func (run *run) execute() {
@@ -195,14 +258,15 @@ func (run *run) execute() {
 	run.readUnits = run.channel.Units() - run.units0
 	if run.runsPerDay*run.readUnits > DailyQuota {
 		run.report.Failures = append(run.report.Failures, Failure{
-			Err: fmt.Errorf("%w: %d runs a day at %d units each", ErrReadsExceedQuota, run.runsPerDay, run.readUnits),
+			Stage: run.stage,
+			Err:   fmt.Errorf("%w: %d runs a day at %d units each", ErrReadsExceedQuota, run.runsPerDay, run.readUnits),
 		})
 	}
 
 	for _, playlist := range run.merged {
 		err := run.push(playlist)
 		if errors.Is(err, ErrAllowanceSpent) {
-			run.report.Failures = append(run.report.Failures, Failure{Playlist: youtube.PlaylistID(playlist.id), Err: err})
+			run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Playlist: youtube.PlaylistID(playlist.id), Err: err})
 			return
 		}
 		if err != nil {
@@ -270,7 +334,7 @@ func (run *run) deleteGone(id string, readAt time.Time) error {
 // skip records a failure about the playlist alone, which the run passes over.
 func (run *run) skip(playlist youtube.PlaylistID, err error) {
 	run.report.PlaylistsSkipped++
-	run.report.Failures = append(run.report.Failures, Failure{Playlist: playlist, Err: err})
+	run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Playlist: playlist, Err: err})
 }
 
 // merged is a playlist a run merged, as the push starts from it: the revision
@@ -585,7 +649,7 @@ func (run *run) record() (Report, error) {
 		rep.Outcome = store.OutcomeCanceled
 	case run.ended != nil:
 		rep.Outcome = store.OutcomeFailed
-		rep.Failures = append(rep.Failures, Failure{Err: run.ended})
+		rep.Failures = append(rep.Failures, Failure{Stage: run.stage, Err: run.ended})
 	case len(rep.Failures) > 0:
 		rep.Outcome = store.OutcomePartial
 	default:
@@ -609,14 +673,26 @@ func (run *run) record() (Report, error) {
 			Units:             rep.Units,
 			Writes:            int64(rep.Writes),
 			WriteUnits:        rep.WriteUnits,
+			VideoReads:        int64(rep.VideoReads),
+			VideosEnriched:    int64(rep.VideosEnriched),
+			TracksFound:       int64(rep.TracksFound),
+			VideosUnreadable:  int64(rep.VideosUnreadable),
+			IsRateLimited:     rep.RateLimited,
+			EnrichmentPaused:  rep.EnrichmentPaused,
 		})
 		if err != nil {
 			return err
 		}
 		rep.RunID = id
 		for _, failure := range rep.Failures {
-			playlist := sql.NullString{String: string(failure.Playlist), Valid: failure.Playlist != ""}
-			if err := tx.InsertSyncFailure(ctx, generated.InsertSyncFailureParams{RunID: id, PlaylistID: playlist, Error: failure.Err.Error()}); err != nil {
+			err := tx.InsertSyncFailure(ctx, generated.InsertSyncFailureParams{
+				RunID:      id,
+				PlaylistID: sql.NullString{String: string(failure.Playlist), Valid: failure.Playlist != ""},
+				VideoID:    sql.NullString{String: string(failure.Video), Valid: failure.Video != ""},
+				Error:      failure.Err.Error(),
+				Stage:      failure.Stage,
+			})
+			if err != nil {
 				return err
 			}
 		}

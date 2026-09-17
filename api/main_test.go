@@ -275,6 +275,67 @@ func TestSyncIntervalDefaultsToAnHourAndRefusesAnythingButAPositiveDuration(t *t
 	}
 }
 
+func TestTheREADMEStatesTheEnrichmentDefaults(t *testing.T) {
+	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(string(readme)), " ")
+	want := fmt.Sprintf("at most `ENRICH_VIDEOS_PER_RUN` videos, %d when unset, `ENRICH_PACE` apart, %d seconds when unset", defaultEnrichVideos, int(defaultEnrichPace.Seconds()))
+	if !strings.Contains(text, want) {
+		t.Fatalf("the README does not say %q", want)
+	}
+}
+
+func TestEnrichmentDefaultsAndRefusesAnythingButAPositivePaceAndACount(t *testing.T) {
+	t.Setenv("ENRICH_PACE", "")
+	t.Setenv("ENRICH_VIDEOS_PER_RUN", "")
+	limits, err := enrichment(defaultSyncInterval)
+	if err != nil || limits.Pace != defaultEnrichPace || limits.Batch != defaultEnrichVideos {
+		t.Fatalf("enrichment unset = %+v, %v, want %v and %d", limits, err, defaultEnrichPace, defaultEnrichVideos)
+	}
+	if limits.Budget != defaultSyncInterval/enrichShareOfInterval {
+		t.Fatalf("the budget in a %v sync = %v, want %v", defaultSyncInterval, limits.Budget, defaultSyncInterval/enrichShareOfInterval)
+	}
+	t.Setenv("ENRICH_PACE", "30s")
+	t.Setenv("ENRICH_VIDEOS_PER_RUN", "0")
+	if limits, err := enrichment(defaultSyncInterval); err != nil || limits.Pace != 30*time.Second || limits.Batch != 0 {
+		t.Fatalf("enrichment of 30s and 0 = %+v, %v, want 30s and no videos", limits, err)
+	}
+	for name, env := range map[string][2]string{
+		"no pace":       {"0s", "30"},
+		"a pace behind": {"-10s", "30"},
+		"a pace word":   {"slow", "30"},
+		"a count below": {"10s", "-1"},
+		"a count word":  {"10s", "thirty"},
+	} {
+		t.Setenv("ENRICH_PACE", env[0])
+		t.Setenv("ENRICH_VIDEOS_PER_RUN", env[1])
+		if _, err := enrichment(defaultSyncInterval); err == nil {
+			t.Errorf("enrichment with %s succeeded, want a refusal", name)
+		}
+	}
+}
+
+// A run's reads happen inside it, so the pace and the count set the period
+// between two syncs as surely as the interval does. A pair that cannot finish
+// inside the run's share of the interval is refused at startup rather than
+// quietly stretching it.
+func TestEnrichmentRefusesReadsThatCannotFinishInsideTheSync(t *testing.T) {
+	t.Setenv("ENRICH_PACE", "30s")
+	t.Setenv("ENRICH_VIDEOS_PER_RUN", "200")
+	if _, err := enrichment(time.Hour); err == nil {
+		t.Fatal("200 videos 30s apart in an hourly sync was accepted, want a refusal")
+	}
+	if _, err := enrichment(8 * time.Hour); err != nil {
+		t.Fatalf("200 videos 30s apart in an 8 hour sync = %v, want them accepted", err)
+	}
+	t.Setenv("ENRICH_VIDEOS_PER_RUN", "0")
+	if _, err := enrichment(time.Minute); err != nil {
+		t.Fatalf("reading no video in a one minute sync = %v, want it accepted", err)
+	}
+}
+
 func TestIdentityProviderRequiresAnIssuerAndDefaultsThePrefix(t *testing.T) {
 	t.Setenv("OIDC_ISSUER", "")
 	if _, _, err := identityProvider(); err == nil {
@@ -371,17 +432,21 @@ type child struct {
 	client   *http.Client
 }
 
-func startChild(t *testing.T, issuer string) *child {
+func startChild(t *testing.T, issuer string, env ...string) *child {
 	t.Helper()
 	database := filepath.Join(t.TempDir(), "api.db")
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	// The credentials are placeholders, and every request the sync makes goes to
 	// a proxy port nothing listens on, so no request leaves the machine. The
-	// identity provider is on the loopback address, which Go never proxies.
+	// identity provider is on the loopback address, which Go never proxies. A
+	// service configured to read videos needs a yt-dlp to read them with, and
+	// this test binary stands in for one: the store holds no video, so
+	// enrichment reads none and never runs it.
 	cmd.Env = append(os.Environ(), serveChild+"=1", "PORT=0", "DATABASE_PATH="+database,
 		"YOUTUBE_CLIENT_ID=id", "YOUTUBE_CLIENT_SECRET=secret", "YOUTUBE_REFRESH_TOKEN=token",
-		"OIDC_ISSUER="+issuer,
+		"OIDC_ISSUER="+issuer, "YTDLP_PATH="+os.Args[0],
 		"HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1", "NO_PROXY=")
+	cmd.Env = append(cmd.Env, env...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
@@ -431,6 +496,19 @@ func (c *child) awaitReady(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("/ready did not answer 200 with the identity provider up")
+}
+
+// yt-dlp is what reads videos, so a service reading none serves without it.
+// That is what lets a host answer the API before yt-dlp is installed on it.
+func TestAServiceReadingNoVideoStartsWithNoYtdlp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts the service as a child process")
+	}
+	c := startChild(t, "http://127.0.0.1:1", "ENRICH_VIDEOS_PER_RUN=0", "YTDLP_PATH="+filepath.Join(t.TempDir(), "absent"), "PATH=")
+
+	if code, _ := c.get(t, "/health", ""); code != http.StatusOK {
+		t.Errorf("/health = %d, want 200 from a service with no yt-dlp and no video to read", code)
+	}
 }
 
 // The sync needs no token, so a provider that is down when the service starts

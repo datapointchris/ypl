@@ -27,11 +27,12 @@ import (
 var migrations embed.FS
 
 // trackSources is the vocabulary tracks.source draws from, upserted on every
-// open. It matches the Python tool's seed, so every track a Python mirror can
-// hold has its source here.
+// open. It holds the Python tool's seed, so every track a Python mirror can hold
+// has its source here, and comment, which only the server reads.
 var trackSources = []generated.UpsertTrackSourceParams{
-	{Source: "chapter", Label: "Chapter", Description: "YouTube chapter marker, carries real timestamps"},
+	{Source: "chapter", Label: "Chapter", Description: "A chapter of the video, whose start and end are numbers rather than text anything parsed. yt-dlp reports a chapter YouTube marked and one it derived from the description alike"},
 	{Source: "description", Label: "Description", Description: "Parsed from the video description"},
+	{Source: "comment", Label: "Comment", Description: "Parsed from timestamped lines in one of the video's top comments"},
 	{Source: "llm", Label: "Claude", Description: "Extracted by Claude from unstructured text"},
 	{Source: "manual", Label: "Manual", Description: "Entered by hand"},
 }
@@ -45,10 +46,23 @@ const (
 	OutcomeCanceled   = "canceled"
 )
 
+// Which half of a run a failure happened in, the vocabulary
+// sync_failures.stage draws from.
+const (
+	StageSync       = "sync"
+	StageEnrichment = "enrichment"
+)
+
+// syncStages is the sync_stages vocabulary, upserted on every open.
+var syncStages = []generated.UpsertSyncStageParams{
+	{Stage: StageSync, Description: "Reading the channel's playlists and writing back what an edit changed"},
+	{Stage: StageEnrichment, Description: "Reading tracklists for the videos those playlists hold"},
+}
+
 // syncOutcomes is the sync_outcomes vocabulary, upserted on every open.
 var syncOutcomes = []generated.UpsertSyncOutcomeParams{
-	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was merged, or left for the next run because its items were written within the read lag, and no push write was refused, unanswered or held back"},
-	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and a playlist was skipped, a push write was refused, unanswered or held back, the day's quota had no room for a write beside the reads of the day's remaining runs, or the interval's runs read more than a day's quota"},
+	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was merged, or left for the next run because its items were written within the read lag, no push write was refused, unanswered or held back, and no read of a video failed. Reads of videos paused after YouTube refused one end this way too, which is recorded on the run rather than as a failure of it"},
+	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and a playlist was skipped, a push write was refused, unanswered or held back, the day's quota had no room for a write beside the reads of the day's remaining runs, the interval's runs read more than a day's quota, or a read of a video failed"},
 	{Outcome: OutcomeQuotaSpent, Label: "Quota spent", Description: "YouTube refused a request for the day's quota, in this run or an earlier one on the same Pacific date"},
 	{Outcome: OutcomeFailed, Label: "Failed", Description: "An error ended the run before it finished"},
 	{Outcome: OutcomeCanceled, Label: "Canceled", Description: "The run was canceled before it finished"},
@@ -427,6 +441,11 @@ func (s *Store) seed(ctx context.Context) error {
 	for _, outcome := range syncOutcomes {
 		if err := s.Queries.UpsertSyncOutcome(ctx, outcome); err != nil {
 			return fmt.Errorf("seed sync outcome %s: %w", outcome.Outcome, err)
+		}
+	}
+	for _, stage := range syncStages {
+		if err := s.Queries.UpsertSyncStage(ctx, stage); err != nil {
+			return fmt.Errorf("seed sync stage %s: %w", stage.Stage, err)
 		}
 	}
 	for _, privacy := range playlistPrivacies {

@@ -75,6 +75,13 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      # The API reads videos by running yt-dlp, and one test hands the real
+      # binary the arguments a read passes, so that an option yt-dlp does not
+      # take is red here rather than on the deployed host. That test skips when
+      # yt-dlp is absent, which without this step is everywhere.
+      - name: Install yt-dlp
+        run: pipx install yt-dlp
+
       # generated:go-api
       - uses: actions/setup-go@v7
         with:
