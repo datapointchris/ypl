@@ -162,6 +162,22 @@ func TestAnAccentedTitleIsFoundBySpellingTheAccent(t *testing.T) {
 	refused(t, f.get("/api/v1/playlists/ecoute"), http.StatusNotFound, wire.CodeNotFound)
 }
 
+// A title holds whatever the channel typed into it, a slash included, and a
+// client sends one escaped. The route has to read that back as one segment or
+// the title of every playlist with a slash in it is unusable.
+func TestATitleHoldingASlashReachesItsPlaylist(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	f.withPlaylist(t, "PLD", "Deep / House")
+
+	for _, ref := range []string{"Deep / House", "deep-house"} {
+		got := decode[wirePlaylist](t, f.get("/api/v1/playlists/"+url.PathEscape(ref)), http.StatusOK)
+		if got.ID != "PLD" {
+			t.Errorf("%q found %s, want PLD", ref, got.ID)
+		}
+	}
+}
+
 func TestPartOfATitleFindsThePlaylistItNamesAlone(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
