@@ -9,6 +9,7 @@ import datetime as dt
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -1001,6 +1002,36 @@ def test_a_browser_yt_dlp_cannot_read_names_the_browser(signing_in, monkeypatch)
     assert 'safari' in result.output
 
 
+def test_a_session_yt_dlp_cannot_decrypt_names_the_keyring_rather_than_signing_in(signing_in, monkeypatch):
+    """The browser is signed in. Telling someone to sign in again sends them nowhere."""
+
+    def undecrypted(browser, **kwargs):
+        raise ytdlp.YtdlpCookiesUndecryptedError('WARNING: cannot decrypt v11 cookies: no key found')
+
+    monkeypatch.setattr(ytdlp, 'browser_cookies', undecrypted)
+    monkeypatch.setattr(main.sys, 'platform', 'linux')
+
+    result = runner.invoke(app, ['auth', '--browser', 'vivaldi:Profile 1'])
+    assert result.exit_code == 1
+    assert 'no key found' in result.output
+    assert 'ypl auth --browser vivaldi+gnomekeyring:Profile 1' in result.output
+    assert 'Sign in at youtube.com' not in result.output
+    assert not paths.auth_file().exists()
+
+
+@pytest.mark.parametrize(
+    ('platform', 'browser', 'commands'),
+    [
+        ('linux', 'chrome', ['ypl auth --browser chrome+gnomekeyring', 'ypl auth --browser chrome+kwallet6']),
+        ('linux', 'vivaldi+gnomekeyring', []),
+        ('darwin', 'chrome', []),
+    ],
+)
+def test_a_keyring_is_suggested_only_on_linux_and_only_when_none_was_named(monkeypatch, platform, browser, commands):
+    monkeypatch.setattr(main.sys, 'platform', platform)
+    assert main.keyring_commands(browser) == commands
+
+
 @pytest.fixture
 def account(monkeypatch):
     """Two playlists on YouTube, listed the way the account feed lists them.
@@ -1437,3 +1468,78 @@ def test_a_browser_that_cannot_be_exported_falls_back_to_naming_it(monkeypatch):
 
     with ytdlp.exported_cookies('safari') as cookies:
         assert cookies == ytdlp.Cookies(browser='safari')
+
+
+# yt-dlp's stdout and stderr, as one stream, from a cookie export against
+# Vivaldi on a Hyprland desktop, which yt-dlp does not recognize, so it reached
+# for a plain-text key.
+NO_KEY_OUTPUT = """\
+[generic] Extracting URL: https://cookies.invalid/
+[generic] cookies: Downloading webpage
+Extracting cookies from vivaldi
+WARNING: cannot decrypt v11 cookies: no key found
+Extracted 0 cookies from vivaldi (426 could not be decrypted)
+ERROR: [generic] cookies: Unable to download webpage: HTTPSConnection(host='cookies.invalid', port=443): Failed to resolve 'cookies.invalid'
+"""
+
+# The same export with the GNOME keyring named and no `secretstorage` to read it.
+NO_SECRETSTORAGE_OUTPUT = (
+    '[generic] Extracting URL: https://cookies.invalid/\n'
+    '[generic] cookies: Downloading webpage\n'
+    'Extracting cookies from vivaldi\n'
+    'ERROR: secretstorage not available as the `secretstorage` module is not installed. '
+    'Please install by running `python3 -m pip install secretstorage`\n'
+    'WARNING: failed to decrypt cookie (AES-CBC) because UTF-8 decoding failed. Possibly the key is wrong?\n'
+    'Extracted 259 cookies from vivaldi (162 could not be decrypted)\n'
+    "ERROR: [generic] cookies: Unable to download webpage: HTTPSConnection(host='cookies.invalid', port=443): "
+    "Failed to resolve 'cookies.invalid'\n"
+)
+
+DECRYPTED_OUTPUT = """\
+[generic] Extracting URL: https://cookies.invalid/
+[generic] cookies: Downloading webpage
+Extracting cookies from vivaldi
+Extracted 417 cookies from vivaldi
+ERROR: [generic] cookies: Unable to download webpage: HTTPSConnection(host='cookies.invalid', port=443): Failed to resolve 'cookies.invalid'
+"""
+
+
+def test_the_undecrypted_report_is_yt_dlps_diagnosis_without_the_deliberate_failure():
+    assert ytdlp.undecrypted_report(NO_KEY_OUTPUT) == [
+        'WARNING: cannot decrypt v11 cookies: no key found',
+        'Extracted 0 cookies from vivaldi (426 could not be decrypted)',
+    ]
+    report = ytdlp.undecrypted_report(NO_SECRETSTORAGE_OUTPUT)
+    assert report[0].startswith('ERROR: secretstorage not available')
+    assert not [line for line in report if 'cookies.invalid' in line]
+    assert ytdlp.undecrypted_report(DECRYPTED_OUTPUT) == []
+
+
+def exporting(monkeypatch, output: str, names: list[str]) -> None:
+    """Stand in for yt-dlp writing a jar holding these youtube.com cookies."""
+
+    def exported(command, **kwargs):
+        assert kwargs['stderr'] == subprocess.STDOUT
+        rows = ['# Netscape HTTP Cookie File', '.example.com\tTRUE\t/\tFALSE\t1900000000\tother\tx']
+        rows += [f'.youtube.com\tTRUE\t/\tTRUE\t1900000000\t{name}\tvalue' for name in names]
+        Path(command[command.index('--cookies') + 1]).write_text('\n'.join(rows) + '\n')
+        return subprocess.CompletedProcess(command, 1, output, None)
+
+    monkeypatch.setattr(ytdlp, 'binary_path', lambda: 'yt-dlp')
+    monkeypatch.setattr(ytdlp.subprocess, 'run', exported)
+
+
+def test_a_store_whose_session_could_not_be_decrypted_says_so(monkeypatch, tmp_path):
+    """Read as a jar alone, this is a browser nobody signed in to."""
+    exporting(monkeypatch, NO_KEY_OUTPUT, names=['SID'])
+
+    with pytest.raises(ytdlp.YtdlpCookiesUndecryptedError, match='no key found'):
+        ytdlp.export_cookie_jar('vivaldi', tmp_path / 'youtube.txt')
+
+
+def test_undecryptable_leftovers_beside_a_working_session_are_not_refused(monkeypatch, tmp_path):
+    """Cookies from an earlier key linger until they expire, in a browser that works."""
+    exporting(monkeypatch, NO_SECRETSTORAGE_OUTPUT, names=['SID', 'LOGIN_INFO'])
+
+    jar = ytdlp.export_cookie_jar('vivaldi', tmp_path / 'youtube.txt')
+    assert sorted(cookie.name for cookie in jar) == ['LOGIN_INFO', 'SID']

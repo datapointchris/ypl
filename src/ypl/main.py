@@ -14,6 +14,7 @@ from pyselfupdate import Config as UpdateConfig
 from pyselfupdate import notify
 from pyselfupdate.typercmd import run_update
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ypl import config
@@ -1330,6 +1331,29 @@ def plays_list(
     console.print(table)
 
 
+def keyring_commands(browser: str) -> list[str]:
+    """The sign-in commands that name a keyring, for a browser that named none.
+
+    yt-dlp reads `BROWSER[+KEYRING][:PROFILE]`, so the keyring goes before any
+    profile. Only Linux chooses between keyrings. A browser that already names
+    one gets nothing, since yt-dlp's report says what went wrong with it.
+    """
+    name, separator, profile = browser.partition(':')
+    if '+' in name or not sys.platform.startswith('linux'):
+        return []
+    return [f'ypl auth --browser {name}+{keyring}{separator}{profile}' for keyring in ('gnomekeyring', 'kwallet6')]
+
+
+def print_undecrypted(browser: str, error: ytdlp.YtdlpCookiesUndecryptedError) -> None:
+    messages.print(f'[red]yt-dlp could not decrypt the YouTube session in {browser}.[/red]')
+    messages.print(escape(str(error)))
+    commands = keyring_commands(browser)
+    if commands:
+        messages.print('Where yt-dlp picked the wrong keyring, name the one this desktop runs:')
+        for command in commands:
+            messages.print(f'  [bold]{command}[/bold]')
+
+
 def backend_for_browser(browser: str, page_id: str) -> youtubei.YouTubeiBackend:
     """A write backend over whatever cookies that browser holds right now.
 
@@ -1386,6 +1410,9 @@ def auth(
     except ytdlp.YtdlpUnavailableError as error:
         messages.print(f'[red]{error}[/red]')
         raise typer.Exit(1) from error
+    except ytdlp.YtdlpCookiesUndecryptedError as error:
+        print_undecrypted(source, error)
+        raise typer.Exit(1) from error
     except ytdlp.YtdlpFailedError as error:
         messages.print(f'[red]Could not read cookies from {source}.[/red] {error}')
         raise typer.Exit(1) from error
@@ -1420,6 +1447,9 @@ def backend_or_exit() -> youtubei.YouTubeiBackend:
         raise typer.Exit(1)
     try:
         return backend_for_browser(stored['browser'], stored.get('page_id') or '')
+    except ytdlp.YtdlpCookiesUndecryptedError as error:
+        print_undecrypted(stored['browser'], error)
+        raise typer.Exit(1) from error
     except ytdlp.YtdlpFailedError as error:
         messages.print(f'[red]Could not read cookies from {stored["browser"]}.[/red] {error}')
         raise typer.Exit(1) from error

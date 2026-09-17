@@ -31,6 +31,21 @@ BINARY = 'yt-dlp'
 
 COOKIE_DOMAIN = 'youtube.com'
 
+# Signed-in-ness, as distinct from holding a SID cookie. YouTube clears this one
+# on sign-out and does not reliably clear `__Secure-3PAPISID`, so a jar carrying
+# a SID and no `LOGIN_INFO` is a session that has already ended.
+LOGIN_COOKIE = 'LOGIN_INFO'
+
+# yt-dlp's summary of a cookie read that left part of the store encrypted:
+# `Extracted 0 cookies from vivaldi (426 could not be decrypted)`. It is the
+# only report of it. The exit code and the jar are the same as for a browser
+# nobody signed in to, so without it the fault reads as a signed-out browser.
+UNDECRYPTED_MARKER = 'could not be decrypted'
+
+# The line yt-dlp prints as it opens a browser's store, before any warning
+# about that store.
+COOKIE_READ_START = 'Extracting cookies from'
+
 # A host that cannot resolve, so the cookie export happens and the run then
 # stops without a request. Any real URL would download a page to no purpose.
 UNRESOLVABLE_URL = 'https://cookies.invalid/'
@@ -50,6 +65,16 @@ class YtdlpUnavailableError(RuntimeError):
 
 class YtdlpFailedError(RuntimeError):
     pass
+
+
+class YtdlpCookiesUndecryptedError(YtdlpFailedError):
+    """yt-dlp found the browser's cookie store and could not decrypt the session in it.
+
+    Its own class because the remedy is the opposite of a signed-out browser's.
+    Signing in again changes nothing when the session is already there and the
+    key to it is not: on Linux that key sits in the desktop keyring, which
+    yt-dlp has to be able to reach and sometimes has to be told the name of.
+    """
 
 
 # What yt-dlp says when the video itself is the problem rather than the request.
@@ -157,6 +182,32 @@ def cookie_arguments(cookies: Cookies | None) -> list[str]:
     return cookies.arguments() if cookies else []
 
 
+def undecrypted_report(output: str) -> list[str]:
+    """yt-dlp's own account of a cookie read that left part of the store encrypted.
+
+    Its warnings are the diagnosis — `cannot decrypt v11 cookies: no key found`,
+    or that `secretstorage` is missing — and nothing else carries it. Only the
+    lines between opening the store and the summary are kept: everything after
+    is the deliberate failure against `UNRESOLVABLE_URL`. Empty unless yt-dlp
+    reported undecrypted cookies, so a read it did not summarize this way is
+    never mistaken for one.
+
+    `output` is stdout and stderr as one stream. yt-dlp prints the two anchors
+    to stdout and the warnings between them to stderr, so either alone loses
+    the order that says which warnings belong to the cookie read.
+    """
+    report: list[str] = []
+    reading = False
+    for line in output.splitlines():
+        if line.startswith(COOKIE_READ_START):
+            reading = True
+        elif reading and UNDECRYPTED_MARKER in line:
+            return [*report, line]
+        elif reading and line.startswith(('WARNING:', 'ERROR:')):
+            report.append(line)
+    return []
+
+
 def export_cookie_jar(
     browser: str, destination: Path, domain: str = COOKIE_DOMAIN, timeout_seconds: int = 120
 ) -> http.cookiejar.MozillaCookieJar:
@@ -179,13 +230,22 @@ def export_cookie_jar(
     yt-dlp parses all of it on every video. Filtering took the same read from
     11.1 seconds to 7.9. It is also simply the right thing to write down: a
     file of every session this browser holds is not what a YouTube read needs.
+
+    A store yt-dlp could only partly decrypt is refused only when the session
+    cookie is among what it lost. A few cookies left over from an earlier key
+    sit undecryptable in a working browser for as long as they take to expire,
+    and refusing those would sign out a session that works.
     """
     with tempfile.TemporaryDirectory() as directory:
         exported = Path(directory) / 'cookies.txt'
         arguments = ['--cookies-from-browser', browser, '--cookies', str(exported), '--simulate', UNRESOLVABLE_URL]
         try:
-            subprocess.run(  # noqa: S603
-                [binary_path(), *arguments], capture_output=True, text=True, timeout=timeout_seconds
+            completed = subprocess.run(  # noqa: S603
+                [binary_path(), *arguments],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as error:
             raise YtdlpFailedError(f'{BINARY} did not finish reading cookies from {browser}') from error
@@ -202,6 +262,9 @@ def export_cookie_jar(
     for cookie in whole:
         if domain in (cookie.domain or ''):
             jar.set_cookie(cookie)
+    report = undecrypted_report(completed.stdout)
+    if report and not any(cookie.name == LOGIN_COOKIE for cookie in jar):
+        raise YtdlpCookiesUndecryptedError('\n'.join(report))
     # 0600, by `FileCookieJar.save` itself. These are a live Google session and
     # the browser is where they belong; the only reason a copy exists is that
     # yt-dlp has to be handed one per process.

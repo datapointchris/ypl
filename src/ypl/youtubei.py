@@ -42,6 +42,7 @@ from ypl.remote import RemoteItem
 from ypl.remote import RemoteRateLimitedError
 from ypl.remote import batched
 from ypl.throttle import Throttle
+from ypl.ytdlp import LOGIN_COOKIE
 
 ORIGIN = 'https://www.youtube.com'
 
@@ -66,11 +67,6 @@ SID_SCHEMES = (
     ('SAPISID1PHASH', ('__Secure-1PAPISID',)),
     ('SAPISID3PHASH', ('__Secure-3PAPISID',)),
 )
-
-# Signed-in-ness, as distinct from holding a SID cookie. YouTube clears this one
-# on sign-out and does not reliably clear `__Secure-3PAPISID`, so a jar carrying
-# a SID and no `LOGIN_INFO` is a session that has already ended.
-LOGIN_COOKIE = 'LOGIN_INFO'
 
 # What a refusal looks like when it arrives with a 200. `edit_playlist` reports
 # failure in the body rather than in the status, so a push against a playlist
