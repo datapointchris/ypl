@@ -1,0 +1,114 @@
+{
+  "kind": "youtube#playlistItemListResponse",
+  "etag": "x0recordedItemsPageEtag0000",
+  "items": [
+    {
+      "kind": "youtube#playlistItem",
+      "etag": "x0recordedPublicItemEtag000",
+      "id": "UEx4MHJlY29yZGVkcGFnZXgwMDAwMDAwMDAwMDAwMDAwYS4wQTFCMkMzRDRFNUY2QTdC",
+      "snippet": {
+        "publishedAt": "2020-02-24T20:46:21Z",
+        "channelId": "UCx0recordedChannel00000",
+        "title": "Two Hours of House",
+        "description": "▼TRACK LIST▼\n00:00 ; First Artist - First Track\n06:49 ; Second Artist - Second Track",
+        "thumbnails": {
+          "default": {
+            "url": "https://i.ytimg.com/vi/x0public001/default.jpg",
+            "width": 120,
+            "height": 90
+          },
+          "medium": {
+            "url": "https://i.ytimg.com/vi/x0public001/mqdefault.jpg",
+            "width": 320,
+            "height": 180
+          },
+          "high": {
+            "url": "https://i.ytimg.com/vi/x0public001/hqdefault.jpg",
+            "width": 480,
+            "height": 360
+          },
+          "standard": {
+            "url": "https://i.ytimg.com/vi/x0public001/sddefault.jpg",
+            "width": 640,
+            "height": 480
+          },
+          "maxres": {
+            "url": "https://i.ytimg.com/vi/x0public001/maxresdefault.jpg",
+            "width": 1280,
+            "height": 720
+          }
+        },
+        "channelTitle": "A Channel",
+        "playlistId": "PLx0recordedpagex0000000000000000a",
+        "position": 0,
+        "resourceId": {
+          "kind": "youtube#video",
+          "videoId": "x0public001"
+        },
+        "videoOwnerChannelTitle": "A Mix Channel",
+        "videoOwnerChannelId": "UCx0recordedOwner0000000"
+      },
+      "contentDetails": {
+        "videoId": "x0public001",
+        "videoPublishedAt": "2017-05-21T17:00:01Z"
+      },
+      "status": {
+        "privacyStatus": "public"
+      }
+    },
+    {
+      "kind": "youtube#playlistItem",
+      "etag": "x0recordedDeletedItemEtag00",
+      "id": "UEx4MHJlY29yZGVkcGFnZXgwMDAwMDAwMDAwMDAwMDAwYS4xQjJDM0Q0RTVGNkE3QjhD",
+      "snippet": {
+        "publishedAt": "2021-05-12T20:37:07Z",
+        "channelId": "UCx0recordedChannel00000",
+        "title": "Deleted video",
+        "description": "This video is unavailable.",
+        "thumbnails": {},
+        "channelTitle": "A Channel",
+        "playlistId": "PLx0recordedpagex0000000000000000a",
+        "position": 1,
+        "resourceId": {
+          "kind": "youtube#video",
+          "videoId": "x0deleted02"
+        }
+      },
+      "contentDetails": {
+        "videoId": "x0deleted02"
+      },
+      "status": {
+        "privacyStatus": "privacyStatusUnspecified"
+      }
+    },
+    {
+      "kind": "youtube#playlistItem",
+      "etag": "x0recordedPrivateItemEtag00",
+      "id": "UEx4MHJlY29yZGVkcGFnZXgwMDAwMDAwMDAwMDAwMDAwYS4yQzNENEU1RjZBN0I4QzlE",
+      "snippet": {
+        "publishedAt": "2021-09-22T15:21:01Z",
+        "channelId": "UCx0recordedChannel00000",
+        "title": "Private video",
+        "description": "This video is private.",
+        "thumbnails": {},
+        "channelTitle": "A Channel",
+        "playlistId": "PLx0recordedpagex0000000000000000a",
+        "position": 2,
+        "resourceId": {
+          "kind": "youtube#video",
+          "videoId": "x0private03"
+        }
+      },
+      "contentDetails": {
+        "videoId": "x0private03"
+      },
+      "status": {
+        "privacyStatus": "private"
+      }
+    }
+  ],
+  "pageInfo": {
+    "totalResults": 3,
+    "resultsPerPage": 50
+  }
+}

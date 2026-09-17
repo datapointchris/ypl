@@ -7,17 +7,24 @@ different artists. YouTube already carries those tracklists as chapter markers o
 description lines, so `ypl` pulls them down, parses them, and keeps them locally where they can be
 searched, compared and rearranged.
 
-## Why it reads with yt-dlp
+## Why the Python tool reads with yt-dlp
 
 The YouTube Data API gives 10,000 quota units a day per project. A list call costs 1 unit; an
 insert or delete costs 50. That is 200 writes a day, it is a project-level cap rather than an
 account setting, and raising it needs a Google audit that personal tools do not get.
 
-So reads go through `yt-dlp`, which costs nothing — and which is the only way to get chapters at
-all, since the Data API does not expose them under any part or field combination.
+So the Python tool reads through `yt-dlp`, which costs nothing — and which is the only way to get
+chapters at all, since the Data API does not expose them under any part or field combination.
 
 The consequence shapes the whole tool: organizing happens locally and instantly, and pushing
 anything back to YouTube is a separate, deliberate, queued act.
+
+The server in `api/` reads playlists through the Data API instead. It has no browser to read
+cookies from, and a private playlist read through `yt-dlp` needs a signed-in session. The Data API
+signs in with an OAuth refresh token, and `api/youtube`'s package documentation says how to get
+one. Each request is a page of up to 50 playlists or 50 items and costs 1 unit, so reading every
+playlist costs one unit per page of playlists plus one per page of each playlist's items, with an
+empty playlist still taking one.
 
 ## Install
 
