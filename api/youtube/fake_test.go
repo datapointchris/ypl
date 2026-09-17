@@ -35,6 +35,8 @@ import (
 //   - A playlists page reports a total larger than the playlists it lists, by
 //     as many as the recorded page does.
 //   - Listing the items of a deleted playlist is a 404 playlistNotFound.
+//   - A read naming ids answers with the ones that exist and leaves the rest out,
+//     with a total counting only what it answers.
 //
 // Writes:
 //
@@ -271,7 +273,10 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request, resource fakeReso
 		if replaced, ok := f.itemsTotal[id]; ok {
 			total = replaced
 		}
-	case query.Get("mine") == "" && query.Get("id") == "" && query.Get("channelId") == "" && query.Get("playlistId") == "":
+	case query.Get("id") != "":
+		f.listByID(w, r, resource, parts)
+		return
+	case query.Get("mine") == "" && query.Get("channelId") == "" && query.Get("playlistId") == "":
 		if r.URL.Path == "/youtube/v3/playlists" {
 			f.refuse(w, "playlists.list missingRequiredParameter")
 		} else {
@@ -321,6 +326,37 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request, resource fakeReso
 		response["prevPageToken"] = fakeToken(max(start-size, 0))
 	}
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+// listByID answers a read naming ids, in the one form measured: part id, 50 a
+// page, and the ids as one comma-separated value.
+func (f *fakeAPI) listByID(w http.ResponseWriter, r *http.Request, resource fakeResource, parts []string) {
+	query := r.URL.Query()
+	ids := strings.Split(query.Get("id"), ",")
+	if !slices.Equal(parts, []string{"id"}) || len(query["id"]) != 1 || query.Get("maxResults") != "50" || len(ids) > 50 {
+		f.unmodeled(w, "a read by id with parts %v, %d id values, %d ids and maxResults %q", parts, len(query["id"]), len(ids), query.Get("maxResults"))
+		return
+	}
+	var held []map[string]any
+	if r.URL.Path == "/youtube/v3/playlists" {
+		held = f.playlists
+	} else {
+		for _, items := range f.items {
+			held = append(held, items...)
+		}
+	}
+	found := []map[string]any{}
+	for _, id := range ids {
+		if index := slices.IndexFunc(held, func(resource map[string]any) bool { return resource["id"] == id }); index >= 0 {
+			found = append(found, withParts(held[index], parts))
+		}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"kind":     resource.listKind,
+		"etag":     "fakePageEtag",
+		"items":    found,
+		"pageInfo": map[string]any{"totalResults": len(found), "resultsPerPage": 50},
+	})
 }
 
 func (f *fakeAPI) insertPlaylist(w http.ResponseWriter, r *http.Request, parts []string) {
