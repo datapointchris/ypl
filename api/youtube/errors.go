@@ -29,9 +29,9 @@ var ErrUnexpectedResponse = errors.New("YouTube returned a response this package
 // an insert or a delete named. It answers this for a playlist already deleted.
 var ErrPlaylistNotFound = errors.New("YouTube has no playlist with that id")
 
-// ErrItemNotFound is YouTube reporting that no playlist item has the id a delete
-// named. It answers this for an item already deleted, and for an item of a
-// deleted playlist.
+// ErrItemNotFound is YouTube reporting that the playlist item a delete or a move
+// named is gone. A delete answers it for an item already deleted and for an item
+// of a deleted playlist, and a move answers it for an item already deleted.
 var ErrItemNotFound = errors.New("YouTube has no playlist item with that id")
 
 // ErrVideoNotFound is YouTube refusing to add a video it has no record of. It
@@ -41,3 +41,8 @@ var ErrVideoNotFound = errors.New("YouTube has no video with that id")
 // ErrVideoRefused is YouTube refusing to add a video it has. It answers this for
 // a private video another channel owns.
 var ErrVideoRefused = errors.New("YouTube refuses to add that video to a playlist")
+
+// ErrManualSortRequired is YouTube refusing a write that names a position in a
+// playlist not sorted manually. The Data API reference documents it for inserts
+// and moves; no request here has drawn it. An append names no position.
+var ErrManualSortRequired = errors.New("the playlist is not sorted manually, so a write cannot name a position in it")

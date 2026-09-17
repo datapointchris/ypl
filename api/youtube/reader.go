@@ -12,9 +12,19 @@ import (
 // maxResults gets 5, and one that names more than 50 gets 50.
 const pageSize = 50
 
+// PlaylistID is YouTube's id for a playlist.
+type PlaylistID string
+
+// ItemID is YouTube's id for one slot in a playlist, which every write to the
+// slot names.
+type ItemID string
+
+// VideoID is YouTube's id for a video.
+type VideoID string
+
 // Playlist is one playlist the channel owns, as YouTube reports it.
 type Playlist struct {
-	ID          string
+	ID          PlaylistID
 	Title       string
 	Description string
 	Privacy     string
@@ -22,10 +32,9 @@ type Playlist struct {
 
 // Item is one slot in a playlist.
 type Item struct {
-	// ID is the playlistItem id, which every write to this slot names.
-	ID         string
-	PlaylistID string
-	VideoID    string
+	ID         ItemID
+	PlaylistID PlaylistID
+	VideoID    VideoID
 	Position   int64
 	Title      string
 	// ChannelTitle is the video owner's channel, and is empty for an
@@ -58,7 +67,7 @@ func (c *Channel) Playlists(ctx context.Context) ([]Playlist, error) {
 			p.items = append(p.items, playlist)
 		}
 		return p, nil
-	}, func(p Playlist) string { return p.ID })
+	}, func(p Playlist) string { return string(p.ID) })
 	if err != nil {
 		return nil, fmt.Errorf("list playlists: %w", err)
 	}
@@ -69,8 +78,8 @@ func (c *Channel) Playlists(ctx context.Context) ([]Playlist, error) {
 // the checks every paged read gets, it returns ErrInconsistentRead when the
 // number of items differs from the total the pages report, or the positions are
 // not exactly 0 through n-1.
-func (c *Channel) Items(ctx context.Context, playlistID string) ([]Item, error) {
-	call := c.service.PlaylistItems.List([]string{"snippet", "status"}).PlaylistId(playlistID).MaxResults(pageSize)
+func (c *Channel) Items(ctx context.Context, playlistID PlaylistID) ([]Item, error) {
+	call := c.service.PlaylistItems.List([]string{"snippet", "status"}).PlaylistId(string(playlistID)).MaxResults(pageSize)
 	items, total, err := readPages(func(token string) (page[Item], error) {
 		response, err := send(ctx, c, playlistItemsList, call.PageToken(token).Context(ctx).Do)
 		if err != nil {
@@ -88,7 +97,7 @@ func (c *Channel) Items(ctx context.Context, playlistID string) ([]Item, error) 
 			p.items = append(p.items, item)
 		}
 		return p, nil
-	}, func(it Item) string { return it.ID })
+	}, func(it Item) string { return string(it.ID) })
 	if err != nil {
 		return nil, fmt.Errorf("list items of playlist %s: %w", playlistID, err)
 	}
@@ -110,7 +119,7 @@ func playlistFrom(resource *ytapi.Playlist) (Playlist, error) {
 		return Playlist{}, fmt.Errorf("%w: playlist %s lacks its snippet or status", ErrUnexpectedResponse, resource.Id)
 	}
 	return Playlist{
-		ID:          resource.Id,
+		ID:          PlaylistID(resource.Id),
 		Title:       resource.Snippet.Title,
 		Description: resource.Snippet.Description,
 		Privacy:     resource.Status.PrivacyStatus,
@@ -122,9 +131,9 @@ func itemFrom(resource *ytapi.PlaylistItem) (Item, error) {
 		return Item{}, fmt.Errorf("%w: item %s lacks its snippet, resource id or status", ErrUnexpectedResponse, resource.Id)
 	}
 	it := Item{
-		ID:           resource.Id,
-		PlaylistID:   resource.Snippet.PlaylistId,
-		VideoID:      resource.Snippet.ResourceId.VideoId,
+		ID:           ItemID(resource.Id),
+		PlaylistID:   PlaylistID(resource.Snippet.PlaylistId),
+		VideoID:      VideoID(resource.Snippet.ResourceId.VideoId),
 		Position:     resource.Snippet.Position,
 		Title:        resource.Snippet.Title,
 		ChannelTitle: resource.Snippet.VideoOwnerChannelTitle,

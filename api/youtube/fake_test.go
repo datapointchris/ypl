@@ -45,8 +45,8 @@ import (
 //     count inserts there. A larger position is a 400 badRequest. A video already
 //     in the playlist gets a second item.
 //   - An item insert naming a video the fake has no record of is a 404
-//     videoNotFound, a private video a 400 failedPrecondition, and a deleted
-//     playlist a 404 playlistNotFound.
+//     videoNotFound, a private video another channel owns a 400
+//     failedPrecondition, and a deleted playlist a 404 playlistNotFound.
 //   - An item update moves the item to a position from 0 to one less than the
 //     item count. A larger position is a 400 invalidPlaylistItemPosition, an
 //     update with no resource id a 400 invalidResourceType, and an update to a
@@ -90,8 +90,10 @@ type fakeAPI struct {
 	// fresh holds each playlist the fake created that no item insert has named.
 	fresh   map[string]bool
 	created int
-	// refusal, when set, is the status and body of every response.
-	refusal *fakeRefusal
+	// answer, when set, is the status and body of every response.
+	answer *fakeAnswer
+	// lastBody is the decoded body of the last write the fake answered.
+	lastBody map[string]any
 	// beforeRequest runs before each request is answered, with the request's
 	// number counting from 1, and may edit the collections.
 	beforeRequest func(request int64)
@@ -101,20 +103,31 @@ type fakeAPI struct {
 	pauses []time.Duration
 }
 
-type fakeRefusal struct {
+type fakeAnswer struct {
 	status int
 	body   string
 }
+
+// fakeChannelID is the channel the fake's requests act as.
+const fakeChannelID = "UCx0fakeChannel000000000"
 
 // fakeVideo is a video as an item insert finds it.
 type fakeVideo struct {
 	title   string
 	channel string
+	// owner is the id of the channel that uploaded the video.
+	owner   string
 	privacy string
 }
 
+// publicVideo is a public video another channel uploaded.
 func publicVideo(id string) fakeVideo {
-	return fakeVideo{title: "Video " + id, channel: "Channel of " + id, privacy: "public"}
+	return fakeVideo{title: "Video " + id, channel: "Channel of " + id, owner: "UCx0otherChannel00000000", privacy: "public"}
+}
+
+// privateVideo is a private video another channel uploaded.
+func privateVideo() fakeVideo {
+	return fakeVideo{title: "Private video", owner: "UCx0otherChannel00000000", privacy: "private"}
 }
 
 // fakeResource is what the fake knows about one resource type, by request path.
@@ -187,9 +200,9 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.beforeRequest(request)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	if f.refusal != nil {
-		w.WriteHeader(f.refusal.status)
-		_, _ = w.Write([]byte(f.refusal.body))
+	if f.answer != nil {
+		w.WriteHeader(f.answer.status)
+		_, _ = w.Write([]byte(f.answer.body))
 		return
 	}
 
@@ -406,7 +419,7 @@ func (f *fakeAPI) insertItem(w http.ResponseWriter, r *http.Request, parts []str
 	case !known:
 		f.refuse(w, "playlistItems.insert videoNotFound")
 		return
-	case video.privacy == "private":
+	case video.privacy == "private" && video.owner != fakeChannelID:
 		f.refuse(w, "playlistItems.insert failedPrecondition")
 		return
 	case video.privacy != "public":
@@ -520,6 +533,7 @@ func (f *fakeAPI) writeBody(w http.ResponseWriter, r *http.Request, parts []stri
 		f.unmodeled(w, "%s %s with a body that is not a JSON object: %v", r.Method, r.URL.Path, err)
 		return nil, false
 	}
+	f.lastBody = body
 	return body, true
 }
 

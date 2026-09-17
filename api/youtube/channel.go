@@ -23,6 +23,10 @@ import (
 //
 // A read made within seconds of a write can return the playlist as it was
 // before the write.
+//
+// A write that returns an error this package does not name may or may not have
+// been applied: a request can reach YouTube and its answer still be lost. Only a
+// read afterwards says which.
 type Channel struct {
 	service  *ytapi.Service
 	requests atomic.Int64
@@ -45,7 +49,7 @@ func NewChannel(ctx context.Context, creds Credentials, opts ...option.ClientOpt
 }
 
 // Requests is how many requests this channel has sent to YouTube, each attempt
-// at an aborted request included.
+// at an aborted insert included.
 func (c *Channel) Requests() int64 {
 	return c.requests.Load()
 }
@@ -57,12 +61,15 @@ func (c *Channel) Units() int64 {
 }
 
 // method is one Data API method: its name, the quota units a request to it
-// costs, and the sentinel for each refusal reason YouTube answers it with that a
-// caller can act on.
+// costs, the sentinel for each refusal reason YouTube answers it with that a
+// caller can act on, and whether an abort is sent again.
 type method struct {
 	name     string
 	units    int64
 	refusals map[string]error
+	// retryAborted is set only where an aborted request was measured to leave
+	// nothing behind, so sending it again cannot apply it twice.
+	retryAborted bool
 }
 
 // The methods this package calls, priced as the Data API's quota calculator
@@ -79,15 +86,28 @@ var (
 		name: "playlistItems.list", units: 1,
 		refusals: map[string]error{"playlistNotFound": ErrPlaylistNotFound},
 	}
+	// An insert sent right after its playlist was created was aborted twice,
+	// and each playlist afterwards held only the copies from inserts that
+	// returned 200.
 	playlistItemsInsert = method{
 		name: "playlistItems.insert", units: 50,
 		refusals: map[string]error{
 			"playlistNotFound":   ErrPlaylistNotFound,
 			"videoNotFound":      ErrVideoNotFound,
 			"failedPrecondition": ErrVideoRefused,
+			"manualSortRequired": ErrManualSortRequired,
+		},
+		retryAborted: true,
+	}
+	// A move always sends the item's playlist, video and position, and YouTube
+	// answered one naming a deleted item with invalidSnippet.
+	playlistItemsUpdate = method{
+		name: "playlistItems.update", units: 50,
+		refusals: map[string]error{
+			"invalidSnippet":     ErrItemNotFound,
+			"manualSortRequired": ErrManualSortRequired,
 		},
 	}
-	playlistItemsUpdate = method{name: "playlistItems.update", units: 50}
 	playlistItemsDelete = method{
 		name: "playlistItems.delete", units: 50,
 		refusals: map[string]error{"playlistItemNotFound": ErrItemNotFound},
@@ -95,18 +115,20 @@ var (
 )
 
 const (
-	// attempts is how many times send makes a request YouTube keeps aborting.
+	// attempts is how many times send makes a request YouTube keeps aborting,
+	// for a method that retries one.
 	attempts = 4
 	// firstPause is the wait before the second attempt, doubled before each one
-	// after. YouTube aborts an insert into a playlist created under a second
-	// before, and accepts the same insert a second or more after.
+	// after, so the pauses total 7 seconds. A second insert sent at once after
+	// an abort landed in one measurement, and one sent 5 seconds after in
+	// another.
 	firstPause = time.Second
 )
 
 // send is the one place this package makes a request to YouTube. It counts each
-// attempt and the units m costs. A request YouTube aborts wrote nothing, so it
-// is sent again, up to attempts in all. A refusal m names, and YouTube's quota
-// refusal, come back wrapped in their sentinels.
+// attempt and the units m costs. A request YouTube aborts is sent again, up to
+// attempts in all, only when m retries aborts. A refusal m names, and YouTube's
+// quota refusal, come back wrapped in their sentinels.
 func send[T any](ctx context.Context, c *Channel, m method, do func(...googleapi.CallOption) (T, error)) (T, error) {
 	var none T
 	pause := firstPause
@@ -117,7 +139,7 @@ func send[T any](ctx context.Context, c *Channel, m method, do func(...googleapi
 		if err == nil {
 			return response, nil
 		}
-		if !aborted(err) || attempt == attempts {
+		if !m.retryAborted || !aborted(err) || attempt == attempts {
 			return none, refusal(m, err)
 		}
 		if err := c.pause(ctx, pause); err != nil {
@@ -134,8 +156,7 @@ func noContent(do func(...googleapi.CallOption) error) func(...googleapi.CallOpt
 	}
 }
 
-// aborted is whether YouTube answered 409 SERVICE_UNAVAILABLE, which it does
-// without applying the request.
+// aborted is whether YouTube answered 409 SERVICE_UNAVAILABLE.
 func aborted(err error) bool {
 	return hasReason(err, http.StatusConflict, "SERVICE_UNAVAILABLE")
 }

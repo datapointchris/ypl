@@ -262,7 +262,7 @@ func TestADeleteAndAnAddBetweenPagesGoUnseen(t *testing.T) {
 
 func TestYouTubesQuotaRefusalIsErrQuotaSpent(t *testing.T) {
 	api := newFakeAPI(t)
-	api.refusal = &fakeRefusal{
+	api.answer = &fakeAnswer{
 		status: http.StatusForbidden,
 		body:   `{"error":{"code":403,"message":"quota","errors":[{"reason":"quotaExceeded","domain":"youtube.quota"}]}}`,
 	}
