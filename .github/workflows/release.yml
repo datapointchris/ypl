@@ -18,6 +18,10 @@ concurrency:
 
 jobs:
   # Without this, release publishes whatever is on main, tested or not.
+  #
+  # Called rather than keyed off `workflow_run`, which names a workflow rather
+  # than a commit: it reports only that some run finished, so a release can be
+  # cut from a tree that is not the one that passed.
   validate:
     uses: ./.github/workflows/validate.yml
 
@@ -140,3 +144,146 @@ jobs:
           # builds those notes from the same commits, and by a path independent
           # of the changelog file, so no CHANGELOG.md is written or tracked.
           changelog: "false"
+
+  # The Go CLI is a nested module with its own version, tagged `cli/v1.2.3` so
+  # it never collides with the Python tool's `v*` namespace. The two releases
+  # are independent: pyproject's path_filters exclude `cli/**`, and svu's
+  # --log.directory confines this one to commits touching `cli/`.
+  #
+  # svu rather than python-semantic-release's Go sibling, because
+  # go-semantic-release hardcodes the tag prefix to `v` and parses candidate
+  # tags as bare semver — it can neither write `cli/v0.2.0` nor read the
+  # `cli/v0.1.0` it would bump from. Monorepo support there is closed wontfix.
+  version:
+    name: Resolve the CLI version
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      previous: ${{ steps.resolve.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+      - run: go install github.com/caarlos0/svu/v3@v3.4.1
+
+      # --v0 keeps a breaking change on a 0.x line a minor bump. Reaching 1.0
+      # states that the interface is stable, which is a decision to take
+      # deliberately rather than one the next `feat!:` takes on its own.
+      #
+      # svu only prints a version, and prints the current one unchanged when
+      # nothing under cli/ is releasable. That equality is what gates the two
+      # jobs below.
+      - name: Resolve the next version
+        id: resolve
+        run: |
+          previous=$(git tag --list 'cli/v*' --sort=-version:refname | head -1)
+          next=$(svu next --tag.pattern 'cli/v*' --tag.prefix 'cli/v' --log.directory cli --v0)
+          echo "previous=${previous}" >>"$GITHUB_OUTPUT"
+          if [ "$next" = "$previous" ]; then
+            echo "No releasable commits under cli/ since ${previous:-the first commit}"
+            exit 0
+          fi
+          echo "Releasing ${next} (previous: ${previous:-none})"
+          echo "tag=${next}" >>"$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: version
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin]
+        goarch: [amd64, arm64]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+
+      # The archive name carries the bare version, the OS and the Go arch,
+      # which is the shape the dotfiles installer expands placeholders into.
+      # CGO off so the binary runs on a machine without the build host's libc.
+      - name: Build and archive
+        working-directory: cli
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          version="${TAG#cli/}"
+          version_num="${version#v}"
+          mkdir -p ../dist
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/datapointchris/ypl/cli/internal/cli.version=${version}" \
+            -o ../dist/ypl .
+          tar -czf "../dist/ypl_${version_num}_${GOOS}_${GOARCH}.tar.gz" -C ../dist ypl
+          rm ../dist/ypl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ypl-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish the CLI release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ypl-*
+          path: dist
+          merge-multiple: true
+
+      # `--` rather than `./*`: both stop a leading-dash filename being read as
+      # an option, but sha256sum echoes its argument verbatim, so `./*` writes
+      # every entry as ./name while the release asset is named name.
+      - name: Generate checksums
+        run: cd dist && sha256sum -- *.tar.gz > checksums.txt
+
+      # Not `generate_release_notes`, which lists merged PRs since the last
+      # published release — and the last published release here is usually the
+      # Python tool's, so it would list every PR since that instead.
+      - name: Build release notes
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          PREVIOUS: ${{ needs.version.outputs.previous }}
+        run: |
+          range="${PREVIOUS:+${PREVIOUS}..}HEAD"
+          {
+            echo '## Changes'
+            echo
+            git log --no-merges --pretty='- %s (%h)' "$range" -- cli
+            if [ -n "$PREVIOUS" ]; then
+              echo
+              echo "**Full changelog**: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${PREVIOUS}...${TAG}"
+            fi
+          } >release-notes.md
+          cat release-notes.md
+
+      # Creates the tag as well as the release, at the commit being built. A tag
+      # pushed with GITHUB_TOKEN cannot trigger another workflow, so tagging in
+      # one job and firing the build on the tag would never run at all.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: dist/*
+          body_path: release-notes.md
