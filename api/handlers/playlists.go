@@ -3,6 +3,8 @@ package handlers
 import (
 	"cmp"
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -81,7 +83,7 @@ func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 	ref := r.PathValue("id")
 	var shown playlist
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
-		id, err := resolvePlaylist(ctx, q, "playlist", ref)
+		id, err := resolvePlaylist(ctx, q, "playlist", ref, loosely)
 		if err != nil {
 			return err
 		}
@@ -95,27 +97,57 @@ func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 	wire.JSON(w, http.StatusOK, shown)
 }
 
-// resolvePlaylist is the id of the playlist ref names: its own id, or a title
-// matching it. Titles are matched as slugs, so the case, spacing and
-// punctuation of a title do not have to be retyped, and an exactly matching
-// slug beats a slug merely containing it, which keeps a playlist called Deep
-// reachable once Deep Night exists. A ref matching more than one title is a
-// referenceError naming each. name is what the error calls ref.
-func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string) (string, error) {
+// reach is how far a reference is allowed to reach past the exact forms.
+type reach int
+
+const (
+	// exactly resolves an id, a whole title, and a title whose slug is the
+	// whole of what was sent. Nothing else.
+	exactly reach = iota
+	// loosely also resolves a title merely holding what was sent.
+	loosely
+)
+
+// resolvePlaylist is the id of the playlist ref names, looking as far as how
+// says. name is what the error calls ref.
+//
+// The exact forms are the id, the title as written, and the title as a slug —
+// the slug so that case, spacing and punctuation do not have to be reproduced,
+// and the title as written first so that Deep House and Deep-House each stay
+// reachable by their own text although they slug alike.
+//
+// Holding what was sent is the last resort and is offered to the reads alone.
+// The ambiguity refusal below is what makes loose matching safe, and it fires
+// only on two matches — a single *wrong* match is unambiguous, so it resolves
+// cleanly to a playlist nobody named. That costs a read another read, and it
+// costs a delete the playlist. Worse, it is a guard that weakens as the channel
+// shrinks: on a channel holding one playlist, any one letter reaches it.
+func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string, how reach) (string, error) {
+	// The id is the form every stored client already sends, so it stays a keyed
+	// read. Listing every playlist to find it would grow the cost of the common
+	// case with the channel, invisibly, since the id still resolves either way.
+	if _, err := q.GetPlaylist(ctx, ref); err == nil {
+		return ref, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+
 	rows, err := q.ListPlaylistReferences(ctx)
 	if err != nil {
 		return "", err
 	}
-	if slices.ContainsFunc(rows, func(row generated.ListPlaylistReferencesRow) bool { return row.PlaylistID == ref }) {
-		return ref, nil
+	found := playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
+		return row.Title == ref
+	})
+	if len(found) == 0 && slug(ref) != "" {
+		found = playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
+			return slug(row.Title) == slug(ref)
+		})
 	}
-	needle := slug(ref)
-	if needle == "" {
-		return "", referenceError{name: name, value: ref}
-	}
-	found := playlistsTitled(rows, func(title string) bool { return title == needle })
-	if len(found) == 0 {
-		found = playlistsTitled(rows, func(title string) bool { return strings.Contains(title, needle) })
+	if len(found) == 0 && how == loosely && slug(ref) != "" {
+		found = playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
+			return strings.Contains(slug(row.Title), slug(ref))
+		})
 	}
 	switch len(found) {
 	case 0:
@@ -130,11 +162,11 @@ func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string
 	return "", referenceError{name: name, value: ref, candidates: candidates}
 }
 
-// playlistsTitled is every row of rows whose title matches, as a slug.
-func playlistsTitled(rows []generated.ListPlaylistReferencesRow, matches func(slug string) bool) []generated.ListPlaylistReferencesRow {
+// playlistsTitled is every row of rows that matches.
+func playlistsTitled(rows []generated.ListPlaylistReferencesRow, matches func(generated.ListPlaylistReferencesRow) bool) []generated.ListPlaylistReferencesRow {
 	var found []generated.ListPlaylistReferencesRow
 	for _, row := range rows {
-		if matches(slug(row.Title)) {
+		if matches(row) {
 			found = append(found, row)
 		}
 	}

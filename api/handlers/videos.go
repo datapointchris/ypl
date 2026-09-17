@@ -136,7 +136,7 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 	var playlists []generated.ListVideoPlaylistsRow
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		if filter.PlaylistID.Valid {
-			id, err := resolvePlaylist(ctx, q, "playlist", filter.PlaylistID.String)
+			id, err := resolvePlaylist(ctx, q, "playlist", filter.PlaylistID.String, loosely)
 			if err != nil {
 				return err
 			}

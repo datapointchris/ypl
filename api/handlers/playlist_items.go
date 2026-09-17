@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -45,7 +46,7 @@ func (h *Handlers) showPlaylistItems(w http.ResponseWriter, r *http.Request) {
 	var order playlistOrder
 	var revision int64
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
-		id, err := resolvePlaylist(ctx, q, "playlist", ref)
+		id, err := resolvePlaylist(ctx, q, "playlist", ref, loosely)
 		if err != nil {
 			return err
 		}
@@ -74,8 +75,11 @@ func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) 
 	ref := r.PathValue("id")
 	values := r.Header.Values("If-Match")
 	if len(values) == 0 {
+		// Escaped, because the sentence carries a URL to send and a title holds
+		// spaces and slashes. Unescaped it names an address the router will not
+		// route, which is worse than naming none.
 		wire.Refuse(w, http.StatusPreconditionRequired, wire.CodePreconditionRequired,
-			"an edit of a playlist's order names the order it edits in If-Match, as the ETag of GET /api/v1/playlists/%s/items gives it", ref)
+			"an edit of a playlist's order names the order it edits in If-Match, as the ETag of GET /api/v1/playlists/%s/items gives it", url.PathEscape(ref))
 		return
 	}
 	condition, ok := parseIfMatch(values)
@@ -83,8 +87,12 @@ func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) 
 		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidPrecondition, "If-Match %q is not a list of entity tags, such as \"3\"", strings.Join(values, ", "))
 		return
 	}
+	// On the request's own context, unlike the playlist writes: this edit reaches
+	// only the store and only inside one transaction, so a caller that goes away
+	// leaves nothing half-done and canceling costs nothing. It resolves as
+	// narrowly as they do, because it replaces an order rather than reading one.
 	ctx := r.Context()
-	id, err := resolvePlaylist(ctx, h.store.Queries, "playlist", ref)
+	id, err := resolvePlaylist(ctx, h.store.Queries, "playlist", ref, exactly)
 	if err != nil {
 		h.writeItemError(w, r, err, "playlist "+ref)
 		return

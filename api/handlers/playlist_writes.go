@@ -78,10 +78,15 @@ func recordContext(r *http.Request) (context.Context, context.CancelFunc) {
 // recordContext so that a caller who goes away before the write begins is
 // answered by the same write the caller who stays gets. ok is false once it has
 // answered the reference naming no playlist, or more than one.
+//
+// It resolves exactly. These two verbs delete a playlist on YouTube and rename
+// one there, and neither is rebuildable from here — so a reference reaches them
+// only in a form somebody could have meant, never one a title merely happens to
+// hold.
 func (h *Handlers) playlistWritten(w http.ResponseWriter, r *http.Request, ref string) (string, bool) {
 	ctx, cancel := recordContext(r)
 	defer cancel()
-	id, err := resolvePlaylist(ctx, h.store.Queries, "playlist", ref)
+	id, err := resolvePlaylist(ctx, h.store.Queries, "playlist", ref, exactly)
 	if err != nil {
 		h.writeItemError(w, r, err, "playlist "+ref)
 		return "", false

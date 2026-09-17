@@ -250,6 +250,79 @@ func TestAPlaylistIsRenamedAndDeletedByItsTitle(t *testing.T) {
 	refused(t, f.get("/api/v1/playlists/PLA"), http.StatusNotFound, wire.CodeNotFound)
 }
 
+// A fragment matching one title is unambiguous, so the refusal that guards the
+// loose form cannot see it. On a read that costs another read; on a delete it
+// costs the playlist, and the guard weakens as the channel shrinks.
+func TestAFragmentOfATitleReachesNoVerbThatDestroys(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+
+	if got := decode[wirePlaylist](t, f.get("/api/v1/playlists/lph"), http.StatusOK); got.ID != "PLA" {
+		t.Fatalf("a read of the fragment found %s, want PLA", got.ID)
+	}
+	refused(t, f.do(http.MethodDelete, "/api/v1/playlists/lph", ""), http.StatusNotFound, wire.CodeNotFound)
+	refused(t, f.do(http.MethodPatch, "/api/v1/playlists/lph", `{"title": "Renamed"}`), http.StatusNotFound, wire.CodeNotFound)
+	refused(t, f.do(http.MethodPut, "/api/v1/playlists/lph/items", `{"video_ids": []}`), http.StatusPreconditionRequired, wire.CodePreconditionRequired)
+
+	if got := decode[wirePlaylist](t, f.get("/api/v1/playlists/PLA"), http.StatusOK); got.Title != "Alpha" {
+		t.Fatalf("Alpha is %+v after three refused writes", got)
+	}
+	if n := f.youtube.writes(); n != 0 {
+		t.Fatalf("YouTube saw %d writes for a fragment, want none", n)
+	}
+}
+
+// Retrying a delete whose answer was lost is ordinary, and the second one used
+// to be a clean 404. A dead id that happens to sit inside another title would
+// make it delete that one instead.
+func TestARetriedDeleteOfAGonePlaylistTakesNothingElse(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	f.withPlaylist(t, "PLX", "My PLA Favorites")
+
+	if rec := f.do(http.MethodDelete, "/api/v1/playlists/PLA", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("the first delete answered %d, want 204", rec.Code)
+	}
+	refused(t, f.do(http.MethodDelete, "/api/v1/playlists/PLA", ""), http.StatusNotFound, wire.CodeNotFound)
+	if got := decode[wirePlaylist](t, f.get("/api/v1/playlists/PLX"), http.StatusOK); got.Title != "My PLA Favorites" {
+		t.Fatalf("the retry took %+v as well", got)
+	}
+}
+
+// Two titles a person can tell apart slug alike, so the slug step alone leaves
+// each of them ambiguous and neither reachable by its own text.
+func TestATitleTypedInFullBeatsOneThatSlugsTheSame(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	f.withPlaylist(t, "PLD", "Deep House")
+	f.withPlaylist(t, "PLE", "Deep-House")
+
+	for ref, want := range map[string]string{"Deep House": "PLD", "Deep-House": "PLE"} {
+		got := decode[wirePlaylist](t, f.get("/api/v1/playlists/"+url.PathEscape(ref)), http.StatusOK)
+		if got.ID != want {
+			t.Errorf("%q found %s, want %s", ref, got.ID, want)
+		}
+	}
+	// Neither title is what was typed, so the slug pass reaches both and refuses.
+	refused(t, f.get("/api/v1/playlists/"+url.PathEscape("deep house")), http.StatusBadRequest, wire.CodeAmbiguousReference)
+}
+
+// The sentence carries a URL to send, and a title holds spaces and slashes.
+func TestThePreconditionRefusalNamesASendableURL(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	f.withPlaylist(t, "PLD", "Deep / House")
+
+	rec := f.do(http.MethodPut, "/api/v1/playlists/"+url.PathEscape("Deep / House")+"/items", `{"video_ids": []}`)
+	refused(t, rec, http.StatusPreconditionRequired, wire.CodePreconditionRequired)
+	if strings.Contains(rec.Body.String(), "Deep / House") {
+		t.Fatalf("the refusal names an address the router will not route: %s", rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), url.PathEscape("Deep / House")) {
+		t.Fatalf("the refusal does not name the escaped path: %s", rec.Body)
+	}
+}
+
 // A query parameter naming nothing is the caller's mistake rather than a
 // resource that is not there, so it is a 400 where the path segment is a 404.
 func TestAPlaylistFilterNamingNothingIsRefused(t *testing.T) {

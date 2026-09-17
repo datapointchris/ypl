@@ -273,7 +273,7 @@ func (h *Handlers) listSuggestions(w http.ResponseWriter, r *http.Request) {
 	var rows []generated.ListSuggestionsRow
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		if params.PlaylistID.Valid {
-			id, err := resolvePlaylist(ctx, q, "playlist", params.PlaylistID.String)
+			id, err := resolvePlaylist(ctx, q, "playlist", params.PlaylistID.String, loosely)
 			if err != nil {
 				return err
 			}
