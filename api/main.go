@@ -1,18 +1,22 @@
-// Command api is the ypl HTTP service. It answers liveness and readiness
-// probes, logs JSON to stdout, and drains in-flight requests on SIGINT or
-// SIGTERM.
+// Command api is the ypl HTTP service. It applies its database migrations at
+// startup, answers liveness and readiness probes, logs JSON to stdout, and
+// drains in-flight requests on SIGINT or SIGTERM.
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/datapointchris/ypl/api/store"
 )
 
 // shutdownGrace bounds how long in-flight requests get to finish after the
@@ -21,10 +25,47 @@ const shutdownGrace = 10 * time.Second
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-	if err := run(context.Background(), ":"+envOr("PORT", "8080")); err != nil {
+	if err := start(context.Background()); err != nil {
 		slog.Error("api stopped", "err", err)
 		os.Exit(1)
 	}
+}
+
+// start opens the database, applying its migrations, before the port is bound,
+// so the service answers /ready only once its schema is current.
+func start(ctx context.Context) error {
+	path, err := databasePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create the database directory: %w", err)
+	}
+	st, err := store.Open(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	slog.Info("database ready", "path", path)
+
+	return run(ctx, ":"+envOr("PORT", "8080"))
+}
+
+// databasePath is DATABASE_PATH, or api.db in ypl's directory under
+// $XDG_STATE_HOME. The Python tool's mirror is ypl.db in that same directory.
+func databasePath() (string, error) {
+	if path := os.Getenv("DATABASE_PATH"); path != "" {
+		return path, nil
+	}
+	state := os.Getenv("XDG_STATE_HOME")
+	if state == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("find the state directory: %w", err)
+		}
+		state = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(state, "ypl", "api.db"), nil
 }
 
 // run binds addr and serves on it. A port that cannot be bound is returned

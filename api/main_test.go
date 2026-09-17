@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -75,6 +76,19 @@ func TestEmptyEnvironmentValueFallsBack(t *testing.T) {
 	}
 }
 
+func TestDatabasePathPrefersTheEnvironmentThenStateHome(t *testing.T) {
+	t.Setenv("DATABASE_PATH", "/data/ypl.db")
+	if got, err := databasePath(); err != nil || got != "/data/ypl.db" {
+		t.Fatalf("databasePath with DATABASE_PATH set = %q, %v", got, err)
+	}
+
+	t.Setenv("DATABASE_PATH", "")
+	t.Setenv("XDG_STATE_HOME", "/state")
+	if got, err := databasePath(); err != nil || got != "/state/ypl/api.db" {
+		t.Fatalf("databasePath under XDG_STATE_HOME = %q, %v", got, err)
+	}
+}
+
 func TestRunReturnsTheBindError(t *testing.T) {
 	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -134,7 +148,7 @@ func TestSecondSignalEndsTheDrain(t *testing.T) {
 	}
 
 	child := exec.Command(os.Args[0], "-test.run=^$")
-	child.Env = append(os.Environ(), serveChild+"=1", "PORT=0")
+	child.Env = append(os.Environ(), serveChild+"=1", "PORT=0", "DATABASE_PATH="+filepath.Join(t.TempDir(), "api.db"))
 	stdout, err := child.StdoutPipe()
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)
