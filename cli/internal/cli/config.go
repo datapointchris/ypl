@@ -59,10 +59,11 @@ type resolvedConfig struct {
 func newConfigShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:     "show",
-		Short:   "Show every resolved setting and where it came from",
-		Example: "  ypl config show\n  ypl config show --json",
-		Args:    usageArgs(cobra.NoArgs),
+		Use:   "show",
+		Short: "Show every resolved setting and where it came from",
+		Example: "  ypl config show         what this machine resolved, and from which layer\n" +
+			"  ypl config show --json  the same, for a script",
+		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -96,7 +97,7 @@ func newConfigPathCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "path",
 		Short:   "Print the config file's path, whether or not it is there",
-		Example: "  ypl config path",
+		Example: "  ypl config path  where to put the file, on a machine with none",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()

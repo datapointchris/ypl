@@ -49,7 +49,7 @@ func (a *app) authLoginCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "login",
 		Short:   "Log in by approving a code in a browser",
-		Example: "  ypl auth login",
+		Example: "  ypl auth login  log this machine in, once per machine",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loginConfig()
@@ -113,7 +113,7 @@ func (a *app) authLogoutCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "logout",
 		Short:   "Remove this machine's stored token",
-		Example: "  ypl auth logout",
+		Example: "  ypl auth logout  forget the token, before handing the machine on",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loginConfig()
@@ -142,7 +142,7 @@ func (a *app) authTokenCommand() *cobra.Command {
 			"driving the API with something else: curl -H \"Authorization: Bearer $(ypl\n" +
 			"auth token)\". It exits non-zero rather than printing nothing when this\n" +
 			"machine is not logged in.",
-		Example: "  ypl auth token",
+		Example: "  ypl auth token  drive the API with something else: curl -H \"Authorization: Bearer $(ypl auth token)\"",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loginConfig()
@@ -183,10 +183,11 @@ type authStatus struct {
 func (a *app) authStatusCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:     "status",
-		Short:   "Say whether this machine is logged in",
-		Example: "  ypl auth status\n  ypl auth status --json",
-		Args:    usageArgs(cobra.NoArgs),
+		Use:   "status",
+		Short: "Say whether this machine is logged in",
+		Example: "  ypl auth status         is this machine logged in, and for how much longer\n" +
+			"  ypl auth status --json  the same, for a prompt or a status bar",
+		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loginConfig()
 			if err != nil {

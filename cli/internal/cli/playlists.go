@@ -26,10 +26,11 @@ func (a *app) playlistsCommand() *cobra.Command {
 func (a *app) playlistsListCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:     "list",
-		Short:   "List every playlist with what it holds",
-		Example: "  ypl playlists list\n  ypl playlists list --json",
-		Args:    usageArgs(cobra.NoArgs),
+		Use:   "list",
+		Short: "List every playlist with what it holds",
+		Example: "  ypl playlists list         what is on the channel, and how much of it is read\n" +
+			"  ypl playlists list --json  the same, for a script",
+		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -57,10 +58,11 @@ func (a *app) playlistsListCommand() *cobra.Command {
 func (a *app) playlistsShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:     "show <playlist>",
-		Short:   "Show one playlist and the videos in it, in order",
-		Example: "  ypl playlists show 'sunday morning'\n  ypl playlists show PLxxxxxxxxxxxxxxxxxxxxxxxx --json",
-		Args:    usageArgs(cobra.ExactArgs(1)),
+		Use:   "show <playlist>",
+		Short: "Show one playlist and the videos in it, in order",
+		Example: "  ypl playlists show 'sunday morning'  what is in it, in the order it plays\n" +
+			"  ypl playlists show morning           part of a title is enough for a read",
+		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {

@@ -44,10 +44,11 @@ func (a *app) syncRunsListCommand() *cobra.Command {
 		asJSON bool
 	)
 	cmd := &cobra.Command{
-		Use:     "list [flags]",
-		Short:   "List the newest sync runs with their failures",
-		Example: "  ypl sync runs list\n  ypl sync runs list --limit 5 --json",
-		Args:    usageArgs(cobra.NoArgs),
+		Use:   "list [flags]",
+		Short: "List the newest sync runs with their failures",
+		Example: "  ypl sync runs list                   what the sync has been doing\n" +
+			"  ypl sync runs list --limit 5 --json  the last few, for a script",
+		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {

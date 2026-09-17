@@ -34,10 +34,11 @@ func (a *app) playsListCommand() *cobra.Command {
 		asJSON bool
 	)
 	cmd := &cobra.Command{
-		Use:     "list [flags]",
-		Short:   "List the newest plays",
-		Example: "  ypl plays list\n  ypl plays list --limit 100 --json",
-		Args:    usageArgs(cobra.NoArgs),
+		Use:   "list [flags]",
+		Short: "List the newest plays",
+		Example: "  ypl plays list                     what has been on lately\n" +
+			"  ypl plays list --limit 100 --json  further back, for a script",
+		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -71,7 +72,7 @@ func (a *app) playsShowCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "show <play>",
 		Short:   "Show one play",
-		Example: "  ypl plays show 41\n  ypl plays show 41 --json",
+		Example: "  ypl plays show 41  when this one was played, and what it was",
 		Args:    usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())

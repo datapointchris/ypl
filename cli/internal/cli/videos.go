@@ -36,9 +36,9 @@ func (a *app) videosListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list [flags]",
 		Short: "List the library, narrowed and ordered",
-		Example: "  ypl videos list --artist bjork\n" +
-			"  ypl videos list --playlist 'sunday morning' --sort longest\n" +
-			"  ypl videos list --min-minutes 90 --json",
+		Example: "  ypl videos list --artist bjork                               every mix whose tracklist names them\n" +
+			"  ypl videos list --playlist 'sunday morning' --sort longest  the longest in one playlist\n" +
+			"  ypl videos list --min-minutes 90 --json                     everything long enough for an evening",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Absence comes from the parser, so a bound of zero is a bound
@@ -79,10 +79,11 @@ func (a *app) videosListCommand() *cobra.Command {
 func (a *app) videosShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:     "show <video-id>",
-		Short:   "Show one video with its tracklist",
-		Example: "  ypl videos show dQw4w9WgXcQ\n  ypl videos show dQw4w9WgXcQ --json",
-		Args:    usageArgs(cobra.ExactArgs(1)),
+		Use:   "show <video-id>",
+		Short: "Show one video with its tracklist",
+		Example: "  ypl videos show dQw4w9WgXcQ         what is in this mix, track by track\n" +
+			"  ypl videos show dQw4w9WgXcQ --json  the same, for a script",
+		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -110,7 +111,7 @@ func (a *app) videosSortsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "sorts",
 		Short:   "List the orders --sort accepts",
-		Example: "  ypl videos sorts",
+		Example: "  ypl videos sorts  the orders --sort takes, before typing one",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if asJSON {

@@ -27,8 +27,10 @@ func (a *app) nextCommand() *cobra.Command {
 		Long: "The mixes least recently listened to, never-played ones first. Videos last\n" +
 			"played at the same moment come back in a new order each time, so this is a\n" +
 			"draw rather than a page of a standing list.",
-		Example: "  ypl next\n  ypl next --playlist 'sunday morning' --limit 5\n  ypl next --json",
-		Args:    usageArgs(cobra.NoArgs),
+		Example: "  ypl next                                        one thing to put on now\n" +
+			"  ypl next --playlist 'sunday morning' --limit 5  five to choose from, out of one playlist\n" +
+			"  ypl next --json                                 for a status bar or a picker",
+		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {

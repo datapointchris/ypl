@@ -18,8 +18,9 @@ func (a *app) statusCommand() *cobra.Command {
 		Long: "The size of the library, the newest sync run, and the newest run that ended\n" +
 			"ok. The two runs differ when the latest one failed, and the gap between\n" +
 			"them is how long the mirror has been going stale.",
-		Example: "  ypl status\n  ypl status --json",
-		Args:    usageArgs(cobra.NoArgs),
+		Example: "  ypl status         is the server reachable, and is the mirror current\n" +
+			"  ypl status --json  the same, for a check that runs on a timer",
+		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {

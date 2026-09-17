@@ -43,12 +43,15 @@ func newRootCommand(a *app) *cobra.Command {
 			"\n" +
 			"A playlist is named by its title as readily as by its YouTube id, and the\n" +
 			"title's case, spacing and punctuation do not have to be reproduced — `ypl\n" +
-			"playlists show 'sunday morning'` finds Sunday Morning. A name reaching two\n" +
-			"playlists is refused naming both.\n" +
+			"playlists show 'sunday morning'` finds Sunday Morning. A read takes part of\n" +
+			"a title too; a rename or a delete does not, because a fragment matching one\n" +
+			"playlist matches it unambiguously.\n" +
 			"\n" +
-			"Run any partial command with no arguments or --help to see what comes\n" +
-			"next. Say where the server is with `ypl config show`, then authenticate\n" +
-			"once with `ypl auth login`.",
+			"Run any partial command with no arguments or --help to see what comes next.",
+		Example: "  ypl config example > \"$(ypl config path)\"  first run: write the file, then fill it in\n" +
+			"  ypl auth login                             log this machine in, once\n" +
+			"  ypl status                                 check the server is reachable and what it holds\n" +
+			"  ypl next                                   pick something to put on",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
