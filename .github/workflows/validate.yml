@@ -110,6 +110,13 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           govulncheck ./...
 
+      # > custom:after:go-api - sqlc generated code matches its queries and migrations
+      #
+      # A query or migration edit committed without regenerating still builds
+      # and tests clean. The sqlc version is the tool directive pinned in go.mod.
+      - name: Check sqlc generated code is current
+        run: cd store && go tool sqlc diff
+
   go-cli:
     runs-on: ubuntu-latest
     defaults:
