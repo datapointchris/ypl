@@ -104,6 +104,12 @@ provider beside the sync, retrying while it is down, and `/ready` answers 200 on
 | `GET /api/v1/sync/runs` | Sync runs newest first with their failures, a page at a time |
 | `GET /api/v1/status` | What the store holds, the latest run, and the latest run that ended ok |
 
+A playlist is named by its YouTube id or by its title, wherever one is named — in the path, and in
+the `playlist` parameter of videos and suggestions. Titles are matched with their case, spacing and
+punctuation removed, so `deep house` and `Deep / House!` both reach the same playlist, and a title
+matching the whole of what was sent beats one merely holding it. A name matching two playlists is
+refused naming each, rather than answered with one of them.
+
 `GET /api/v1/videos` narrows by `playlist`, `min_seconds`, `max_seconds` and `artist`, which
 matches part of an artist's name ignoring case and accents. `sort` is one of `longest`, `shortest`,
 `newest`, `oldest`, `title` or `random`. The first is the order when `sort` is absent.
