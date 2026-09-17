@@ -58,11 +58,14 @@ func newConfigShowCommand() *cobra.Command {
 				})
 			}
 			if asJSON {
-				return emitJSON(cmd.OutOrStdout(), resolved)
+				if err := emitJSON(cmd.OutOrStdout(), resolved); err != nil {
+					return err
+				}
+			} else {
+				printConfig(cmd.OutOrStdout(), resolved)
 			}
-			printConfig(cmd.OutOrStdout(), resolved)
 			if len(cfg.Missing()) > 0 {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "\n"+cfg.Check().Error())
+				nothing(cmd, "\n"+cfg.Check().Error())
 				return exitCode(1)
 			}
 			return nil

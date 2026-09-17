@@ -130,6 +130,34 @@ func TestQueryLeavesOffWhatWasNotAskedFor(t *testing.T) {
 	}
 }
 
+// Zero seconds is a bound a caller can mean, so the zero struct has to ask
+// nothing rather than asking for videos of at most no length.
+func TestTheZeroFilterAsksForNothingAndAZeroBoundIsSent(t *testing.T) {
+	var asked string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+	client := New(server.URL, server.Client())
+
+	if _, err := client.ListVideos(context.Background(), VideoFilter{Artist: "moby"}); err != nil {
+		t.Fatalf("list videos: %v", err)
+	}
+	if asked != "artist=moby" {
+		t.Fatalf("the zero filter asked %q, want artist=moby alone", asked)
+	}
+
+	none := int64(0)
+	if _, err := client.ListVideos(context.Background(), VideoFilter{MinSeconds: &none}); err != nil {
+		t.Fatalf("list videos: %v", err)
+	}
+	if asked != "min_seconds=0" {
+		t.Fatalf("a bound of zero asked %q, want min_seconds=0", asked)
+	}
+}
+
 // A stored value that never reaches the server cannot be read back, and the
 // only sign is a request that quietly asks for something else.
 func TestTheFilterBecomesTheServersOwnParameters(t *testing.T) {
@@ -141,7 +169,8 @@ func TestTheFilterBecomesTheServersOwnParameters(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	filter := VideoFilter{Playlist: "alpha", Artist: "moby", MinSeconds: 60, MaxSeconds: -1, Sort: "longest"}
+	bound := int64(60)
+	filter := VideoFilter{Playlist: "alpha", Artist: "moby", MinSeconds: &bound, Sort: "longest"}
 	if _, err := New(server.URL, server.Client()).ListVideos(context.Background(), filter); err != nil {
 		t.Fatalf("list videos: %v", err)
 	}

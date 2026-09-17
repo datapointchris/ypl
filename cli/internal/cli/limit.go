@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -25,18 +26,55 @@ func (c rowCount) String() string { return strconv.Itoa(*c.n) }
 
 func (c rowCount) Type() string { return "int" }
 
+// Set floors at zero rather than at one. A caller can mean no rows — `tail -n 0`
+// and `head -n 0` both print nothing — so refusing it reserves a value somebody
+// could have intended. Only a negative count is unmeanable.
 func (c rowCount) Set(raw string) error {
 	n, err := strconv.Atoi(raw)
 	switch {
 	case err != nil:
 		return fmt.Errorf("%q is not a whole number", raw)
-	case n < 1:
-		return fmt.Errorf("a limit is at least 1, and %d asks for no rows at all", n)
+	case n < 0:
+		return fmt.Errorf("a number of rows cannot be negative; the smallest is 0")
 	case c.most > 0 && n > c.most:
 		return fmt.Errorf("at most %d can be asked for here, and this asks for %d", c.most, n)
 	}
 	*c.n = n
 	return nil
+}
+
+// minutes is a duration bound in whole minutes, floored at zero. Absence is
+// carried by the flag's own Changed rather than by a negative, which pflag
+// renders into help as `(default -1)` and a reader cannot tell from a bound.
+type minutes struct{ n *int64 }
+
+func (m minutes) String() string { return strconv.FormatInt(*m.n, 10) }
+
+func (m minutes) Type() string { return "int" }
+
+func (m minutes) Set(raw string) error {
+	n, err := strconv.ParseInt(raw, 10, 64)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%q is not a whole number of minutes", raw)
+	case n < 0:
+		return fmt.Errorf("a duration cannot be negative; the shortest is 0")
+	case n > maxMinutes:
+		return fmt.Errorf("at most %d minutes can be asked for, and this asks for %d", maxMinutes, n)
+	}
+	*m.n = n
+	return nil
+}
+
+// maxMinutes is the largest bound that still converts to seconds inside an
+// int64. Without a ceiling the multiplication wraps, and a wrapped bound is
+// negative, which the client then spells as no bound at all.
+const maxMinutes = math.MaxInt64 / 60
+
+// addMinutes binds a duration bound to n, refusing a negative and anything the
+// conversion to seconds could not hold.
+func addMinutes(cmd *cobra.Command, name string, n *int64, help string) {
+	cmd.Flags().Var(minutes{n: n}, name, help)
 }
 
 // addLimit binds --limit/-n to n, refusing anything below one and anything

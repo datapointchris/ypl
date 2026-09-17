@@ -50,22 +50,30 @@ type Track struct {
 	Source       string  `json:"source"`
 }
 
-// VideoFilter narrows the library. A zero field asks nothing of that field.
+// VideoFilter narrows the library. A field left at its zero asks nothing of
+// that field, which is why the bounds are pointers: zero seconds is a bound a
+// caller can mean, and an int could not tell it from one nobody set.
 type VideoFilter struct {
 	// Playlist keeps the videos one playlist holds, named by id or title.
 	Playlist string
 	// Artist keeps the videos with an artist whose name holds it, ignoring
 	// case and accents.
 	Artist string
-	// MinSeconds and MaxSeconds bound the duration, and -1 is no bound.
-	MinSeconds int64
-	MaxSeconds int64
-	// Sort is the order, and "" is the server's own first one.
+	// MinSeconds and MaxSeconds bound the duration. Nil is no bound.
+	MinSeconds *int64
+	MaxSeconds *int64
+	// Sort is the order, and "" is the server's own first one. The server owns
+	// the vocabulary and refuses an order it does not have, naming every one it
+	// does, so nothing here narrows what may be sent.
 	Sort string
 }
 
-// VideoSorts is every order the library can be read in, the first being the one
-// the server uses when none is asked for.
+// VideoSorts is every order this build knows the library can be read in, the
+// first being the one the server uses when none is asked for.
+//
+// It is a copy of a vocabulary the server owns, kept because nothing publishes
+// it on the wire. Nothing refuses an order against it, so a copy fallen behind
+// costs a reader one under-reported listing rather than a working order.
 var VideoSorts = []string{"longest", "shortest", "newest", "oldest", "title", "random"}
 
 // ListVideos is every available video some playlist holds, narrowed by filter.
@@ -83,19 +91,17 @@ func (c *Client) ListVideos(ctx context.Context, filter VideoFilter) ([]LibraryV
 	return videos, err
 }
 
+// seconds is a duration bound as the server takes it, and "" for no bound.
+func seconds(n *int64) string {
+	if n == nil {
+		return ""
+	}
+	return strconv.FormatInt(*n, 10)
+}
+
 // GetVideo is one video with its tracklist, by its YouTube id.
 func (c *Client) GetVideo(ctx context.Context, id string) (Video, error) {
 	var video Video
 	err := c.Get(ctx, "/api/v1/videos/"+ref(id), &video)
 	return video, err
-}
-
-// seconds is a duration bound as the server takes it, and "" for no bound. Zero
-// is a bound a caller can mean, so absence is spelled as a negative rather than
-// as zero.
-func seconds(n int64) string {
-	if n < 0 {
-		return ""
-	}
-	return strconv.FormatInt(n, 10)
 }

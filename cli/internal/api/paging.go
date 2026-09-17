@@ -5,17 +5,32 @@ import (
 	"strconv"
 )
 
-// pageSize is the most rows the server puts on one page of a paged collection.
-// The server publishes the number and refuses a larger limit naming it, so it
-// is read from the far end rather than picked here — a number picked here that
-// were too large would be clamped silently, and every read would come back
-// short with nothing saying why.
-const pageSize = 100
+// PageSize is the most rows the server puts on one page of a paged collection.
+//
+// It is a copy of the server's own maximum rather than a number read from it:
+// the server states that maximum only inside the sentence it refuses with, and
+// nothing publishes it where a client could ask. So the copy can fall out of
+// step, and it does so in a direction nothing here would report — lowering the
+// server's maximum turns every larger ask into a refusal this client presents
+// as a failure. The API module's own test is what holds the two level.
+const PageSize = 100
 
 // page is one page of a paged collection, as the server sends it.
 type page[T any] struct {
 	Data    []T  `json:"data"`
 	HasMore bool `json:"has_more"`
+}
+
+// Page is rows read from a paged collection, and whether the server had more it
+// was not asked for.
+//
+// More is carried rather than dropped because a read that stopped at its limit
+// and a read that reached the end are the same rows on screen. The server owns
+// that fact and hands it over; losing it here is what makes a truncated answer
+// indistinguishable from a complete one.
+type Page[T any] struct {
+	Rows []T
+	More bool
 }
 
 // collect reads pages of path until it holds limit rows, or until the server
@@ -24,21 +39,24 @@ type page[T any] struct {
 //
 // The rows come back as a list at every size, including none, so a caller
 // filtering the JSON writes one filter rather than a filter and a null guard.
-func collect[T any](ctx context.Context, c *Client, path string, limit int, cursor func(T) string) ([]T, error) {
-	held := []T{}
+func collect[T any](ctx context.Context, c *Client, path string, limit int, cursor func(T) string) (Page[T], error) {
+	read := Page[T]{Rows: []T{}}
 	after := ""
-	for len(held) < limit {
-		want := min(limit-len(held), pageSize)
+	// A limit of nothing is a request a caller can mean, and it needs no
+	// request to answer.
+	for len(read.Rows) < limit {
+		want := min(limit-len(read.Rows), PageSize)
 		var got page[T]
 		target := query(path, [2]string{"limit", strconv.Itoa(want)}, [2]string{"starting_after", after})
 		if err := c.Get(ctx, target, &got); err != nil {
-			return nil, err
+			return Page[T]{}, err
 		}
-		held = append(held, got.Data...)
+		read.Rows = append(read.Rows, got.Data...)
+		read.More = got.HasMore
 		if !got.HasMore || len(got.Data) == 0 {
 			break
 		}
 		after = cursor(got.Data[len(got.Data)-1])
 	}
-	return held, nil
+	return read, nil
 }

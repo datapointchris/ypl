@@ -3,10 +3,10 @@ package cli
 import (
 	"fmt"
 	"io"
-	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
@@ -41,12 +41,12 @@ func (a *app) videosListCommand() *cobra.Command {
 			"  ypl videos list --min-minutes 90 --json",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if filter.Sort != "" && !slices.Contains(api.VideoSorts, filter.Sort) {
-				return usageError{fmt.Errorf("sort %q is not one of %s", filter.Sort, strings.Join(api.VideoSorts, ", "))}
-			}
-			filter.MinSeconds, filter.MaxSeconds = asSeconds(minMinutes), asSeconds(maxMinutes)
-			if filter.MinSeconds >= 0 && filter.MaxSeconds >= 0 && filter.MinSeconds > filter.MaxSeconds {
-				return usageError{fmt.Errorf("--min-minutes %d is more than --max-minutes %d", minMinutes, maxMinutes)}
+			// Absence comes from the parser, so a bound of zero is a bound
+			// rather than a flag nobody set.
+			filter.MinSeconds = secondsIn(cmd, "min-minutes", minMinutes)
+			filter.MaxSeconds = secondsIn(cmd, "max-minutes", maxMinutes)
+			if filter.MinSeconds != nil && filter.MaxSeconds != nil && *filter.MinSeconds > *filter.MaxSeconds {
+				return goclikit.UsageError(fmt.Errorf("--min-minutes %d is more than --max-minutes %d", minMinutes, maxMinutes))
 			}
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -69,9 +69,9 @@ func (a *app) videosListCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&filter.Playlist, "playlist", "", "Only the videos this playlist holds, by title or id")
 	cmd.Flags().StringVar(&filter.Artist, "artist", "", "Only videos whose tracklist names an artist holding this, ignoring case and accents")
-	cmd.Flags().Int64Var(&minMinutes, "min-minutes", -1, "Only videos at least this long")
-	cmd.Flags().Int64Var(&maxMinutes, "max-minutes", -1, "Only videos at most this long")
-	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order: "+strings.Join(api.VideoSorts, ", "))
+	addMinutes(cmd, "min-minutes", &minMinutes, "Only videos at least this many minutes long")
+	addMinutes(cmd, "max-minutes", &maxMinutes, "Only videos at most this many minutes long")
+	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order, one of "+strings.Join(api.VideoSorts, ", ")+"; the server decides")
 	addJSON(cmd, &asJSON, "the videos")
 	return cmd
 }
@@ -126,13 +126,14 @@ func (a *app) videosSortsCommand() *cobra.Command {
 	return cmd
 }
 
-// asSeconds is a bound given in minutes as the seconds the server takes, and a
-// negative for a bound that was not given.
-func asSeconds(minutes int64) int64 {
-	if minutes < 0 {
-		return -1
+// secondsIn is the bound flag names, in the seconds the server takes, and nil
+// where it was not given.
+func secondsIn(cmd *cobra.Command, flag string, given int64) *int64 {
+	if !cmd.Flags().Changed(flag) {
+		return nil
 	}
-	return minutes * 60
+	seconds := given * 60
+	return &seconds
 }
 
 func printVideos(out io.Writer, videos []api.LibraryVideo) {
@@ -167,8 +168,15 @@ func printVideo(out io.Writer, video api.Video) {
 		}
 		_, _ = fmt.Fprintf(out, "In %s\n", strings.Join(titles, ", "))
 	}
+	// A video YouTube will not serve is never read again — the enrichment queue
+	// filters it out — so promising a later run would be telling a reader to
+	// wait for something that cannot happen.
+	if video.IsUnavailable {
+		_, _ = fmt.Fprintln(out, "\nYouTube will not serve this video, so the server cannot read a tracklist for it.")
+		return
+	}
 	if video.EnrichedTs == nil {
-		_, _ = fmt.Fprintln(out, "\nNo tracklist read yet — the server reads one on a later run.")
+		_, _ = fmt.Fprintln(out, "\nThe server has not read this one yet.")
 		return
 	}
 	_, _ = fmt.Fprintln(out)

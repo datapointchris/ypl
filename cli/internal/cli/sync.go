@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"io"
 	"strconv"
 
@@ -57,13 +58,16 @@ func (a *app) syncRunsListCommand() *cobra.Command {
 				return reported(err)
 			}
 			if asJSON {
-				return emitJSON(cmd.OutOrStdout(), runs)
+				return emitJSON(cmd.OutOrStdout(), runs.Rows)
 			}
-			if len(runs) == 0 {
+			if len(runs.Rows) == 0 {
 				nothing(cmd, "The server has not synced yet. `ypl status` says what it holds meanwhile.")
 				return nil
 			}
-			printSyncRuns(cmd.OutOrStdout(), runs)
+			printSyncRuns(cmd.OutOrStdout(), runs.Rows)
+			if runs.More {
+				nothing(cmd, fmt.Sprintf("Older runs follow. `ypl sync runs list --limit %d` reads further back.", limit*2))
+			}
 			return nil
 		},
 	}

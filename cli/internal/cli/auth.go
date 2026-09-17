@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/datapointchris/goclilogin"
@@ -66,8 +67,19 @@ func (a *app) authLoginCommand() *cobra.Command {
 			// lands in the middle of the code and the URL being read off the
 			// screen. A launcher that fails is reported by OpenURL's error
 			// instead, so nothing diagnostic is lost by dropping the stream.
-			browser.Stdout = io.Discard
-			browser.Stderr = io.Discard
+			//
+			// It has to be an *os.File and not io.Discard. os/exec passes a
+			// file through as a descriptor and gives anything else a pipe plus
+			// a copying goroutine, and then Wait blocks until every process
+			// holding the write end exits — which is the browser xdg-open
+			// spawned. That leaves OpenURL blocked for as long as the browser
+			// is open, and goclilogin calls it before the device-code poll
+			// starts, so nothing is polling while the screen says it is.
+			if quiet, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
+				defer func() { _ = quiet.Close() }()
+				browser.Stdout = quiet
+				browser.Stderr = quiet
+			}
 
 			token, err := goclilogin.Login(ctx, login, func(prompt goclilogin.DevicePrompt) {
 				goclilogin.WriteInstructions(cmd.ErrOrStderr(), login.ClientID, prompt)
@@ -189,10 +201,14 @@ func (a *app) authStatusCommand() *cobra.Command {
 				return fmt.Errorf("read the stored token: %w", err)
 			default:
 				status.LoggedIn = true
+				// The backend is a fact about where the token was stored, not
+				// about whether it expires. A provider may omit expires_in —
+				// RFC 6749 only recommends it — and on a host with no keyring
+				// this is the one line saying the token is in a plain file.
+				status.Backend = backend
 				if !token.Expiry.IsZero() {
 					status.ExpiresAt = token.Expiry.Format(time.RFC3339)
 					status.Expired = time.Now().After(token.Expiry)
-					status.Backend = backend
 				}
 			}
 			if asJSON {
@@ -220,12 +236,13 @@ func printAuthStatus(out io.Writer, status authStatus) {
 	_, _ = fmt.Fprintln(out, "Logged in")
 	_, _ = fmt.Fprintf(out, "  client   %s\n", status.ClientID)
 	_, _ = fmt.Fprintf(out, "  issuer   %s\n", status.Issuer)
-	if status.ExpiresAt != "" {
-		state := "valid"
-		if status.Expired {
-			state = "expired, and refreshed on the next command"
-		}
-		_, _ = fmt.Fprintf(out, "  token    %s until %s\n", state, status.ExpiresAt)
+	// Two sentences rather than one with a swapped clause: "expired … until"
+	// reads as valid-until, which is the opposite of what it says.
+	switch {
+	case status.ExpiresAt != "" && status.Expired:
+		_, _ = fmt.Fprintf(out, "  token    expired at %s, and is refreshed on the next command\n", status.ExpiresAt)
+	case status.ExpiresAt != "":
+		_, _ = fmt.Fprintf(out, "  token    valid until %s\n", status.ExpiresAt)
 	}
 	if status.Backend == goclilogin.BackendFile {
 		_, _ = fmt.Fprintf(out, "  stored   in a %s, since this host has no OS keyring\n", status.Backend)

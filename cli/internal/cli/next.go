@@ -38,15 +38,22 @@ func (a *app) nextCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
+			// Render first, decide the exit code after, in both modes. A status
+			// bar is the caller that reads the empty draw off the code, and
+			// --json is the rendering it parses — so returning inside the
+			// branch would lose the signal for the only caller depending on it.
 			if asJSON {
-				return emitJSON(cmd.OutOrStdout(), withURLs(suggestions))
+				if err := emitJSON(cmd.OutOrStdout(), withURLs(suggestions)); err != nil {
+					return err
+				}
+			} else {
+				for _, suggestion := range suggestions {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", suggestion.Title, watchURL(suggestion.ID))
+				}
 			}
 			if len(suggestions) == 0 {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Nothing to play. Check `ypl status` for what the server holds.")
+				nothing(cmd, "Nothing to play. Check `ypl status` for what the server holds.")
 				return exitCode(1)
-			}
-			for _, suggestion := range suggestions {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", suggestion.Title, watchURL(suggestion.ID))
 			}
 			return nil
 		},

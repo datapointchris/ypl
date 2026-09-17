@@ -58,7 +58,7 @@ func newRootCommand(a *app) *cobra.Command {
 		Args: cobra.ArbitraryArgs,
 		RunE: requireSubcommand,
 	}
-	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError{err} })
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return goclikit.UsageError(err) })
 	useUsageTemplate(root)
 
 	// Cobra's automatic version flag claims -v, which is the counted verbosity

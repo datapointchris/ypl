@@ -60,7 +60,7 @@ type Library struct {
 
 // ListSyncRuns is the newest limit runs, newest first, reading as many pages as
 // that takes.
-func (c *Client) ListSyncRuns(ctx context.Context, limit int) ([]SyncRun, error) {
+func (c *Client) ListSyncRuns(ctx context.Context, limit int) (Page[SyncRun], error) {
 	return collect(ctx, c, "/api/v1/sync/runs", limit, func(r SyncRun) string { return strconv.FormatInt(r.ID, 10) })
 }
 

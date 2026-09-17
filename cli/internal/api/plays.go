@@ -34,7 +34,7 @@ type Suggestion struct {
 
 // ListPlays is the newest limit plays, newest first, reading as many pages as
 // that takes.
-func (c *Client) ListPlays(ctx context.Context, limit int) ([]Play, error) {
+func (c *Client) ListPlays(ctx context.Context, limit int) (Page[Play], error) {
 	return collect(ctx, c, "/api/v1/plays", limit, func(p Play) string { return p.ID })
 }
 
@@ -49,7 +49,7 @@ func (c *Client) GetPlay(ctx context.Context, name string) (Play, error) {
 // MaxSuggestions is the most the server draws at once. Suggestions are a draw
 // reshuffled among videos last played at the same moment, so there is no next
 // page to read and a larger ask is refused rather than paged.
-const MaxSuggestions = pageSize
+const MaxSuggestions = PageSize
 
 // ListSuggestions is up to limit videos to play next, never-played first and
 // then least recently played, from playlist or from every playlist.

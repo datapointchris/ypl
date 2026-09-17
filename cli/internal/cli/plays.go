@@ -48,13 +48,16 @@ func (a *app) playsListCommand() *cobra.Command {
 				return reported(err)
 			}
 			if asJSON {
-				return emitJSON(cmd.OutOrStdout(), plays)
+				return emitJSON(cmd.OutOrStdout(), plays.Rows)
 			}
-			if len(plays) == 0 {
+			if len(plays.Rows) == 0 {
 				nothing(cmd, "Nothing has been listened to yet. `ypl next` picks something to put on.")
 				return nil
 			}
-			printPlays(cmd.OutOrStdout(), plays)
+			printPlays(cmd.OutOrStdout(), plays.Rows)
+			if plays.More {
+				nothing(cmd, fmt.Sprintf("More plays follow. `ypl plays list --limit %d` reads further back.", limit*2))
+			}
 			return nil
 		},
 	}

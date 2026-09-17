@@ -8,16 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// usageError marks an invocation a caller got wrong — a bad flag, the wrong
-// number of arguments, a value outside its range. It exits 2, which is the only
-// answer that tells a caller to try different arguments rather than to try
-// again later.
-type usageError struct{ err error }
-
-func (u usageError) Error() string { return u.err.Error() }
-
-func (u usageError) Unwrap() error { return u.err }
-
 // exitCode is an answer that is not a success and not a failure: the command
 // ran, said what it found, and the finding is worth an exit code of its own.
 // `ypl auth status` on a machine that is not logged in is the case. It carries
@@ -34,8 +24,8 @@ func requireSubcommand(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return cmd.Help()
 	}
-	return usageError{fmt.Errorf("unknown command %q for %q\nRun '%s --help' for usage",
-		args[0], cmd.CommandPath(), cmd.CommandPath())}
+	return goclikit.UsageError(fmt.Errorf("unknown command %q for %q\nRun '%s --help' for usage",
+		args[0], cmd.CommandPath(), cmd.CommandPath()))
 }
 
 // usageArgs is validate, with what it refuses marked as a usage mistake.
@@ -44,7 +34,7 @@ func requireSubcommand(cmd *cobra.Command, args []string) error {
 func usageArgs(validate cobra.PositionalArgs) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if err := validate(cmd, args); err != nil {
-			return usageError{err}
+			return goclikit.UsageError(err)
 		}
 		return nil
 	}
@@ -52,6 +42,10 @@ func usageArgs(validate cobra.PositionalArgs) cobra.PositionalArgs {
 
 // exitCodeFor is the process exit code for err: 0 for success, 2 for a usage
 // mistake, an exitCode's own value, and 1 for anything else.
+//
+// One marker covers both what this tree refuses and what cobra refuses before
+// any RunE runs, because goclikit.UsageError wraps to the same sentinel cobra's
+// own failures carry.
 func exitCodeFor(err error) int {
 	if err == nil {
 		return 0
@@ -60,12 +54,6 @@ func exitCodeFor(err error) int {
 	if errors.As(err, &code) {
 		return int(code)
 	}
-	var usage usageError
-	if errors.As(err, &usage) {
-		return 2
-	}
-	// What cobra refuses before any RunE runs, which the tree never reaches to
-	// mark itself.
 	if errors.Is(err, goclikit.ErrUsage) {
 		return 2
 	}

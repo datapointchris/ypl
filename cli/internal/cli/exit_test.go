@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // Exit 2 is the only answer that tells a caller to try different arguments
@@ -17,9 +19,10 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		{"playlists", "show"},
 		{"playlists", "show", "one", "two"},
 		{"playlists", "list", "--nope"},
-		{"videos", "list", "--sort", "sideways"},
 		{"videos", "list", "--min-minutes", "120", "--max-minutes", "60"},
-		{"plays", "list", "--limit", "0"},
+		{"videos", "list", "--min-minutes", "-5"},
+		{"videos", "list", "--max-minutes", "-1"},
+		{"videos", "list", "--min-minutes", "153722867280912931"},
 		{"plays", "list", "--limit", "-1"},
 		{"plays", "list", "--limit", "half"},
 		{"next", "--limit", "101"},
@@ -28,6 +31,39 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		if got := f.run(args...); got.code != 2 {
 			t.Errorf("%v exited %d, want 2: %s%s", args, got.code, got.out, got.err)
 		}
+	}
+}
+
+// A caller can mean no rows — `tail -n 0` and `head -n 0` both print nothing —
+// so refusing it would reserve a value somebody could have intended. It needs
+// no request to answer.
+func TestALimitOfNothingAsksForNothing(t *testing.T) {
+	f := newFixture(t, serves(map[string]string{"/api/v1/plays": `{"data": [], "has_more": true}`}))
+
+	got := f.run("plays", "list", "--limit", "0", "--json")
+	if got.code != 0 {
+		t.Fatalf("exited %d, want 0: %s%s", got.code, got.out, got.err)
+	}
+	if trimmed := strings.TrimSpace(got.out); trimmed != "[]" {
+		t.Errorf("wrote %q, want []", trimmed)
+	}
+	if len(f.asked) != 0 {
+		t.Errorf("a limit of nothing made %d requests", len(f.asked))
+	}
+}
+
+// The server owns the vocabulary and refuses an order it does not have, naming
+// every one it does. Refusing here as well would mean a sort the server gains
+// needs a new binary before anyone can use it.
+func TestAnUnknownSortIsTheServersToRefuse(t *testing.T) {
+	f := newFixture(t, serves(map[string]string{"/api/v1/videos": `[]`}))
+
+	got := f.run("videos", "list", "--sort", "sideways", "--json")
+	if got.code != 0 {
+		t.Fatalf("exited %d, want the request to be made: %s%s", got.code, got.out, got.err)
+	}
+	if asked := f.lastAsked().Query().Get("sort"); asked != "sideways" {
+		t.Fatalf("sort reached the server as %q, want it sent as typed", asked)
 	}
 }
 
@@ -126,6 +162,52 @@ func TestAnAnswerThatIsNotTheServersStillCarriesItsStatus(t *testing.T) {
 	}
 	if !strings.Contains(got.err, "Bad Gateway") {
 		t.Fatalf("stderr = %q, want the status named", got.err)
+	}
+}
+
+// jsonCapable walks the assembled tree for every leaf binding --json, so a
+// command added later is covered without anyone remembering to list it.
+func jsonCapable(cmd *cobra.Command, path []string) [][]string {
+	var found [][]string
+	here := path
+	if cmd.Name() != "ypl" {
+		here = append(append([]string{}, path...), cmd.Name())
+	}
+	if cmd.Flags().Lookup("json") != nil {
+		found = append(found, here)
+	}
+	for _, child := range cmd.Commands() {
+		if child.Name() == "help" || child.Name() == "completion" {
+			continue
+		}
+		found = append(found, jsonCapable(child, here)...)
+	}
+	return found
+}
+
+// The exit code is the machine contract and the rendering is not, so a flag
+// that only picks a rendering never moves it. The --json reader is the one who
+// cannot see the sentence on stderr, so it is the one most dependent on the
+// code being right.
+func TestTheRenderingNeverDecidesTheExitCode(t *testing.T) {
+	empty := map[string]string{
+		"/api/v1/playlists":   `[]`,
+		"/api/v1/videos":      `[]`,
+		"/api/v1/suggestions": `[]`,
+		"/api/v1/plays":       `{"data": [], "has_more": false}`,
+		"/api/v1/sync/runs":   `{"data": [], "has_more": false}`,
+		"/api/v1/status":      `{"library": {}, "last_run": null, "last_ok_run": null}`,
+	}
+	commands := jsonCapable(newRootCommand(&app{}), nil)
+	if len(commands) < 8 {
+		t.Fatalf("found %d commands taking --json, want every leaf that binds it", len(commands))
+	}
+	for _, args := range commands {
+		plain := newFixture(t, serves(empty)).run(args...)
+		asJSON := newFixture(t, serves(empty)).run(append(append([]string{}, args...), "--json")...)
+		if plain.code != asJSON.code {
+			t.Errorf("%v exits %d and --json exits %d", args, plain.code, asJSON.code)
+		}
 	}
 }
 
