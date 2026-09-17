@@ -219,6 +219,78 @@ func TestAFailedTransactionLeavesNothingBehind(t *testing.T) {
 	}
 }
 
+func TestAReadTransactionReadsOneSnapshot(t *testing.T) {
+	ctx := context.Background()
+	st, _ := open(t)
+	err := st.InReadTx(ctx, func(q *generated.Queries) error {
+		before, err := q.CountVideos(ctx)
+		if err != nil {
+			return err
+		}
+		if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
+			return err
+		}
+		after, err := q.CountVideos(ctx)
+		if err != nil {
+			return err
+		}
+		if before != 0 || after != 0 {
+			t.Errorf("videos read inside the transaction = %d then %d, want 0 both times", before, after)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("InReadTx: %v", err)
+	}
+	if n := countVideos(t, st); n != 1 {
+		t.Fatalf("videos after the read transaction = %d, want the 1 committed meanwhile", n)
+	}
+}
+
+// A second connection that does not wait for a lock shows whether the
+// transaction holds the write lock before its first write.
+func TestAWriteTransactionHoldsTheWriteLockFromItsStart(t *testing.T) {
+	ctx := context.Background()
+	st, path := open(t)
+	other, err := sql.Open("sqlite", URI(path, "_pragma=foreign_keys(1)&_pragma=busy_timeout(0)"))
+	if err != nil {
+		t.Fatalf("open a second connection: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+
+	err = st.InTx(ctx, func(tx *Tx) error {
+		if _, err := tx.CountVideos(ctx); err != nil {
+			return err
+		}
+		if err := generated.New(other).ImportVideo(ctx, video("v2")); err == nil {
+			t.Error("another connection wrote while a write transaction was open")
+		}
+		return tx.ImportVideo(ctx, video("v1"))
+	})
+	if err != nil {
+		t.Fatalf("a transaction that read before it wrote: %v", err)
+	}
+	if n := countVideos(t, st); n != 1 {
+		t.Fatalf("videos = %d, want the transaction's 1", n)
+	}
+}
+
+func TestAPlayTimeNotInUTCToTheSecondIsRefused(t *testing.T) {
+	ctx := context.Background()
+	st, _ := open(t)
+	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("import video: %v", err)
+	}
+	for _, ts := range []string{"2026-09-01T10:00:00.5Z", "2026-09-01T10:00:00+02:00", "2026-09-01 10:00:00", "2026-09-01T10:00:00z"} {
+		if _, err := st.Queries.InsertPlay(ctx, generated.InsertPlayParams{PlayID: ts, VideoID: "v1", PlayedTs: ts}); err == nil {
+			t.Errorf("a play at %q was stored", ts)
+		}
+	}
+	if _, err := st.Queries.InsertPlay(ctx, generated.InsertPlayParams{PlayID: "p", VideoID: "v1", PlayedTs: "2026-09-01T10:00:00Z"}); err != nil {
+		t.Fatalf("a play at 2026-09-01T10:00:00Z: %v", err)
+	}
+}
+
 func replace(t *testing.T, st *Store, tracks ...generated.InsertTrackParams) {
 	t.Helper()
 	ctx := context.Background()

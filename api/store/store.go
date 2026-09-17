@@ -113,7 +113,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	// Pragmas go in the URI because a pragma set with a statement configures
 	// only the pooled connection that ran it. The driver applies these to every
 	// connection as it opens.
-	db, err := sql.Open("sqlite", URI(path, "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"))
+	//
+	// _txlock=immediate makes a write transaction take the write lock as it
+	// begins. One that reads before it writes otherwise holds a snapshot that a
+	// commit on another connection makes stale, and its first write then fails
+	// with SQLITE_BUSY without busy_timeout waiting. A read-only transaction
+	// begins deferred whatever this says.
+	db, err := sql.Open("sqlite", URI(path, "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -149,6 +155,18 @@ func (s *Store) InTx(ctx context.Context, fn func(*Tx) error) error {
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+// InReadTx runs fn inside one read transaction and rolls it back when fn
+// returns. Every statement fn runs reads the database as it stood at fn's first
+// read, whatever commits on another connection meanwhile.
+func (s *Store) InReadTx(ctx context.Context, fn func(*generated.Queries) error) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("begin read transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	return fn(s.Queries.WithTx(tx))
 }
 
 // ReplaceTracks sets a video's tracklist to tracks, removing every track it
