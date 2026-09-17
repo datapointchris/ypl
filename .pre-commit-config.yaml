@@ -249,6 +249,20 @@ repos:
         args: [-short]
       - id: golangci-lint-repo-mod
 
+# > custom:after:go - sqlc generated code matches its queries and migrations
+  - repo: local
+    hooks:
+      # A query or migration edit committed without regenerating still builds
+      # and tests clean, so only a diff against a fresh generation catches it.
+      # The sqlc version is the tool directive pinned in api/go.mod.
+      - id: sqlc-diff
+        name: sqlc generated code is current
+        entry: bash -c 'cd api/store && go tool sqlc diff'
+        language: system
+        files: ^api/store/
+        pass_filenames: false
+        stages: [pre-commit]
+
 # generated:github-actions - GitHub Actions
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.7

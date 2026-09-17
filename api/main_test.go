@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -134,7 +135,7 @@ func TestSecondSignalEndsTheDrain(t *testing.T) {
 	}
 
 	child := exec.Command(os.Args[0], "-test.run=^$")
-	child.Env = append(os.Environ(), serveChild+"=1", "PORT=0")
+	child.Env = append(os.Environ(), serveChild+"=1", "PORT=0", "DATABASE_PATH="+filepath.Join(t.TempDir(), "api.db"))
 	stdout, err := child.StdoutPipe()
 	if err != nil {
 		t.Fatalf("stdout pipe: %v", err)

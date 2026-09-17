@@ -1,6 +1,6 @@
-// Command api is the ypl HTTP service. It answers liveness and readiness
-// probes, logs JSON to stdout, and drains in-flight requests on SIGINT or
-// SIGTERM.
+// Command api is the ypl HTTP service. It applies its database migrations at
+// startup, answers liveness and readiness probes, logs JSON to stdout, and
+// drains in-flight requests on SIGINT or SIGTERM.
 package main
 
 import (
@@ -13,6 +13,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/datapointchris/ypl/api/store"
 )
 
 // shutdownGrace bounds how long in-flight requests get to finish after the
@@ -21,10 +23,27 @@ const shutdownGrace = 10 * time.Second
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-	if err := run(context.Background(), ":"+envOr("PORT", "8080")); err != nil {
+	if err := start(context.Background()); err != nil {
 		slog.Error("api stopped", "err", err)
 		os.Exit(1)
 	}
+}
+
+// start opens the database, applying its migrations, before the port is bound,
+// so the service answers /ready only once its schema is current.
+func start(ctx context.Context) error {
+	path, err := store.Path()
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	slog.Info("database ready", "path", path)
+
+	return run(ctx, ":"+envOr("PORT", "8080"))
 }
 
 // run binds addr and serves on it. A port that cannot be bound is returned
@@ -83,8 +102,8 @@ func routes() *http.ServeMux {
 	return mux
 }
 
-// ok answers a probe. The service has no dependency to wait on, so it is live
-// and ready as soon as its listener is bound.
+// ok answers a probe. The database is open and migrated before the listener
+// binds, so the service is live and ready as soon as it is bound.
 func ok(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
