@@ -22,10 +22,11 @@ type EnrichFailure struct {
 }
 
 type Playlist struct {
-	PlaylistID  string
-	Title       string
-	Description string
-	Privacy     string
+	PlaylistID       string
+	Title            string
+	Description      string
+	Privacy          string
+	IsSortedManually bool
 }
 
 type PlaylistItem struct {

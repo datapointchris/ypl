@@ -112,8 +112,14 @@ SELECT
     playlist_id,
     title,
     description,
-    privacy
+    privacy,
+    is_sorted_manually
 FROM playlists
+WHERE playlist_id = ?;
+
+-- name: MarkPlaylistNotSortedManually :exec
+UPDATE playlists
+SET is_sorted_manually = 0
 WHERE playlist_id = ?;
 
 -- name: ListPlaylistIDs :many

@@ -117,7 +117,8 @@ SELECT
     playlist_id,
     title,
     description,
-    privacy
+    privacy,
+    is_sorted_manually
 FROM playlists
 WHERE playlist_id = ?
 `
@@ -130,6 +131,7 @@ func (q *Queries) GetPlaylist(ctx context.Context, playlistID string) (Playlist,
 		&i.Title,
 		&i.Description,
 		&i.Privacy,
+		&i.IsSortedManually,
 	)
 	return i, err
 }
@@ -587,6 +589,17 @@ func (q *Queries) ListTracks(ctx context.Context, videoID string) ([]Track, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const markPlaylistNotSortedManually = `-- name: MarkPlaylistNotSortedManually :exec
+UPDATE playlists
+SET is_sorted_manually = 0
+WHERE playlist_id = ?
+`
+
+func (q *Queries) MarkPlaylistNotSortedManually(ctx context.Context, playlistID string) error {
+	_, err := q.db.ExecContext(ctx, markPlaylistNotSortedManually, playlistID)
+	return err
 }
 
 const sumWriteUnits = `-- name: SumWriteUnits :one

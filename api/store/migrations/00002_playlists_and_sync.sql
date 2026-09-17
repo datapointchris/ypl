@@ -1,12 +1,15 @@
 -- +goose Up
 
 -- The playlists the channel owns, keyed by YouTube's own playlist id, with the
--- title, description and privacy YouTube last reported.
+-- title, description and privacy YouTube last reported. is_sorted_manually is 0
+-- once YouTube refuses a write naming a position in the playlist, and a push then
+-- appends and makes no move.
 CREATE TABLE playlists (
     playlist_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT NOT NULL,
-    privacy TEXT NOT NULL
+    privacy TEXT NOT NULL,
+    is_sorted_manually BOOLEAN NOT NULL DEFAULT 1 CHECK (is_sorted_manually IN (0, 1))
 );
 
 -- The server's order of each playlist. A playlist's rows are replaced together,
