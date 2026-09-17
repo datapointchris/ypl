@@ -165,9 +165,16 @@ and can change. The code is for a client to branch on, and `api/wire` lists ever
 
 ## The command-line client
 
-`cli/` is the `ypl` every machine runs. It holds no database and reads nothing from YouTube — every
-answer comes from the server, so several machines see one library rather than each keeping a copy
-that drifts.
+**Two programs in this repository are called `ypl`, and this section is the Go one in `cli/`.**
+Every section from *Install* down is the Python tool in `src/`, which is the single-user original
+and is retired once the server takes over. They share a name and several words — `sync` runs a sync
+in one and reads the server's history in the other, `auth` signs into YouTube in one and into the
+server's identity provider in the other — so a command from one section does not mean the same
+thing in the other. They do share `$XDG_CONFIG_HOME/ypl/config.toml` safely: each reads only the
+keys it knows and leaves the rest alone.
+
+`cli/` holds no database and reads nothing from YouTube. Every answer comes from the server, so
+several machines see one library rather than each keeping a copy that drifts.
 
 Nothing about a deployment is built into the binary. The server's address and the identity provider
 that signs its tokens each name one installation, so they are read from
@@ -189,24 +196,23 @@ mode-600 file on a host that has none, and it is refreshed under a lock so two c
 cannot spend the same refresh token twice. The client id is `ypl-cli-<machine>`, one per machine, so
 a token can be revoked for one machine without touching the others.
 
-| Command | Answers with |
-| --- | --- |
-| `ypl playlists list` | Every playlist, with how many videos it holds and how many are read or gone |
-| `ypl playlists show <playlist>` | One playlist and its videos in order |
-| `ypl videos list` | The library as one set, narrowed by `--playlist`, `--artist`, `--min-minutes`, `--max-minutes` and ordered by `--sort` |
-| `ypl videos show <video-id>` | One video with its tracklist |
-| `ypl videos sorts` | The orders `--sort` accepts |
-| `ypl plays list` | What has been listened to, newest first |
-| `ypl plays show <play>` | One play, by its handle, its id, or the last eight characters of that id |
-| `ypl next` | What to put on next: never-played first, then least recently played |
-| `ypl status` | What the store holds, the latest sync run, and the latest that ended ok |
-| `ypl sync runs list` | The sync's own history with the failures each run recorded |
-| `ypl config show` | Every resolved setting and where it came from |
-| `ypl auth login\|logout\|status\|token` | This machine's session |
+A first run is three commands:
+
+```bash
+ypl config example > "$(ypl config path)"   # fill in api_base and issuer
+ypl auth login                              # approve the code in a browser
+ypl status                                  # what the server holds
+```
+
+`ypl --help` is the command surface, grouped by what someone is trying to do. It is not repeated
+here, because a list in markdown goes stale and `--help` cannot.
 
 A playlist is named by its title or its YouTube id at every command that takes one, and the title's
 case, spacing and punctuation do not have to be reproduced. `ypl playlists show 'sunday morning'`
-finds Sunday Morning.
+finds Sunday Morning. A read also takes part of a title, so `ypl playlists show morning` finds it
+too — but only a read. A rename or a delete takes the id or the whole title, because a fragment
+that happens to match one playlist matches it unambiguously, and there is nothing for the
+two-matches refusal to catch.
 
 Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
 nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for

@@ -3,19 +3,34 @@
 Organize YouTube playlists of long DJ mixes. `README.md` says what the parts are and how the sync
 works; this file covers what someone changing the code has to hold in mind.
 
-## Two ways out of the process, and both are named
+## Every way out of a process is named
 
-Everything the server reaches outside itself goes through one package, and nothing else in the
-repo opens that kind of connection. An undocumented boundary is one a later change walks straight
-past, so each is written here with what it is allowed to do.
+Everything either program reaches outside itself goes through one package, and nothing else opens
+that kind of connection. An undocumented boundary is one a later change walks straight past, so
+each is written here with what it is allowed to do.
+
+The server, on the machine it is deployed to:
 
 | Door | Package | Reaches | Costs |
 | --- | --- | --- | --- |
 | The Data API | `api/youtube` | YouTube, over HTTPS, signed in as the channel with an OAuth refresh token | Quota units, 10,000 a day |
 | yt-dlp | `api/ytdlp` | YouTube, over HTTPS, signed in as nobody, through a subprocess | Nothing, and the address's standing with YouTube |
 
-`api/ytdlp.Reader.Video` is the only place in the repo that starts a process. Anything that needs
-more of what yt-dlp knows extends that package rather than running the binary somewhere else.
+The CLI, on every workstation:
+
+| Door | Package | Reaches | Costs |
+| --- | --- | --- | --- |
+| The ypl server | `cli/internal/api` | The configured server, over HTTPS, with a bearer token | Nothing |
+| The identity provider | `goclilogin` | The configured issuer, for discovery and the device grant | Nothing, and it is reached on every command |
+| This machine's keychain | `goclilogin` | The OS keychain, or a mode-600 file where there is none | The refresh token lives there |
+| A browser | `pkg/browser` | Whatever `xdg-open` or `open` resolves to, once, during `ypl auth login` | A subprocess |
+
+`api/ytdlp.Reader.Video` is the only place in the server that starts a process, and `ypl auth
+login` is the only place in the CLI. Anything that needs more of what yt-dlp knows extends that
+package rather than running the binary somewhere else.
+
+The CLI is given no credential of the server's and no part of the store. What it holds is a token
+for one machine, revocable on its own without touching any other.
 
 ## Why yt-dlp is a dependency, and what it is allowed to reach
 
@@ -63,22 +78,21 @@ is permanent without a route back. A video is queued on whether it holds tracks,
 a read has reached it, and `api/cmd/reset-enrichment` shows every video enrichment has stopped
 reading and puts them back. Anything added that excludes a video from future work ships the same.
 
-## The CLI knows the wire contract and nothing else
+## The two modules never import each other
 
-`cli/internal/api` holds the JSON shapes the server sends, not the server's types, and it ignores a
-field the server adds. Reaching into `api/handlers` for a struct would make every server refactor a
-CLI release, and a CLI is on machines the server cannot redeploy.
+`cli/internal/api` carries its own copy of the JSON shapes, and `cli/internal/config` reads every
+deployment value from the machine rather than from a constant. Both package docs say why.
 
-Nothing about a deployment is compiled in. The server's address and the identity provider each name
-one installation, so both are read from config and an unset one resolves as unset. A default here
-would point the CLI somewhere plausible instead of saying it was never told, which is the harder
-failure to diagnose. `cli/internal/config` declares every setting in one table, and the rows
-`ypl config show` prints are built from it, so a setting cannot be added without the command
-learning to print it.
+What neither says, because it is a property of the pair rather than of either: the wire contract is
+the only thing holding them together, and nothing in the compiler checks it. `api/handlers`
+writes what it answers to `testdata/wire`, and `cli/internal/api` decodes those documents and
+requires every field it declares to arrive. Renaming a response field without regenerating is what
+that catches, and it is the one mistake a green build on both sides would otherwise hide.
 
-The two things the command tree reaches — the server and the machine's keychain — are fields on
-`app`. A command that reached either directly could not be tested without a live server and the real
-keychain, which is shared machine state a test may not write.
+A value the server *enforces* is the harder half and is not solved. `PageSize` and `VideoSorts` are
+copies of numbers and words the server owns, with no door to read them through. A shape the client
+has wrong degrades — an unknown field is ignored — and a value it has wrong is a refusal the client
+reports as a failure.
 
 ## Where the Python tool fits
 
