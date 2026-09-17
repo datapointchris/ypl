@@ -1,13 +1,16 @@
 // Command api is the ypl HTTP service. It applies its database migrations at
-// startup, syncs the channel's playlists every SYNC_INTERVAL (an hour when
-// unset) as the channel YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET and
-// YOUTUBE_REFRESH_TOKEN name, answers liveness and readiness probes, logs JSON
-// to stdout, and drains in-flight requests and the sync run on SIGINT or
-// SIGTERM.
+// startup, syncs the channel's playlists as the channel YOUTUBE_CLIENT_ID,
+// YOUTUBE_CLIENT_SECRET and YOUTUBE_REFRESH_TOKEN name, answers liveness and
+// readiness probes, logs JSON to stdout, and drains in-flight requests and the
+// sync run on SIGINT or SIGTERM. It waits SYNC_INTERVAL (an hour when unset)
+// between one run ending and the next beginning.
 //
 // Each sync run ends by reading tracklists with the yt-dlp binary YTDLP_PATH
 // names (yt-dlp on PATH when unset): at most ENRICH_VIDEOS_PER_RUN videos (30
 // when unset), ENRICH_PACE apart (10s when unset) or up to half as long again.
+// Those reads are part of the run, so they lengthen the wait between syncs: a
+// pace and a count whose reads cannot finish in the run's share of the interval
+// are refused here. Reading no video needs no yt-dlp.
 //
 // It answers /api/v1 only to a request carrying an access token the identity
 // provider OIDC_ISSUER signed for a client whose id starts with
@@ -78,13 +81,18 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	reader, err := ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp"))
-	if err != nil {
-		return fmt.Errorf("%w: install yt-dlp or set YTDLP_PATH to it", err)
-	}
-	pace, batch, err := enrichment()
+	limits, err := enrichment(interval)
 	if err != nil {
 		return err
+	}
+	// A configuration that reads no video needs no yt-dlp, so the binary is
+	// looked for only where a run would run it.
+	var reader enrich.Reader
+	if limits.Batch > 0 {
+		reader, err = ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp"))
+		if err != nil {
+			return fmt.Errorf("%w: install yt-dlp or set YTDLP_PATH to it", err)
+		}
 	}
 	issuer, clientIDPrefix, err := identityProvider()
 	if err != nil {
@@ -107,7 +115,7 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runner := reconcile.NewRunner(st, syncChannel, enrich.New(st, reader, pace, batch), interval)
+	runner := reconcile.NewRunner(st, syncChannel, enrich.New(st, reader, limits), interval)
 	worker := reconcile.NewWorker(runner, interval, slog.Default())
 	provider := auth.NewConnecting(issuer, clientIDPrefix)
 	api := handlers.New(st, apiChannel, slog.Default())
@@ -157,25 +165,43 @@ const (
 	// ENRICH_VIDEOS_PER_RUN is unset, which holds a run's reads to a few
 	// minutes.
 	defaultEnrichVideos = 30
+	// enrichShareOfInterval is how much of the wait between sync runs
+	// enrichment may spend reading. A run's reads happen inside it, so the
+	// period between two syncs is the interval plus however long they take, and
+	// this is what bounds the second half of that.
+	enrichShareOfInterval = 2
 )
 
-// enrichment is ENRICH_PACE as a duration and ENRICH_VIDEOS_PER_RUN as a count,
-// or defaultEnrichPace and defaultEnrichVideos for each unset.
-func enrichment() (pace time.Duration, videos int, err error) {
-	pace, videos = defaultEnrichPace, defaultEnrichVideos
+// enrichment is the limits a run's enrichment reads within, from ENRICH_PACE
+// and ENRICH_VIDEOS_PER_RUN, or defaultEnrichPace and defaultEnrichVideos for
+// each unset. The budget is a share of interval, and a pace and a count whose
+// reads cannot finish inside it are refused here rather than quietly setting
+// the period of the sync.
+func enrichment(interval time.Duration) (enrich.Limits, error) {
+	limits := enrich.Limits{Pace: defaultEnrichPace, Batch: defaultEnrichVideos, Budget: interval / enrichShareOfInterval}
 	if raw := os.Getenv("ENRICH_PACE"); raw != "" {
-		pace, err = time.ParseDuration(raw)
+		pace, err := time.ParseDuration(raw)
 		if err != nil || pace <= 0 {
-			return 0, 0, fmt.Errorf("ENRICH_PACE %q is not a positive duration, such as 10s", raw)
+			return enrich.Limits{}, fmt.Errorf("ENRICH_PACE %q is not a positive duration, such as 10s", raw)
 		}
+		limits.Pace = pace
 	}
 	if raw := os.Getenv("ENRICH_VIDEOS_PER_RUN"); raw != "" {
-		videos, err = strconv.Atoi(raw)
+		videos, err := strconv.Atoi(raw)
 		if err != nil || videos < 0 {
-			return 0, 0, fmt.Errorf("ENRICH_VIDEOS_PER_RUN %q is not a count of videos, such as 30, or 0 to read none", raw)
+			return enrich.Limits{}, fmt.Errorf("ENRICH_VIDEOS_PER_RUN %q is not a count of videos, such as 30, or 0 to read none", raw)
 		}
+		limits.Batch = videos
 	}
-	return pace, videos, nil
+	// Each read but the first waits the pace and up to half as long again, so
+	// this is the longest a batch takes when every read answers at once.
+	paced := time.Duration(limits.Batch-1) * (limits.Pace + limits.Pace/2)
+	if paced >= limits.Budget {
+		return enrich.Limits{}, fmt.Errorf(
+			"%d videos %v apart take %v to read, longer than the %v enrichment may spend inside a %v sync: lower ENRICH_VIDEOS_PER_RUN or ENRICH_PACE, or raise SYNC_INTERVAL",
+			limits.Batch, limits.Pace, paced, limits.Budget, interval)
+	}
+	return limits, nil
 }
 
 // run binds addr and serves h on it, doing work beside the server. A port that

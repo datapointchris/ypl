@@ -80,18 +80,55 @@ WHERE video_id = ?;
 DELETE FROM enrich_failures
 WHERE video_id = ?;
 
+-- name: ListEnrichFailuresHeld :many
+-- Every video enrichment has stopped reading, with why and when it last tried,
+-- the most recently tried first. A retry_ts of NULL is what stops the reading,
+-- and reaching it takes either YouTube answering that no signed-out read will
+-- return the video or enough reads that stored no tracklist.
+SELECT
+    video_id,
+    attempted_ts,
+    reason,
+    attempts,
+    retry_ts
+FROM enrich_failures
+WHERE retry_ts IS NULL
+ORDER BY attempted_ts DESC;
+
+-- name: ForgetReadsOfEnrichFailuresHeld :execrows
+-- Forgets that a read reached each video enrichment has stopped reading. The
+-- queue passes over a video a read has reached that carries no mark, so this is
+-- half of putting one back and ClearEnrichFailuresHeld is the other.
+UPDATE videos SET enriched_ts = NULL
+WHERE video_id IN (SELECT video_id FROM enrich_failures WHERE retry_ts IS NULL);
+
+-- name: ClearEnrichFailuresHeld :execrows
+-- Puts every video enrichment has stopped reading back in its queue, counting
+-- its reads from nothing again.
+DELETE FROM enrich_failures
+WHERE retry_ts IS NULL;
+
 -- name: ListVideosToEnrich :many
--- The videos some playlist holds that play and that enrichment has not read,
--- less those a failure holds back past now, the ones a playlist gained latest
--- first. A failure whose retry_ts is NULL holds its video back for good.
+-- The videos some playlist holds that play, that hold no track, and that are
+-- due a read, the ones a playlist gained latest first. A video is due when no
+-- read has reached it or when the mark from its last read says to read it again
+-- by now. A mark whose retry_ts is NULL holds its video back until someone
+-- clears it.
+--
+-- The tracks are what says a video is done, rather than enriched_ts, so a video
+-- whose tracklist was posted after it was is read again, and a video carrying
+-- tracks from somewhere other than a read is left alone.
 SELECT v.video_id
 FROM videos AS v
 INNER JOIN playlist_entries AS pe ON v.video_id = pe.video_id
 LEFT JOIN enrich_failures AS f ON v.video_id = f.video_id
 WHERE
-    v.enriched_ts IS NULL
-    AND v.is_unavailable = 0
-    AND (f.video_id IS NULL OR f.retry_ts <= sqlc.arg(now))
+    v.is_unavailable = 0
+    AND NOT EXISTS (SELECT 1 FROM tracks AS t WHERE t.video_id = v.video_id)
+    AND (
+        (v.enriched_ts IS NULL AND f.video_id IS NULL)
+        OR f.retry_ts <= sqlc.arg(now)
+    )
 GROUP BY v.video_id
 ORDER BY max(pe.entry_id) DESC
 LIMIT sqlc.arg(max_videos);
@@ -272,18 +309,23 @@ ON CONFLICT (outcome) DO UPDATE SET
     label = excluded.label,
     description = excluded.description;
 
+-- name: UpsertSyncStage :exec
+INSERT INTO sync_stages (stage, description)
+VALUES (?, ?)
+ON CONFLICT (stage) DO UPDATE SET description = excluded.description;
+
 -- name: InsertSyncRun :one
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
     playlists_deferred, items_added, items_removed, requests, units, writes, write_units,
-    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited
+    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited, enrichment_paused
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id;
 
 -- name: InsertSyncFailure :exec
-INSERT INTO sync_failures (run_id, playlist_id, video_id, error)
-VALUES (?, ?, ?, ?);
+INSERT INTO sync_failures (run_id, playlist_id, video_id, error, stage)
+VALUES (?, ?, ?, ?, ?);
 
 -- name: CountRateLimitedRunsSince :one
 -- How many runs that finished after since had YouTube refuse their reads of
@@ -312,7 +354,8 @@ SELECT
     videos_enriched,
     tracks_found,
     videos_unreadable,
-    is_rate_limited
+    is_rate_limited,
+    enrichment_paused
 FROM sync_runs
 WHERE run_id = ?;
 
@@ -322,7 +365,8 @@ SELECT
     run_id,
     playlist_id,
     error,
-    video_id
+    video_id,
+    stage
 FROM sync_failures
 WHERE run_id = ?
 ORDER BY sync_failure_id;
@@ -564,7 +608,8 @@ SELECT
     videos_enriched,
     tracks_found,
     videos_unreadable,
-    is_rate_limited
+    is_rate_limited,
+    enrichment_paused
 FROM sync_runs
 ORDER BY run_id DESC
 LIMIT sqlc.arg(max_rows);
@@ -591,7 +636,8 @@ SELECT
     videos_enriched,
     tracks_found,
     videos_unreadable,
-    is_rate_limited
+    is_rate_limited,
+    enrichment_paused
 FROM sync_runs
 WHERE run_id < sqlc.arg(run_id)
 ORDER BY run_id DESC
@@ -604,7 +650,8 @@ SELECT
     run_id,
     playlist_id,
     error,
-    video_id
+    video_id,
+    stage
 FROM sync_failures
 WHERE run_id BETWEEN sqlc.arg(first_run_id) AND sqlc.arg(last_run_id)
 ORDER BY run_id, sync_failure_id;
@@ -630,7 +677,8 @@ SELECT
     videos_enriched,
     tracks_found,
     videos_unreadable,
-    is_rate_limited
+    is_rate_limited,
+    enrichment_paused
 FROM sync_runs
 WHERE outcome = ?
 ORDER BY run_id DESC

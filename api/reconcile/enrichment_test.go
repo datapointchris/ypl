@@ -82,6 +82,46 @@ func TestAStoreFailureOfEnrichmentFailsTheRun(t *testing.T) {
 	}
 }
 
+// A run's outcome is how the sync ended, so a run YouTube already refused for
+// the quota keeps that outcome. Enrichment runs after that refusal, so its own
+// failure has nowhere to go but the run's failures.
+func TestAFailureOfEnrichmentIsRecordedOnAQuotaSpentRun(t *testing.T) {
+	f := newFakeChannel(map[youtube.PlaylistID]string{"PLA": "abc"})
+	r, st, _ := newRunner(t, f)
+	mustRun(t, context.Background(), r, store.OutcomeOK)
+	stored := errors.New("store the enrichment of v1: disk I/O error")
+	r.enricher = &fakeEnricher{report: enrich.Report{Reads: 1}, err: stored}
+	f.quota = f.units + 1
+
+	report := mustRun(t, context.Background(), r, store.OutcomeQuotaSpent)
+	if report.VideoReads != 1 || len(report.Failures) != 1 || !errors.Is(report.Failures[0].Err, stored) {
+		t.Fatalf("report %+v, want the read and the store's failure recorded beside the quota refusal", report)
+	}
+	rows, err := st.Queries.ListSyncFailures(context.Background(), report.RunID)
+	if err != nil || len(rows) != 1 || rows[0].Stage != store.StageEnrichment || rows[0].PlaylistID.Valid || rows[0].VideoID.Valid {
+		t.Fatalf("stored failures = %+v, %v, want one staged %q naming no playlist and no video", rows, err, store.StageEnrichment)
+	}
+}
+
+// A pause is enrichment doing what YouTube's refusal asks of it, so it is
+// recorded on the run rather than as a failure. Recording it as a failure would
+// make every run partial for the day after one refusal, which is what an alert
+// on the outcome watches.
+func TestAPausedEnrichmentIsRecordedOnTheRunAndFailsNothing(t *testing.T) {
+	f := newFakeChannel(map[youtube.PlaylistID]string{"PLA": "abc"})
+	r, st, _ := newRunner(t, f)
+	r.enricher = &fakeEnricher{report: enrich.Report{Paused: true}}
+
+	report := mustRun(t, context.Background(), r, store.OutcomeOK)
+	if !report.EnrichmentPaused || report.Failures != nil {
+		t.Fatalf("report %+v, want the pause recorded and no failure", report)
+	}
+	row, err := st.Queries.GetSyncRun(context.Background(), report.RunID)
+	if err != nil || !row.EnrichmentPaused || row.IsRateLimited {
+		t.Fatalf("run %+v, %v, want it paused and not itself rate limited, since the pause is counted from the run that drew the refusal", row, err)
+	}
+}
+
 // A rate limit is a failure of the video whose read YouTube refused.
 func TestARateLimitIsAFailureOfTheRefusedRead(t *testing.T) {
 	f := newFakeChannel(map[youtube.PlaylistID]string{"PLA": "abc"})

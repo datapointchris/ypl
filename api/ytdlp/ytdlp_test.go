@@ -1,6 +1,7 @@
 package ytdlp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,8 +18,9 @@ import (
 
 // fakeMode names what this test binary does when a test runs it as yt-dlp:
 // answer with a recording, fail with an error text, hang, or answer as another
-// video. The process a hanging fake starts sleeps. No test starts yt-dlp
-// itself.
+// video. The process a hanging fake starts sleeps. Only
+// TestTheRealYtdlpTakesEveryArgumentAReadPasses runs yt-dlp itself, and it
+// makes no request.
 const fakeMode = "YPL_FAKE_YTDLP"
 
 // fakeArgs is the file the fake writes its arguments to, and fakeError the
@@ -105,7 +107,7 @@ func TestAReadReturnsTheVideoWithItsChaptersAndTopComments(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"--ignore-config", "--skip-download", "--no-playlist", "--sleep-requests", "1", "--write-comments",
+		"--ignore-config", "--no-plugin-dirs", "--skip-download", "--no-playlist", "--sleep-requests", "1", "--write-comments",
 		"--extractor-args", "youtube:max_comments=20,20,0,0;comment_sort=top", "--dump-json", "--",
 		"https://www.youtube.com/watch?v=-kbYeaEP-ME",
 	}
@@ -122,7 +124,7 @@ func TestAVideoWithNoChaptersReturnsItsCommentsInTopOrder(t *testing.T) {
 	if video.Chapters != nil || len(video.Comments) != 3 || !strings.HasPrefix(video.Comments[0], "Track list:") {
 		t.Fatalf("chapters %+v and comments %q, want none and three opening with the pinned track list", video.Chapters, video.Comments)
 	}
-	if tracks := tracklist.Best(video.Chapters, video.Description, video.Comments); len(tracks) != 17 || tracks[16].Title != "Bad Romance (Extended Mix)" {
+	if tracks := tracklist.Best(video.Chapters, video.DurationSeconds, video.Description, video.Comments); len(tracks) != 17 || tracks[16].Title != "Bad Romance (Extended Mix)" {
 		t.Fatalf("tracks from the recording = %d, want the pinned comment's 17", len(tracks))
 	}
 }
@@ -264,5 +266,36 @@ func TestNewReaderFindsTheBinaryOrSaysWhichItCouldNot(t *testing.T) {
 	}
 	if r, err := NewReader(os.Args[0]); err != nil || r.path != os.Args[0] {
 		t.Fatalf("NewReader of this binary = %+v, %v", r, err)
+	}
+}
+
+// Every other test runs this binary as yt-dlp, so each asserts the arguments a
+// read passes against this package's own copy of them, and an option yt-dlp no
+// longer has passes all of them. This hands the list to the real binary and
+// requires the read to fail at its URL rather than at its options: a file URL
+// is refused once every option is taken, and an option yt-dlp does not know is
+// refused before that.
+//
+// It reaches an option renamed or removed. It does not reach a misspelled
+// extractor-arg key, which yt-dlp takes in silence, leaving the extractor's own
+// default in place.
+func TestTheRealYtdlpTakesEveryArgumentAReadPasses(t *testing.T) {
+	path, err := exec.LookPath("yt-dlp")
+	if err != nil {
+		t.Skipf("yt-dlp is not installed: %v", err)
+	}
+	args := arguments("-kbYeaEP-ME")
+	args[len(args)-1] = "file:///dev/null"
+	cmd := exec.CommandContext(t.Context(), path, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+
+	said := stderr.String()
+	if strings.Contains(said, "no such option") {
+		t.Fatalf("yt-dlp refused an option a read passes, running %q: %s", args, said)
+	}
+	if !strings.Contains(said, "file:// URLs are disabled") {
+		t.Fatalf("yt-dlp ran %q and said %q (%v), want every option taken and the URL refused", args, said, err)
 	}
 }

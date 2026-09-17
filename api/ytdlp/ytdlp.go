@@ -42,7 +42,13 @@ const waitDelay = 5 * time.Second
 // Video is what a full read of a video reports that a playlist read through
 // the Data API does not. DurationSeconds is 0 for a video with no duration, such
 // as a live stream, and UploadDate an ISO date, empty when YouTube reports none.
-// Comments are its top comments, most relevant first.
+// Comments are its top comments, most relevant first, and CommentsCapped says
+// the video has more than MaxComments of them, so what the read did not return
+// is the rest rather than nothing.
+//
+// The cap is counted here rather than taken from yt-dlp's comment_count, which
+// its comment post-extractor overwrites with how many it downloaded. That field
+// reports the cap as the total.
 type Video struct {
 	ID              string
 	DurationSeconds int64
@@ -50,6 +56,7 @@ type Video struct {
 	UploadDate      string
 	Chapters        []tracklist.Chapter
 	Comments        []string
+	CommentsCapped  bool
 }
 
 // Reader reads videos with the yt-dlp binary at path.
@@ -99,11 +106,13 @@ func (r *Reader) Video(ctx context.Context, id string) (Video, error) {
 }
 
 // arguments is what a read of the video id passes yt-dlp. It reads no config
-// file, so the host's own yt-dlp settings cannot change what a read does, and it
-// waits a second between the requests one read makes.
+// file and loads no plugin, which are separate settings and either of which
+// would let the host change what a read does, and it waits a second between the
+// requests one read makes.
 func arguments(id string) []string {
 	return []string{
 		"--ignore-config",
+		"--no-plugin-dirs",
 		"--skip-download",
 		"--no-playlist",
 		"--sleep-requests", "1",
@@ -156,17 +165,28 @@ func Unreadable(message string) bool {
 
 // refusal is yt-dlp's failure as an error naming its last error line, wrapping
 // ErrRateLimited or ErrUnreadable when the error lines carry one of their
-// markers. Only error lines are read, since a warning about a request yt-dlp
-// retried says nothing about how the read ended.
+// markers. Only error lines are classified, since a warning about a request
+// yt-dlp retried says nothing about how the read ended. A failure yt-dlp wrote
+// no error line for is named by its last line of output instead, which is where
+// it writes a fault in the arguments it was passed.
 func refusal(stderr string, exit error) error {
 	var errorLines []string
+	last := ""
 	for line := range strings.Lines(stderr) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		last = line
 		if strings.HasPrefix(line, "ERROR:") {
-			errorLines = append(errorLines, strings.TrimSpace(line))
+			errorLines = append(errorLines, line)
 		}
 	}
 	if len(errorLines) == 0 {
-		return fmt.Errorf("yt-dlp failed with no error line: %w", exit)
+		if last == "" {
+			return fmt.Errorf("yt-dlp failed and said nothing: %w", exit)
+		}
+		return fmt.Errorf("yt-dlp failed with no error line, last saying %q: %w", last, exit)
 	}
 	message := errorLines[len(errorLines)-1]
 	said := strings.Join(errorLines, "\n")
@@ -238,5 +258,6 @@ func decode(output []byte) (Video, error) {
 	for _, comment := range read.Comments {
 		video.Comments = append(video.Comments, comment.Text)
 	}
+	video.CommentsCapped = len(video.Comments) >= MaxComments
 	return video, nil
 }

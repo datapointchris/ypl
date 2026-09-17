@@ -88,6 +88,7 @@ func (run *run) held(m merged) (bool, error) {
 		return false, nil
 	}
 	run.report.Failures = append(run.report.Failures, Failure{
+		Stage:    run.stage,
 		Playlist: youtube.PlaylistID(m.id),
 		Err:      fmt.Errorf("%w: YouTube refused the %s write %d: %s", ErrPushHeld, refused.Method, refused.WriteID, refused.Error.String),
 	})
@@ -234,7 +235,7 @@ func (run *run) write(m merged, base []merge.BaseItem, w merge.Write) ([]merge.B
 		return nil, false, sendErr
 	}
 	if answer.failed {
-		run.report.Failures = append(run.report.Failures, Failure{Playlist: youtube.PlaylistID(m.id), Err: sendErr})
+		run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Playlist: youtube.PlaylistID(m.id), Err: sendErr})
 	}
 	return next, answer.done, nil
 }

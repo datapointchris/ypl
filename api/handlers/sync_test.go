@@ -33,10 +33,12 @@ type wireSyncRun struct {
 	TracksFound       int64             `json:"tracks_found"`
 	VideosUnreadable  int64             `json:"videos_unreadable"`
 	IsRateLimited     bool              `json:"is_rate_limited"`
+	EnrichmentPaused  bool              `json:"enrichment_paused"`
 	Failures          []wireSyncFailure `json:"failures"`
 }
 
 type wireSyncFailure struct {
+	Stage      string  `json:"stage"`
 	PlaylistID *string `json:"playlist_id"`
 	VideoID    *string `json:"video_id"`
 	Error      string  `json:"error"`
@@ -70,16 +72,17 @@ func (f *fixture) withRuns(t *testing.T) {
 		failures []generated.InsertSyncFailureParams
 	}{
 		{store.OutcomeFailed, []generated.InsertSyncFailureParams{
-			{PlaylistID: sql.NullString{}, Error: "list playlists: token refused"},
+			{Stage: store.StageSync, PlaylistID: sql.NullString{}, Error: "list playlists: token refused"},
 		}},
 		{store.OutcomeOK, nil},
 		{store.OutcomePartial, []generated.InsertSyncFailureParams{
-			{PlaylistID: text("PLA"), Error: "read PLA: backend error"},
-			{PlaylistID: sql.NullString{}, Error: "list playlists: reads exceed the quota"},
-			{VideoID: text("v9"), Error: "read video v9: yt-dlp: Unable to extract initial player response"},
+			{Stage: store.StageSync, PlaylistID: text("PLA"), Error: "read PLA: backend error"},
+			{Stage: store.StageSync, PlaylistID: sql.NullString{}, Error: "list playlists: reads exceed the quota"},
+			{Stage: store.StageEnrichment, VideoID: text("v9"), Error: "read video v9: yt-dlp: Unable to extract initial player response"},
+			{Stage: store.StageEnrichment, Error: "store the enrichment of v8: disk I/O error"},
 		}},
 		{store.OutcomeFailed, []generated.InsertSyncFailureParams{
-			{PlaylistID: sql.NullString{}, Error: "list playlists: connection refused"},
+			{Stage: store.StageSync, PlaylistID: sql.NullString{}, Error: "list playlists: connection refused"},
 		}},
 	}
 	err := f.st.InTx(ctx, func(tx *store.Tx) error {
@@ -133,10 +136,17 @@ func TestSyncRunsPageNewestFirstWithTheirFailures(t *testing.T) {
 		t.Errorf("run 4's enrichment = %+v and run 3 rate limited %v, want 6 reads, 3 videos, 30 tracks, 1 unreadable, rate limited, and run 3 not", newest, first.Data[1].IsRateLimited)
 	}
 	partial := first.Data[1].Failures
-	if len(partial) != 3 || partial[0].PlaylistID == nil || *partial[0].PlaylistID != "PLA" || partial[0].VideoID != nil ||
+	if len(partial) != 4 || partial[0].PlaylistID == nil || *partial[0].PlaylistID != "PLA" || partial[0].VideoID != nil ||
 		partial[1].PlaylistID != nil || partial[1].VideoID != nil || !strings.Contains(partial[1].Error, "quota") ||
-		partial[2].PlaylistID != nil || partial[2].VideoID == nil || *partial[2].VideoID != "v9" {
-		t.Errorf("run 3's failures = %+v, want PLA's, the run's, then v9's read", partial)
+		partial[2].PlaylistID != nil || partial[2].VideoID == nil || *partial[2].VideoID != "v9" ||
+		partial[3].PlaylistID != nil || partial[3].VideoID != nil {
+		t.Errorf("run 3's failures = %+v, want PLA's, the sync's, v9's read, then the enrichment's", partial)
+	}
+	// The second and the fourth name no playlist and no video, so the stage is
+	// the only thing that says which half of the run each one failed.
+	if partial[1].Stage != store.StageSync || partial[3].Stage != store.StageEnrichment {
+		t.Errorf("the run's two failures naming nothing are staged %q and %q, want %q and %q",
+			partial[1].Stage, partial[3].Stage, store.StageSync, store.StageEnrichment)
 	}
 	if len(newest.Failures) != 1 {
 		t.Errorf("run 4's failures = %+v, want its one", newest.Failures)

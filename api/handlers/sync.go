@@ -18,9 +18,10 @@ import (
 // its enrichment read, and each playlist or video it could not sync or read. A
 // playlist deferred is one whose items were written too recently for the run's
 // read to show. A video unreadable is one YouTube will never let a signed-out
-// read return, and is_rate_limited says YouTube refused the run's reads of
-// videos for now. A failure with a null playlist_id and video_id failed the run
-// as a whole, or its enrichment.
+// read return, is_rate_limited says YouTube refused the run's own reads of
+// videos, and enrichment_paused says it made no read because a refusal within
+// the last day still holds. A failure names the stage it happened in, so one
+// with a null playlist_id and video_id says which half of the run it failed.
 type syncRun struct {
 	ID                int64         `json:"id"`
 	StartedTs         string        `json:"started_ts"`
@@ -42,10 +43,12 @@ type syncRun struct {
 	TracksFound       int64         `json:"tracks_found"`
 	VideosUnreadable  int64         `json:"videos_unreadable"`
 	IsRateLimited     bool          `json:"is_rate_limited"`
+	EnrichmentPaused  bool          `json:"enrichment_paused"`
 	Failures          []syncFailure `json:"failures"`
 }
 
 type syncFailure struct {
+	Stage      string  `json:"stage"`
 	PlaylistID *string `json:"playlist_id"`
 	VideoID    *string `json:"video_id"`
 	Error      string  `json:"error"`
@@ -193,6 +196,7 @@ func syncRunFrom(row generated.SyncRun) syncRun {
 		TracksFound:       row.TracksFound,
 		VideosUnreadable:  row.VideosUnreadable,
 		IsRateLimited:     row.IsRateLimited,
+		EnrichmentPaused:  row.EnrichmentPaused,
 		Failures:          []syncFailure{},
 	}
 }
@@ -209,7 +213,7 @@ func attachFailures(runs []syncRun, failures []generated.SyncFailure) error {
 		if !ok {
 			return fmt.Errorf("failure %d belongs to run %d, which is not among the runs read", f.SyncFailureID, f.RunID)
 		}
-		run.Failures = append(run.Failures, syncFailure{PlaylistID: nullableText(f.PlaylistID), VideoID: nullableText(f.VideoID), Error: f.Error})
+		run.Failures = append(run.Failures, syncFailure{Stage: f.Stage, PlaylistID: nullableText(f.PlaylistID), VideoID: nullableText(f.VideoID), Error: f.Error})
 	}
 	return nil
 }

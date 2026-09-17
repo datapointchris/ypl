@@ -68,6 +68,7 @@ type SyncFailure struct {
 	PlaylistID    sql.NullString
 	Error         string
 	VideoID       sql.NullString
+	Stage         string
 }
 
 type SyncOutcome struct {
@@ -97,6 +98,12 @@ type SyncRun struct {
 	TracksFound       int64
 	VideosUnreadable  int64
 	IsRateLimited     bool
+	EnrichmentPaused  bool
+}
+
+type SyncStage struct {
+	Stage       string
+	Description string
 }
 
 type Track struct {

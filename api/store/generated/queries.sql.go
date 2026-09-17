@@ -31,6 +31,21 @@ func (q *Queries) BumpRevision(ctx context.Context, arg BumpRevisionParams) (int
 	return result.RowsAffected()
 }
 
+const clearEnrichFailuresHeld = `-- name: ClearEnrichFailuresHeld :execrows
+DELETE FROM enrich_failures
+WHERE retry_ts IS NULL
+`
+
+// Puts every video enrichment has stopped reading back in its queue, counting
+// its reads from nothing again.
+func (q *Queries) ClearEnrichFailuresHeld(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearEnrichFailuresHeld)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const countEnrichFailures = `-- name: CountEnrichFailures :one
 SELECT count(*) FROM enrich_failures
 `
@@ -212,6 +227,22 @@ func (q *Queries) DeleteTracks(ctx context.Context, videoID string) error {
 	return err
 }
 
+const forgetReadsOfEnrichFailuresHeld = `-- name: ForgetReadsOfEnrichFailuresHeld :execrows
+UPDATE videos SET enriched_ts = NULL
+WHERE video_id IN (SELECT video_id FROM enrich_failures WHERE retry_ts IS NULL)
+`
+
+// Forgets that a read reached each video enrichment has stopped reading. The
+// queue passes over a video a read has reached that carries no mark, so this is
+// half of putting one back and ClearEnrichFailuresHeld is the other.
+func (q *Queries) ForgetReadsOfEnrichFailuresHeld(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, forgetReadsOfEnrichFailuresHeld)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getEnrichFailure = `-- name: GetEnrichFailure :one
 SELECT
     video_id,
@@ -257,7 +288,8 @@ SELECT
     videos_enriched,
     tracks_found,
     videos_unreadable,
-    is_rate_limited
+    is_rate_limited,
+    enrichment_paused
 FROM sync_runs
 WHERE outcome = ?
 ORDER BY run_id DESC
@@ -288,6 +320,7 @@ func (q *Queries) GetLatestSyncRunWithOutcome(ctx context.Context, outcome strin
 		&i.TracksFound,
 		&i.VideosUnreadable,
 		&i.IsRateLimited,
+		&i.EnrichmentPaused,
 	)
 	return i, err
 }
@@ -490,7 +523,8 @@ SELECT
     videos_enriched,
     tracks_found,
     videos_unreadable,
-    is_rate_limited
+    is_rate_limited,
+    enrichment_paused
 FROM sync_runs
 WHERE run_id = ?
 `
@@ -519,6 +553,7 @@ func (q *Queries) GetSyncRun(ctx context.Context, runID int64) (SyncRun, error) 
 		&i.TracksFound,
 		&i.VideosUnreadable,
 		&i.IsRateLimited,
+		&i.EnrichmentPaused,
 	)
 	return i, err
 }
@@ -731,8 +766,8 @@ func (q *Queries) InsertPlay(ctx context.Context, arg InsertPlayParams) (int64, 
 }
 
 const insertSyncFailure = `-- name: InsertSyncFailure :exec
-INSERT INTO sync_failures (run_id, playlist_id, video_id, error)
-VALUES (?, ?, ?, ?)
+INSERT INTO sync_failures (run_id, playlist_id, video_id, error, stage)
+VALUES (?, ?, ?, ?, ?)
 `
 
 type InsertSyncFailureParams struct {
@@ -740,6 +775,7 @@ type InsertSyncFailureParams struct {
 	PlaylistID sql.NullString
 	VideoID    sql.NullString
 	Error      string
+	Stage      string
 }
 
 func (q *Queries) InsertSyncFailure(ctx context.Context, arg InsertSyncFailureParams) error {
@@ -748,6 +784,7 @@ func (q *Queries) InsertSyncFailure(ctx context.Context, arg InsertSyncFailurePa
 		arg.PlaylistID,
 		arg.VideoID,
 		arg.Error,
+		arg.Stage,
 	)
 	return err
 }
@@ -756,9 +793,9 @@ const insertSyncRun = `-- name: InsertSyncRun :one
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
     playlists_deferred, items_added, items_removed, requests, units, writes, write_units,
-    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited
+    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited, enrichment_paused
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id
 `
 
@@ -782,6 +819,7 @@ type InsertSyncRunParams struct {
 	TracksFound       int64
 	VideosUnreadable  int64
 	IsRateLimited     bool
+	EnrichmentPaused  bool
 }
 
 func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (int64, error) {
@@ -805,6 +843,7 @@ func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (i
 		arg.TracksFound,
 		arg.VideosUnreadable,
 		arg.IsRateLimited,
+		arg.EnrichmentPaused,
 	)
 	var run_id int64
 	err := row.Scan(&run_id)
@@ -947,6 +986,51 @@ func (q *Queries) ListBaseItems(ctx context.Context, playlistID string) ([]ListB
 	for rows.Next() {
 		var i ListBaseItemsRow
 		if err := rows.Scan(&i.ItemID, &i.VideoID, &i.IsPlaced); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEnrichFailuresHeld = `-- name: ListEnrichFailuresHeld :many
+SELECT
+    video_id,
+    attempted_ts,
+    reason,
+    attempts,
+    retry_ts
+FROM enrich_failures
+WHERE retry_ts IS NULL
+ORDER BY attempted_ts DESC
+`
+
+// Every video enrichment has stopped reading, with why and when it last tried,
+// the most recently tried first. A retry_ts of NULL is what stops the reading,
+// and reaching it takes either YouTube answering that no signed-out read will
+// return the video or enough reads that stored no tracklist.
+func (q *Queries) ListEnrichFailuresHeld(ctx context.Context) ([]EnrichFailure, error) {
+	rows, err := q.db.QueryContext(ctx, listEnrichFailuresHeld)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []EnrichFailure
+	for rows.Next() {
+		var i EnrichFailure
+		if err := rows.Scan(
+			&i.VideoID,
+			&i.AttemptedTs,
+			&i.Reason,
+			&i.Attempts,
+			&i.RetryTs,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1148,7 +1232,8 @@ SELECT
     videos_enriched,
     tracks_found,
     videos_unreadable,
-    is_rate_limited
+    is_rate_limited,
+    enrichment_paused
 FROM sync_runs
 ORDER BY run_id DESC
 LIMIT ?1
@@ -1185,6 +1270,7 @@ func (q *Queries) ListNewestSyncRuns(ctx context.Context, maxRows int64) ([]Sync
 			&i.TracksFound,
 			&i.VideosUnreadable,
 			&i.IsRateLimited,
+			&i.EnrichmentPaused,
 		); err != nil {
 			return nil, err
 		}
@@ -1549,7 +1635,8 @@ SELECT
     run_id,
     playlist_id,
     error,
-    video_id
+    video_id,
+    stage
 FROM sync_failures
 WHERE run_id = ?
 ORDER BY sync_failure_id
@@ -1570,6 +1657,7 @@ func (q *Queries) ListSyncFailures(ctx context.Context, runID int64) ([]SyncFail
 			&i.PlaylistID,
 			&i.Error,
 			&i.VideoID,
+			&i.Stage,
 		); err != nil {
 			return nil, err
 		}
@@ -1590,7 +1678,8 @@ SELECT
     run_id,
     playlist_id,
     error,
-    video_id
+    video_id,
+    stage
 FROM sync_failures
 WHERE run_id BETWEEN ?1 AND ?2
 ORDER BY run_id, sync_failure_id
@@ -1617,6 +1706,7 @@ func (q *Queries) ListSyncFailuresBetween(ctx context.Context, arg ListSyncFailu
 			&i.PlaylistID,
 			&i.Error,
 			&i.VideoID,
+			&i.Stage,
 		); err != nil {
 			return nil, err
 		}
@@ -1652,7 +1742,8 @@ SELECT
     videos_enriched,
     tracks_found,
     videos_unreadable,
-    is_rate_limited
+    is_rate_limited,
+    enrichment_paused
 FROM sync_runs
 WHERE run_id < ?1
 ORDER BY run_id DESC
@@ -1695,6 +1786,7 @@ func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBefore
 			&i.TracksFound,
 			&i.VideosUnreadable,
 			&i.IsRateLimited,
+			&i.EnrichmentPaused,
 		); err != nil {
 			return nil, err
 		}
@@ -1895,9 +1987,12 @@ FROM videos AS v
 INNER JOIN playlist_entries AS pe ON v.video_id = pe.video_id
 LEFT JOIN enrich_failures AS f ON v.video_id = f.video_id
 WHERE
-    v.enriched_ts IS NULL
-    AND v.is_unavailable = 0
-    AND (f.video_id IS NULL OR f.retry_ts <= ?1)
+    v.is_unavailable = 0
+    AND NOT EXISTS (SELECT 1 FROM tracks AS t WHERE t.video_id = v.video_id)
+    AND (
+        (v.enriched_ts IS NULL AND f.video_id IS NULL)
+        OR f.retry_ts <= ?1
+    )
 GROUP BY v.video_id
 ORDER BY max(pe.entry_id) DESC
 LIMIT ?2
@@ -1908,9 +2003,15 @@ type ListVideosToEnrichParams struct {
 	MaxVideos int64
 }
 
-// The videos some playlist holds that play and that enrichment has not read,
-// less those a failure holds back past now, the ones a playlist gained latest
-// first. A failure whose retry_ts is NULL holds its video back for good.
+// The videos some playlist holds that play, that hold no track, and that are
+// due a read, the ones a playlist gained latest first. A video is due when no
+// read has reached it or when the mark from its last read says to read it again
+// by now. A mark whose retry_ts is NULL holds its video back until someone
+// clears it.
+//
+// The tracks are what says a video is done, rather than enriched_ts, so a video
+// whose tracklist was posted after it was is read again, and a video carrying
+// tracks from somewhere other than a read is left alone.
 func (q *Queries) ListVideosToEnrich(ctx context.Context, arg ListVideosToEnrichParams) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listVideosToEnrich, arg.Now, arg.MaxVideos)
 	if err != nil {
@@ -2263,6 +2364,22 @@ type UpsertSyncOutcomeParams struct {
 
 func (q *Queries) UpsertSyncOutcome(ctx context.Context, arg UpsertSyncOutcomeParams) error {
 	_, err := q.db.ExecContext(ctx, upsertSyncOutcome, arg.Outcome, arg.Label, arg.Description)
+	return err
+}
+
+const upsertSyncStage = `-- name: UpsertSyncStage :exec
+INSERT INTO sync_stages (stage, description)
+VALUES (?, ?)
+ON CONFLICT (stage) DO UPDATE SET description = excluded.description
+`
+
+type UpsertSyncStageParams struct {
+	Stage       string
+	Description string
+}
+
+func (q *Queries) UpsertSyncStage(ctx context.Context, arg UpsertSyncStageParams) error {
+	_, err := q.db.ExecContext(ctx, upsertSyncStage, arg.Stage, arg.Description)
 	return err
 }
 

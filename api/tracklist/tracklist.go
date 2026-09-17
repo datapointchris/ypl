@@ -13,17 +13,27 @@ import (
 	"unicode/utf8"
 )
 
+// Source is where a track's text came from, as tracks.source holds it.
+type Source string
+
 // Where a track's text came from, as tracks.source holds it.
 const (
-	SourceChapter     = "chapter"
-	SourceDescription = "description"
-	SourceComment     = "comment"
+	SourceChapter     Source = "chapter"
+	SourceDescription Source = "description"
+	SourceComment     Source = "comment"
 )
 
 // MinimumTracks is the fewest timestamped lines a description or a comment
-// holds for them to be a tracklist. A comment naming one or two times points at
-// moments of the set, "16:57 Guy Gerber - What to do", rather than listing it.
+// holds for them to be a tracklist, and the fewest chapters a video has for
+// them to be one. A comment naming one or two times points at moments of the
+// set, "16:57 Guy Gerber - What to do", rather than listing it.
 const MinimumTracks = 3
+
+// MinimumCoverage is how much of a video's length a tracklist's own tracks
+// reach: a set is listed through to near its end. A comment naming a few
+// moments of a set carries its timestamps in the same shapes and stops wherever
+// the person writing it stopped.
+const MinimumCoverage = 0.5
 
 // Chapter is one chapter of a video: where it starts and ends, in seconds, and
 // its title.
@@ -47,22 +57,26 @@ type Track struct {
 	Artist       string
 	Title        string
 	RawText      string
-	Source       string
+	Source       Source
 }
 
 // artistTitleSeparator is a hyphen, en dash, em dash or tilde with whitespace
 // on both sides. The whitespace is what keeps "Jay-Z" whole.
 var artistTitleSeparator = regexp.MustCompile(`\s+[-–—~]\s+`)
 
-// leadingTrackNumber is a track number opening a text: "1.", "01)", "3:" or
-// "#3".
-var leadingTrackNumber = regexp.MustCompile(`^\s*#?\d{1,3}\s*[.):]\s*|^\s*#\d{1,3}\s+`)
+// leadingTrackNumber is a track number opening a text: "1.", "01)" or "#3". A
+// colon does not end one, since a number before a colon is part of a title far
+// more often than it numbers a track: "1:1 Sessions".
+var leadingTrackNumber = regexp.MustCompile(`^\s*#?\d{1,3}\s*[.)]\s*|^\s*#\d{1,3}\s+`)
 
 // timestampFirst is a line opening with a timestamp, after an optional track
 // number, then whitespace or a dash, then text: "0:00 Artist - Title",
 // "[4:20] Artist - Title", "01. 00:00 - “Title”". A timestamp is m:ss or
 // h:mm:ss, bracketed or not, and its groups are the hours, minutes and seconds.
-var timestampFirst = regexp.MustCompile(`^\s*(?:#?\d{1,3}[.)]\s+)?[\[(]?(?:(\d{1,2}):)?(\d{1,3}):(\d{2})[\])]?(?:\s*[-–—|]\s*|\s+)(\S.*)$`)
+// A line naming where its track ends as well as where it starts, "00:00 - 04:35
+// Artist - Title", keeps the start and drops the end, which the next track's
+// start already says.
+var timestampFirst = regexp.MustCompile(`^\s*(?:#?\d{1,3}[.)]\s+)?[\[(]?(?:(\d{1,2}):)?(\d{1,3}):(\d{2})(?:\s*[-–—|]\s*(?:\d{1,2}:)?\d{1,3}:\d{2})?[\])]?(?:\s*[-–—|]\s*|\s+)(\S.*)$`)
 
 // timestampLast is a line closing with a timestamp after its text, set off by
 // whitespace, a dash or a bracket: "Title (00:05:48)", "Artist - Title 4:20".
@@ -96,19 +110,20 @@ func SplitArtistAndTitle(text string) (artist, title string) {
 	return artist, title
 }
 
-// unquoted is text without the quotes wrapping it, when it opens with one: a
-// straight, curly or angle quote, closed by any of them or by none.
+// unquoted is text without the quotes wrapping it, when a straight, curly or
+// angle quote opens it and any of them closes it. Text that only opens with one
+// is unchanged, since an apostrophe opening a name quotes nothing: "'Til Dawn".
 func unquoted(text string) string {
 	first, size := utf8.DecodeRuneInString(text)
 	if !strings.ContainsRune(`"“”«'‘`, first) {
 		return text
 	}
 	inner := text[size:]
-	last, size := utf8.DecodeLastRuneInString(inner)
-	if strings.ContainsRune(`"“”»'’`, last) {
-		inner = inner[:len(inner)-size]
+	last, lastSize := utf8.DecodeLastRuneInString(inner)
+	if !strings.ContainsRune(`"“”»'’`, last) {
+		return text
 	}
-	return strings.TrimSpace(inner)
+	return strings.TrimSpace(inner[:len(inner)-lastSize])
 }
 
 // FromChapters is a track for each chapter, with the chapter's start and end.
@@ -131,11 +146,13 @@ func FromChapters(chapters []Chapter) []Track {
 }
 
 // FromText is a track for each timestamped line of text, from source, each
-// ending where the next begins. It is nil unless text holds at least
-// MinimumTracks such lines and each starts later than the one before, since a
-// text whose times do not run forward is not listing a set in order. A line
-// with no text beside its timestamp is not a track.
-func FromText(text, source string) []Track {
+// ending where the next one to start later begins. It is nil unless text holds
+// at least MinimumTracks such lines and none starts earlier than the one before
+// it, since a text whose times run backwards is not listing a set in order. Two
+// tracks may start at one time, which is how a mashup or a segue is listed, and
+// neither of them ends before the other. A line with no text beside its
+// timestamp is not a track.
+func FromText(text string, source Source) []Track {
 	var tracks []Track
 	for line := range strings.Lines(text) {
 		start, rest, ok := timestamped(line)
@@ -159,10 +176,17 @@ func FromText(text, source string) []Track {
 		return nil
 	}
 	for i := 1; i < len(tracks); i++ {
-		if tracks[i].StartSeconds <= tracks[i-1].StartSeconds {
+		if tracks[i].StartSeconds < tracks[i-1].StartSeconds {
 			return nil
 		}
-		tracks[i-1].EndSeconds, tracks[i-1].HasEnd = tracks[i].StartSeconds, true
+	}
+	for i := range tracks {
+		for _, later := range tracks[i+1:] {
+			if later.StartSeconds > tracks[i].StartSeconds {
+				tracks[i].EndSeconds, tracks[i].HasEnd = later.StartSeconds, true
+				break
+			}
+		}
 	}
 	return tracks
 }
@@ -195,18 +219,51 @@ func seconds(hours, minutes, secs string) (int64, bool) {
 	return h*3600 + m*60 + s, true
 }
 
-// Best is the tracklist a video's chapters make, or failing them the one its
-// description makes, or failing that the one the first of its top comments to
-// hold a tracklist makes, and nil when none does.
-func Best(chapters []Chapter, description string, comments []string) []Track {
-	if len(chapters) > 0 {
-		return FromChapters(chapters)
+// untitledChapter is the title yt-dlp gives a chapter that has none, including
+// the one it inserts at the start of a video whose first chapter begins later.
+var untitledChapter = regexp.MustCompile(`^<Untitled Chapter \d+>$`)
+
+// titled is chapters less those yt-dlp titled itself, which name no track.
+func titled(chapters []Chapter) []Chapter {
+	kept := make([]Chapter, 0, len(chapters))
+	for _, chapter := range chapters {
+		if !untitledChapter.MatchString(strings.TrimSpace(chapter.Title)) {
+			kept = append(kept, chapter)
+		}
 	}
-	if tracks := FromText(description, SourceDescription); tracks != nil {
+	return kept
+}
+
+// spans is whether tracks reach far enough through a video durationSeconds long
+// to be its tracklist rather than a few of its moments, by MinimumCoverage. A
+// video of unknown length is judged on its tracks alone.
+func spans(tracks []Track, durationSeconds int64) bool {
+	switch {
+	case len(tracks) == 0:
+		return false
+	case durationSeconds <= 0:
+		return true
+	}
+	return float64(tracks[len(tracks)-1].StartSeconds) >= MinimumCoverage*float64(durationSeconds)
+}
+
+// Best is the tracklist a video durationSeconds long makes from its chapters,
+// or failing them from its description, or failing that from the first of its
+// top comments to hold one, and nil when none does.
+//
+// yt-dlp reports chapters it read from the video and chapters it derived from
+// the description alike, and says which it did for neither. So chapters are
+// held to the same fewest tracks as a text, and one yt-dlp titled itself is
+// dropped.
+func Best(chapters []Chapter, durationSeconds int64, description string, comments []string) []Track {
+	if named := titled(chapters); len(named) >= MinimumTracks {
+		return FromChapters(named)
+	}
+	if tracks := FromText(description, SourceDescription); spans(tracks, durationSeconds) {
 		return tracks
 	}
 	for _, comment := range comments {
-		if tracks := FromText(comment, SourceComment); tracks != nil {
+		if tracks := FromText(comment, SourceComment); spans(tracks, durationSeconds) {
 			return tracks
 		}
 	}

@@ -48,6 +48,7 @@ func (w *Worker) Run(ctx context.Context) {
 				"tracks_found", report.TracksFound,
 				"videos_unreadable", report.VideosUnreadable,
 				"rate_limited", report.RateLimited,
+				"enrichment_paused", report.EnrichmentPaused,
 				"failures", len(report.Failures),
 			)
 		}
