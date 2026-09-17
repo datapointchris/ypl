@@ -78,13 +78,19 @@ func start(ctx context.Context) error {
 	defer func() { _ = st.Close() }()
 	slog.Info("database ready", "path", path)
 
-	channel, err := youtube.NewChannel(ctx, creds)
+	// The sync and the API each get a channel, because a run counts its own
+	// requests and units from its channel's totals.
+	syncChannel, err := youtube.NewChannel(ctx, creds)
 	if err != nil {
 		return err
 	}
-	worker := reconcile.NewWorker(reconcile.NewRunner(st, channel, interval), interval, slog.Default())
+	apiChannel, err := youtube.NewChannel(ctx, creds)
+	if err != nil {
+		return err
+	}
+	worker := reconcile.NewWorker(reconcile.NewRunner(st, syncChannel, interval), interval, slog.Default())
 	provider := auth.NewConnecting(issuer, clientIDPrefix)
-	api := handler(handlers.New(st, slog.Default()), provider)
+	api := handler(handlers.New(st, apiChannel, slog.Default()), provider)
 	work := func(ctx context.Context) {
 		var wg sync.WaitGroup
 		wg.Go(func() { worker.Run(ctx) })

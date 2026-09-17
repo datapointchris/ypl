@@ -44,7 +44,10 @@ provider beside the sync, retrying while it is down, and `/ready` answers 200 on
 | Request | Answers with |
 | --- | --- |
 | `GET /api/v1/playlists` | Every playlist, with how many items it holds and how many of their videos are unavailable or enriched |
+| `POST /api/v1/playlists` | The private playlist it creates on YouTube, from `{"title", "description"}` |
 | `GET /api/v1/playlists/{id}` | One playlist and its items in order |
+| `PATCH /api/v1/playlists/{id}` | The playlist with the `title` or `description` it sets on YouTube |
+| `DELETE /api/v1/playlists/{id}` | Nothing, once it has deleted the playlist on YouTube and from the store |
 | `GET /api/v1/videos` | Every available video some playlist holds, with its artists and playlists |
 | `GET /api/v1/videos/{id}` | One video with its description and tracklist |
 | `POST /api/v1/plays` | The play it records, from `{"id", "video_id", "played_ts"}` |
@@ -65,6 +68,11 @@ same play again records it once. The server gives each play a `handle`, a short 
 characters. `played_ts` is an RFC 3339 timestamp, stored in UTC to the second, and the time the
 request arrives when it is absent. A time more than five minutes after the request arrives is
 refused.
+
+Creating, renaming and deleting a playlist write to YouTube in the request, and the store changes
+only once YouTube has answered. A write YouTube did not confirm answers 502 and may still have
+landed, and the next sync stores what YouTube holds. A write refused because the day's quota is
+spent answers 503 with a `Retry-After` of the seconds until midnight Pacific.
 
 A paged list answers `{"data": [...], "has_more": true}`. The next page is the same request with
 `starting_after` set to the last id on this one. `limit` sets the page size, 20 when absent and at

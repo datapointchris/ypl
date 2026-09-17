@@ -1,6 +1,7 @@
 // Package handlers serves the API's resources as JSON over the store: the
 // playlists and videos the sync stores, plays, suggestions of what to play
-// next, and the sync's own runs.
+// next, and the sync's own runs. Creating, renaming and deleting a playlist
+// write to YouTube in the request.
 //
 // A value the store does not hold is null, and a collection with no members is
 // []. A collection that grows without bound is paged: its body is {"data": [...],
@@ -11,8 +12,10 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -27,17 +30,19 @@ import (
 	"github.com/datapointchris/ypl/api/wire"
 )
 
-// Handlers answers the API's requests from one store.
+// Handlers answers the API's requests from one store, making the playlist
+// writes a request asks for on YouTube.
 type Handlers struct {
-	store *store.Store
-	log   *slog.Logger
-	now   func() time.Time
+	store   *store.Store
+	youtube PlaylistWriter
+	log     *slog.Logger
+	now     func() time.Time
 }
 
-// New is Handlers over st, logging the cause of every failure it answers with a
-// 500 to log.
-func New(st *store.Store, log *slog.Logger) *Handlers {
-	return &Handlers{store: st, log: log, now: time.Now}
+// New is Handlers over st, writing playlists through youtube and logging the
+// cause of every failure it answers with a 5xx to log.
+func New(st *store.Store, youtube PlaylistWriter, log *slog.Logger) *Handlers {
+	return &Handlers{store: st, youtube: youtube, log: log, now: time.Now}
 }
 
 // route is one method on one path and the handler answering it.
@@ -50,7 +55,10 @@ type route struct {
 func (h *Handlers) routes() []route {
 	return []route{
 		{http.MethodGet, "/api/v1/playlists", h.listPlaylists},
+		{http.MethodPost, "/api/v1/playlists", h.createPlaylist},
 		{http.MethodGet, "/api/v1/playlists/{id}", h.showPlaylist},
+		{http.MethodPatch, "/api/v1/playlists/{id}", h.updatePlaylist},
+		{http.MethodDelete, "/api/v1/playlists/{id}", h.deletePlaylist},
 		{http.MethodGet, "/api/v1/videos", h.listVideos},
 		{http.MethodGet, "/api/v1/videos/{id}", h.showVideo},
 		{http.MethodPost, "/api/v1/plays", h.createPlay},
@@ -105,6 +113,24 @@ func pageOf[T any](rows []T, limit int64) page[T] {
 		return page[T]{Data: rows[:limit], HasMore: true}
 	}
 	return page[T]{Data: rows, HasMore: false}
+}
+
+// decodeJSON reads the request body, of at most maxBytes, as exactly one JSON
+// value of T with no field T does not name. what names T in a refusal. ok is
+// false once it has answered a 400.
+func decodeJSON[T any](w http.ResponseWriter, r *http.Request, maxBytes int64, what string) (T, bool) {
+	var body T
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidBody, "the body is not %s: %v", what, err)
+		return body, false
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidBody, "the body holds more than one JSON value")
+		return body, false
+	}
+	return body, true
 }
 
 // newCollator orders names the way a reader expects them sorted: by the Unicode

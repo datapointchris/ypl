@@ -3,10 +3,8 @@ package handlers
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"slices"
 	"strconv"
@@ -77,7 +75,7 @@ var errVideoNotStored = errors.New("video not stored")
 func (h *Handlers) createPlay(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	arrival := h.now()
-	body, ok := decodePlay(w, r)
+	body, ok := decodeJSON[newPlay](w, r, maxPlayBody, "a play")
 	if !ok {
 		return
 	}
@@ -143,23 +141,6 @@ func (h *Handlers) createPlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wire.JSON(w, http.StatusOK, playFrom(stored))
-}
-
-// decodePlay reads the request body as exactly one play. ok is false once it has
-// answered a 400.
-func decodePlay(w http.ResponseWriter, r *http.Request) (newPlay, bool) {
-	var body newPlay
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPlayBody))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil {
-		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidBody, "the body is not a play: %v", err)
-		return newPlay{}, false
-	}
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidBody, "the body holds more than one JSON value")
-		return newPlay{}, false
-	}
-	return body, true
 }
 
 func (h *Handlers) showPlay(w http.ResponseWriter, r *http.Request) {

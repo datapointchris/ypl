@@ -38,6 +38,8 @@ const (
 	CodePlayConflict Code = "play_conflict"
 
 	// 422
+	CodeTitleRequired       Code = "title_required"
+	CodeNoChanges           Code = "no_changes"
 	CodeInvalidPlayID       Code = "invalid_play_id"
 	CodeVideoIDRequired     Code = "video_id_required"
 	CodeVideoNotStored      Code = "video_not_stored"
@@ -48,8 +50,12 @@ const (
 	// 500
 	CodeInternal Code = "internal"
 
+	// 502
+	CodeYouTubeWriteFailed Code = "youtube_write_failed"
+
 	// 503
 	CodeIdentityProviderUnavailable Code = "identity_provider_unavailable"
+	CodeYouTubeQuotaSpent           Code = "youtube_quota_spent"
 )
 
 // Refusal is the body of every answer that refuses a request.

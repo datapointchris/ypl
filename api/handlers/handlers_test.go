@@ -26,13 +26,14 @@ import (
 // a whole second, so a stamp taken from it shows both being normalized.
 var arrival = time.Date(2026, 9, 17, 14, 0, 0, 500_000_000, time.FixedZone("CEST", 2*60*60))
 
-// fixture is the handlers over a store of their own. A request arrives at now,
-// which starts at arrival.
+// fixture is the handlers over a store of their own, writing playlists to a
+// fake YouTube. A request arrives at now, which starts at arrival.
 type fixture struct {
-	st   *store.Store
-	mux  *http.ServeMux
-	logs *bytes.Buffer
-	now  time.Time
+	st      *store.Store
+	mux     *http.ServeMux
+	logs    *bytes.Buffer
+	now     time.Time
+	youtube *fakeYouTube
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -42,8 +43,8 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	f := &fixture{st: st, mux: http.NewServeMux(), logs: &bytes.Buffer{}, now: arrival}
-	h := New(st, slog.New(slog.NewTextHandler(f.logs, nil)))
+	f := &fixture{st: st, mux: http.NewServeMux(), logs: &bytes.Buffer{}, now: arrival, youtube: &fakeYouTube{}}
+	h := New(st, f.youtube, slog.New(slog.NewTextHandler(f.logs, nil)))
 	h.now = func() time.Time { return f.now }
 	h.Register(f.mux)
 	return f
@@ -214,9 +215,9 @@ func TestARequestNoRouteAnswersIsRefusedInTheEnvelope(t *testing.T) {
 		"/api/v1/plays":       "GET, HEAD, POST",
 		"/api/v1/videos/a":    "GET, HEAD",
 		"/api/v1/sync/runs":   "GET, HEAD",
-		"/api/v1/playlists/x": "GET, HEAD",
+		"/api/v1/playlists/x": "DELETE, GET, HEAD, PATCH",
 	} {
-		rec := f.do(http.MethodDelete, target, "")
+		rec := f.do(http.MethodPut, target, "")
 		refused(t, rec, http.StatusMethodNotAllowed, wire.CodeMethodNotAllowed)
 		if got := rec.Header().Get("Allow"); got != allow {
 			t.Errorf("DELETE %s Allow = %q, want %q", target, got, allow)
@@ -237,7 +238,7 @@ func readme(t *testing.T) string {
 // The README's endpoint table has a row for every route and no other.
 func TestTheREADMEListsEveryRoute(t *testing.T) {
 	var want []string
-	for _, rt := range New(nil, nil).routes() {
+	for _, rt := range New(nil, nil, nil).routes() {
 		want = append(want, rt.method+" "+rt.path)
 	}
 	row := regexp.MustCompile("(?m)^\\| `([A-Z]+ /api/v1/[^`]*)` \\|")

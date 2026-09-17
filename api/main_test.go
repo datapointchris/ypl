@@ -250,7 +250,7 @@ func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer func() { _ = st.Close() }()
-	h := handler(handlers.New(st, slog.Default()), acceptOnly("good"))
+	h := handler(handlers.New(st, nil, slog.Default()), acceptOnly("good"))
 
 	cases := []struct {
 		path, token string

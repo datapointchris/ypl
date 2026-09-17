@@ -107,6 +107,14 @@ ON CONFLICT (playlist_id) DO UPDATE SET
     description = excluded.description,
     privacy = excluded.privacy;
 
+-- name: UpdatePlaylistDetails :execrows
+-- Sets a stored playlist's title and description, and changes nothing when no
+-- playlist has the id.
+UPDATE playlists SET
+    title = sqlc.arg(title),
+    description = sqlc.arg(description)
+WHERE playlist_id = sqlc.arg(playlist_id);
+
 -- name: UpsertPlaylistPrivacy :exec
 INSERT INTO playlist_privacies (privacy, label, description)
 VALUES (?, ?, ?)
@@ -213,6 +221,22 @@ SELECT
 FROM playlists AS p
 LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
 LEFT JOIN videos AS v ON pi.video_id = v.video_id
+GROUP BY p.playlist_id;
+
+-- name: GetPlaylistSummary :one
+-- One playlist with the counts ListPlaylistSummaries gives each.
+SELECT
+    p.playlist_id,
+    p.title,
+    p.description,
+    p.privacy,
+    CAST(count(pi.item_id) AS INTEGER) AS item_count,
+    CAST(coalesce(sum(v.is_unavailable), 0) AS INTEGER) AS unavailable_count,
+    CAST(count(v.enriched_ts) AS INTEGER) AS enriched_count
+FROM playlists AS p
+LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
+LEFT JOIN videos AS v ON pi.video_id = v.video_id
+WHERE p.playlist_id = ?
 GROUP BY p.playlist_id;
 
 -- name: ListPlaylistEntries :many

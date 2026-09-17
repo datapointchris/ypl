@@ -287,6 +287,48 @@ func (q *Queries) GetPlaylist(ctx context.Context, playlistID string) (Playlist,
 	return i, err
 }
 
+const getPlaylistSummary = `-- name: GetPlaylistSummary :one
+SELECT
+    p.playlist_id,
+    p.title,
+    p.description,
+    p.privacy,
+    CAST(count(pi.item_id) AS INTEGER) AS item_count,
+    CAST(coalesce(sum(v.is_unavailable), 0) AS INTEGER) AS unavailable_count,
+    CAST(count(v.enriched_ts) AS INTEGER) AS enriched_count
+FROM playlists AS p
+LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
+LEFT JOIN videos AS v ON pi.video_id = v.video_id
+WHERE p.playlist_id = ?
+GROUP BY p.playlist_id
+`
+
+type GetPlaylistSummaryRow struct {
+	PlaylistID       string
+	Title            string
+	Description      string
+	Privacy          string
+	ItemCount        int64
+	UnavailableCount int64
+	EnrichedCount    int64
+}
+
+// One playlist with the counts ListPlaylistSummaries gives each.
+func (q *Queries) GetPlaylistSummary(ctx context.Context, playlistID string) (GetPlaylistSummaryRow, error) {
+	row := q.db.QueryRowContext(ctx, getPlaylistSummary, playlistID)
+	var i GetPlaylistSummaryRow
+	err := row.Scan(
+		&i.PlaylistID,
+		&i.Title,
+		&i.Description,
+		&i.Privacy,
+		&i.ItemCount,
+		&i.UnavailableCount,
+		&i.EnrichedCount,
+	)
+	return i, err
+}
+
 const getSyncRun = `-- name: GetSyncRun :one
 SELECT
     run_id,
@@ -1371,6 +1413,29 @@ func (q *Queries) ListVideoPlaylists(ctx context.Context, videoID sql.NullString
 		return nil, err
 	}
 	return items, nil
+}
+
+const updatePlaylistDetails = `-- name: UpdatePlaylistDetails :execrows
+UPDATE playlists SET
+    title = ?1,
+    description = ?2
+WHERE playlist_id = ?3
+`
+
+type UpdatePlaylistDetailsParams struct {
+	Title       string
+	Description string
+	PlaylistID  string
+}
+
+// Sets a stored playlist's title and description, and changes nothing when no
+// playlist has the id.
+func (q *Queries) UpdatePlaylistDetails(ctx context.Context, arg UpdatePlaylistDetailsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updatePlaylistDetails, arg.Title, arg.Description, arg.PlaylistID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const upsertAvailableVideo = `-- name: UpsertAvailableVideo :exec
