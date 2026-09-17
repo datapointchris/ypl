@@ -3,7 +3,9 @@ package youtube
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 
 	ytapi "google.golang.org/api/youtube/v3"
 )
@@ -90,6 +92,80 @@ func (c *Channel) Playlist(ctx context.Context, id PlaylistID) (Playlist, error)
 		return Playlist{}, fmt.Errorf("%w: a read of playlist %s returned %d playlists, the first %s", ErrUnexpectedResponse, id, len(response.Items), response.Items[0].Id)
 	}
 	return playlistFrom(response.Items[0])
+}
+
+// Video is a video as a read of it by id reports it.
+type Video struct {
+	ID           VideoID
+	Title        string
+	ChannelTitle string
+	Privacy      string
+}
+
+// Videos is each of ids that YouTube returns a video for, read 50 ids a
+// request. YouTube leaves out an id no video has, a deleted video, and a
+// private video another channel owns, and refuses none of them.
+func (c *Channel) Videos(ctx context.Context, ids []VideoID) ([]Video, error) {
+	var videos []Video
+	for chunk := range slices.Chunk(ids, pageSize) {
+		names := make([]string, len(chunk))
+		for i, id := range chunk {
+			names[i] = string(id)
+		}
+		call := c.service.Videos.List([]string{"snippet", "status"}).Id(strings.Join(names, ","))
+		response, err := send(ctx, c, videosList, call.Context(ctx).Do)
+		if err != nil {
+			return nil, fmt.Errorf("read videos by id: %w", err)
+		}
+		for _, resource := range response.Items {
+			if resource.Snippet == nil || resource.Status == nil {
+				return nil, fmt.Errorf("%w: video %s lacks its snippet or status", ErrUnexpectedResponse, resource.Id)
+			}
+			switch resource.Status.PrivacyStatus {
+			case "public", "unlisted", "private":
+			default:
+				return nil, fmt.Errorf("%w: video %s has privacy status %q", ErrUnexpectedResponse, resource.Id, resource.Status.PrivacyStatus)
+			}
+			if !slices.Contains(chunk, VideoID(resource.Id)) {
+				return nil, fmt.Errorf("%w: a read of videos by id returned %s, which it did not name", ErrUnexpectedResponse, resource.Id)
+			}
+			videos = append(videos, Video{
+				ID:           VideoID(resource.Id),
+				Title:        resource.Snippet.Title,
+				ChannelTitle: resource.Snippet.ChannelTitle,
+				Privacy:      resource.Status.PrivacyStatus,
+			})
+		}
+	}
+	return videos, nil
+}
+
+// ExistingItems is each of ids that YouTube still has a playlist item for, read
+// 50 ids a request, which is how an item absent from Items is confirmed gone.
+// YouTube leaves out an id it has no item for.
+func (c *Channel) ExistingItems(ctx context.Context, ids []ItemID) ([]ItemID, error) {
+	var found []ItemID
+	for chunk := range slices.Chunk(ids, pageSize) {
+		names := make([]string, len(chunk))
+		for i, id := range chunk {
+			names[i] = string(id)
+		}
+		call := c.service.PlaylistItems.List([]string{"id"}).Id(strings.Join(names, ",")).MaxResults(pageSize)
+		response, err := send(ctx, c, playlistItemsList, call.Context(ctx).Do)
+		if err != nil {
+			return nil, fmt.Errorf("read playlist items by id: %w", err)
+		}
+		if response.NextPageToken != "" {
+			return nil, fmt.Errorf("%w: a read of playlist items by id has a next page", ErrUnexpectedResponse)
+		}
+		for _, resource := range response.Items {
+			if !slices.Contains(chunk, ItemID(resource.Id)) {
+				return nil, fmt.Errorf("%w: a read of playlist items by id returned %s, which it did not name", ErrUnexpectedResponse, resource.Id)
+			}
+			found = append(found, ItemID(resource.Id))
+		}
+	}
+	return found, nil
 }
 
 // Items is every item in the playlist playlistID, ordered by position. Beyond

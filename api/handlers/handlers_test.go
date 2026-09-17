@@ -121,7 +121,7 @@ func (f *fixture) withLibrary(t *testing.T) {
 		{PlaylistID: "PLB", Title: "zulu", Description: "", Privacy: "public"},
 		{PlaylistID: "PLC", Title: "Écoute", Description: "", Privacy: "unlisted"},
 	}
-	items := map[string][]store.PlaylistItem{
+	items := map[string][]store.BaseItem{
 		"PLA": {{ItemID: "ia", VideoID: "a"}, {ItemID: "ib", VideoID: "b"}, {ItemID: "iu", VideoID: "u"}},
 		"PLB": {{ItemID: "jb", VideoID: "b"}, {ItemID: "jc", VideoID: "c"}, {ItemID: "je", VideoID: "e"}},
 	}
@@ -142,7 +142,14 @@ func (f *fixture) withLibrary(t *testing.T) {
 			f.youtube.playlists[youtube.PlaylistID(p.PlaylistID)] = youtube.Playlist{
 				ID: youtube.PlaylistID(p.PlaylistID), Title: p.Title, Description: p.Description, Privacy: p.Privacy,
 			}
-			if err := tx.ReplacePlaylistItems(ctx, p.PlaylistID, items[p.PlaylistID]); err != nil {
+			if err := tx.ReplaceBase(ctx, p.PlaylistID, items[p.PlaylistID]); err != nil {
+				return err
+			}
+			var entries []store.Entry
+			for _, item := range items[p.PlaylistID] {
+				entries = append(entries, store.Entry{VideoID: item.VideoID, ItemID: item.ItemID})
+			}
+			if _, err := tx.ReplaceOrder(ctx, p.PlaylistID, 1, entries); err != nil {
 				return err
 			}
 		}

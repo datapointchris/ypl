@@ -25,6 +25,7 @@ import (
 
 	"github.com/datapointchris/ypl/api/auth"
 	"github.com/datapointchris/ypl/api/handlers"
+	"github.com/datapointchris/ypl/api/reconcile"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/wire"
 )
@@ -245,8 +246,8 @@ func TestServeDrainsTheAPIBeforeWaitingOnRequestsInFlight(t *testing.T) {
 }
 
 func TestTheShutdownGraceOutlastsAPlaylistWrite(t *testing.T) {
-	if shutdownGrace <= handlers.WriteDuration {
-		t.Fatalf("shutdownGrace %v, want longer than a playlist write's %v", shutdownGrace, handlers.WriteDuration)
+	if shutdownGrace <= handlers.WriteDuration || shutdownGrace <= reconcile.WriteDuration {
+		t.Fatalf("shutdownGrace %v, want longer than a playlist write's %v and a push write's %v", shutdownGrace, handlers.WriteDuration, reconcile.WriteDuration)
 	}
 	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
 	if err != nil {

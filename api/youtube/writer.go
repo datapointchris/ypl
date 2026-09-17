@@ -29,6 +29,10 @@ const (
 	MaxDescriptionLength = 5000
 )
 
+// MaxPlaylistItems is the most videos YouTube's documentation lets a playlist
+// hold.
+const MaxPlaylistItems = 5000
+
 // CreatePlaylist creates a private playlist with details, and returns it as
 // YouTube's answer reports it.
 //

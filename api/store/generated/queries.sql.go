@@ -8,7 +8,28 @@ package generated
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
+
+const bumpRevision = `-- name: BumpRevision :execrows
+UPDATE playlists SET revision = revision + 1
+WHERE playlist_id = ?1 AND revision = ?2
+`
+
+type BumpRevisionParams struct {
+	PlaylistID string
+	Revision   int64
+}
+
+// Counts a change to the server's order of a playlist, and changes nothing
+// unless the playlist is at revision.
+func (q *Queries) BumpRevision(ctx context.Context, arg BumpRevisionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, bumpRevision, arg.PlaylistID, arg.Revision)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
 
 const countEnrichFailures = `-- name: CountEnrichFailures :one
 SELECT count(*) FROM enrich_failures
@@ -21,24 +42,46 @@ func (q *Queries) CountEnrichFailures(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countItemWritesAfter = `-- name: CountItemWritesAfter :one
+SELECT count(*) FROM youtube_writes
+WHERE
+    playlist_id = ?1
+    AND method IN ('playlistItems.insert', 'playlistItems.update', 'playlistItems.delete')
+    AND coalesce(settled_ts, sent_ts) > ?2
+`
+
+type CountItemWritesAfterParams struct {
+	PlaylistID sql.NullString
+	After      sql.NullString
+}
+
+// How many writes to the items of a playlist settled after after, or were sent
+// after it and have not settled.
+func (q *Queries) CountItemWritesAfter(ctx context.Context, arg CountItemWritesAfterParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countItemWritesAfter, arg.PlaylistID, arg.After)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countLibrary = `-- name: CountLibrary :one
 SELECT
     CAST((SELECT count(*) FROM playlists) AS INTEGER) AS playlists,
     CAST((
         SELECT count(*) FROM videos AS v
-        WHERE EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+        WHERE EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
     ) AS INTEGER) AS videos,
     CAST((
         SELECT count(*) FROM videos AS v
         WHERE
             v.is_unavailable = 1
-            AND EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+            AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
     ) AS INTEGER) AS unavailable_videos,
     CAST((
         SELECT count(*) FROM videos AS v
         WHERE
             v.enriched_ts IS NOT NULL
-            AND EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+            AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
     ) AS INTEGER) AS enriched_videos,
     CAST((SELECT count(*) FROM tracks) AS INTEGER) AS tracks,
     CAST((SELECT count(*) FROM plays) AS INTEGER) AS plays
@@ -105,6 +148,26 @@ func (q *Queries) CountVideos(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const deleteBaseItems = `-- name: DeleteBaseItems :exec
+DELETE FROM base_items
+WHERE playlist_id = ?
+`
+
+func (q *Queries) DeleteBaseItems(ctx context.Context, playlistID string) error {
+	_, err := q.db.ExecContext(ctx, deleteBaseItems, playlistID)
+	return err
+}
+
+const deleteEntries = `-- name: DeleteEntries :exec
+DELETE FROM playlist_entries
+WHERE playlist_id = ?
+`
+
+func (q *Queries) DeleteEntries(ctx context.Context, playlistID string) error {
+	_, err := q.db.ExecContext(ctx, deleteEntries, playlistID)
+	return err
+}
+
 const deletePlaylist = `-- name: DeletePlaylist :exec
 DELETE FROM playlists
 WHERE playlist_id = ?
@@ -112,16 +175,6 @@ WHERE playlist_id = ?
 
 func (q *Queries) DeletePlaylist(ctx context.Context, playlistID string) error {
 	_, err := q.db.ExecContext(ctx, deletePlaylist, playlistID)
-	return err
-}
-
-const deletePlaylistItems = `-- name: DeletePlaylistItems :exec
-DELETE FROM playlist_items
-WHERE playlist_id = ?
-`
-
-func (q *Queries) DeletePlaylistItems(ctx context.Context, playlistID string) error {
-	_, err := q.db.ExecContext(ctx, deletePlaylistItems, playlistID)
 	return err
 }
 
@@ -164,7 +217,10 @@ SELECT
     items_added,
     items_removed,
     requests,
-    units
+    units,
+    playlists_deferred,
+    writes,
+    write_units
 FROM sync_runs
 WHERE outcome = ?
 ORDER BY run_id DESC
@@ -187,6 +243,9 @@ func (q *Queries) GetLatestSyncRunWithOutcome(ctx context.Context, outcome strin
 		&i.ItemsRemoved,
 		&i.Requests,
 		&i.Units,
+		&i.PlaylistsDeferred,
+		&i.Writes,
+		&i.WriteUnits,
 	)
 	return i, err
 }
@@ -270,7 +329,11 @@ SELECT
     playlist_id,
     title,
     description,
-    privacy
+    privacy,
+    revision,
+    sort,
+    unanswered_write_id,
+    refused_write_id
 FROM playlists
 WHERE playlist_id = ?
 `
@@ -283,6 +346,41 @@ func (q *Queries) GetPlaylist(ctx context.Context, playlistID string) (Playlist,
 		&i.Title,
 		&i.Description,
 		&i.Privacy,
+		&i.Revision,
+		&i.Sort,
+		&i.UnansweredWriteID,
+		&i.RefusedWriteID,
+	)
+	return i, err
+}
+
+const getPlaylistState = `-- name: GetPlaylistState :one
+SELECT
+    revision,
+    sort,
+    unanswered_write_id,
+    refused_write_id
+FROM playlists
+WHERE playlist_id = ?
+`
+
+type GetPlaylistStateRow struct {
+	Revision          int64
+	Sort              string
+	UnansweredWriteID sql.NullInt64
+	RefusedWriteID    sql.NullInt64
+}
+
+// The revision of the server's order of a playlist, how YouTube orders it, the
+// push write whose answer was lost, and the push write YouTube refused.
+func (q *Queries) GetPlaylistState(ctx context.Context, playlistID string) (GetPlaylistStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getPlaylistState, playlistID)
+	var i GetPlaylistStateRow
+	err := row.Scan(
+		&i.Revision,
+		&i.Sort,
+		&i.UnansweredWriteID,
+		&i.RefusedWriteID,
 	)
 	return i, err
 }
@@ -293,12 +391,12 @@ SELECT
     p.title,
     p.description,
     p.privacy,
-    CAST(count(pi.item_id) AS INTEGER) AS item_count,
+    CAST(count(pe.entry_id) AS INTEGER) AS item_count,
     CAST(coalesce(sum(v.is_unavailable), 0) AS INTEGER) AS unavailable_count,
     CAST(count(v.enriched_ts) AS INTEGER) AS enriched_count
 FROM playlists AS p
-LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
-LEFT JOIN videos AS v ON pi.video_id = v.video_id
+LEFT JOIN playlist_entries AS pe ON p.playlist_id = pe.playlist_id
+LEFT JOIN videos AS v ON pe.video_id = v.video_id
 WHERE p.playlist_id = ?
 GROUP BY p.playlist_id
 `
@@ -342,7 +440,10 @@ SELECT
     items_added,
     items_removed,
     requests,
-    units
+    units,
+    playlists_deferred,
+    writes,
+    write_units
 FROM sync_runs
 WHERE run_id = ?
 `
@@ -363,6 +464,9 @@ func (q *Queries) GetSyncRun(ctx context.Context, runID int64) (SyncRun, error) 
 		&i.ItemsRemoved,
 		&i.Requests,
 		&i.Units,
+		&i.PlaylistsDeferred,
+		&i.Writes,
+		&i.WriteUnits,
 	)
 	return i, err
 }
@@ -402,6 +506,10 @@ SELECT
     write_id,
     method,
     playlist_id,
+    item_id,
+    video_id,
+    entry_id,
+    position,
     sent_ts,
     quota_date,
     outcome,
@@ -413,13 +521,34 @@ FROM youtube_writes
 WHERE write_id = ?
 `
 
-func (q *Queries) GetYouTubeWrite(ctx context.Context, writeID int64) (YoutubeWrite, error) {
+type GetYouTubeWriteRow struct {
+	WriteID    int64
+	Method     string
+	PlaylistID sql.NullString
+	ItemID     sql.NullString
+	VideoID    sql.NullString
+	EntryID    sql.NullInt64
+	Position   sql.NullInt64
+	SentTs     string
+	QuotaDate  string
+	Outcome    string
+	SettledTs  sql.NullString
+	Requests   sql.NullInt64
+	Units      sql.NullInt64
+	Error      sql.NullString
+}
+
+func (q *Queries) GetYouTubeWrite(ctx context.Context, writeID int64) (GetYouTubeWriteRow, error) {
 	row := q.db.QueryRowContext(ctx, getYouTubeWrite, writeID)
-	var i YoutubeWrite
+	var i GetYouTubeWriteRow
 	err := row.Scan(
 		&i.WriteID,
 		&i.Method,
 		&i.PlaylistID,
+		&i.ItemID,
+		&i.VideoID,
+		&i.EntryID,
+		&i.Position,
 		&i.SentTs,
 		&i.QuotaDate,
 		&i.Outcome,
@@ -473,6 +602,55 @@ func (q *Queries) ImportVideo(ctx context.Context, arg ImportVideoParams) error 
 	return err
 }
 
+const insertBaseItem = `-- name: InsertBaseItem :exec
+INSERT INTO base_items (item_id, playlist_id, position, video_id, is_placed)
+VALUES (?, ?, ?, ?, ?)
+`
+
+type InsertBaseItemParams struct {
+	ItemID     string
+	PlaylistID string
+	Position   int64
+	VideoID    string
+	IsPlaced   bool
+}
+
+func (q *Queries) InsertBaseItem(ctx context.Context, arg InsertBaseItemParams) error {
+	_, err := q.db.ExecContext(ctx, insertBaseItem,
+		arg.ItemID,
+		arg.PlaylistID,
+		arg.Position,
+		arg.VideoID,
+		arg.IsPlaced,
+	)
+	return err
+}
+
+const insertEntry = `-- name: InsertEntry :exec
+INSERT INTO playlist_entries (entry_id, playlist_id, position, video_id, item_id)
+VALUES (?1, ?2, ?3, ?4, ?5)
+`
+
+type InsertEntryParams struct {
+	EntryID    sql.NullInt64
+	PlaylistID string
+	Position   int64
+	VideoID    string
+	ItemID     sql.NullString
+}
+
+// Inserts an entry under entry_id, or under a new id when entry_id is NULL.
+func (q *Queries) InsertEntry(ctx context.Context, arg InsertEntryParams) error {
+	_, err := q.db.ExecContext(ctx, insertEntry,
+		arg.EntryID,
+		arg.PlaylistID,
+		arg.Position,
+		arg.VideoID,
+		arg.ItemID,
+	)
+	return err
+}
+
 const insertPlay = `-- name: InsertPlay :execrows
 INSERT INTO plays (play_id, handle, video_id, played_ts)
 VALUES (
@@ -500,28 +678,6 @@ func (q *Queries) InsertPlay(ctx context.Context, arg InsertPlayParams) (int64, 
 	return result.RowsAffected()
 }
 
-const insertPlaylistItem = `-- name: InsertPlaylistItem :exec
-INSERT INTO playlist_items (item_id, playlist_id, position, video_id)
-VALUES (?, ?, ?, ?)
-`
-
-type InsertPlaylistItemParams struct {
-	ItemID     string
-	PlaylistID string
-	Position   int64
-	VideoID    string
-}
-
-func (q *Queries) InsertPlaylistItem(ctx context.Context, arg InsertPlaylistItemParams) error {
-	_, err := q.db.ExecContext(ctx, insertPlaylistItem,
-		arg.ItemID,
-		arg.PlaylistID,
-		arg.Position,
-		arg.VideoID,
-	)
-	return err
-}
-
 const insertSyncFailure = `-- name: InsertSyncFailure :exec
 INSERT INTO sync_failures (run_id, playlist_id, error)
 VALUES (?, ?, ?)
@@ -541,24 +697,27 @@ func (q *Queries) InsertSyncFailure(ctx context.Context, arg InsertSyncFailurePa
 const insertSyncRun = `-- name: InsertSyncRun :one
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
-    items_added, items_removed, requests, units
+    playlists_deferred, items_added, items_removed, requests, units, writes, write_units
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id
 `
 
 type InsertSyncRunParams struct {
-	StartedTs        string
-	FinishedTs       string
-	QuotaDate        string
-	Outcome          string
-	Playlists        int64
-	PlaylistsDeleted int64
-	PlaylistsSkipped int64
-	ItemsAdded       int64
-	ItemsRemoved     int64
-	Requests         int64
-	Units            int64
+	StartedTs         string
+	FinishedTs        string
+	QuotaDate         string
+	Outcome           string
+	Playlists         int64
+	PlaylistsDeleted  int64
+	PlaylistsSkipped  int64
+	PlaylistsDeferred int64
+	ItemsAdded        int64
+	ItemsRemoved      int64
+	Requests          int64
+	Units             int64
+	Writes            int64
+	WriteUnits        int64
 }
 
 func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (int64, error) {
@@ -570,10 +729,13 @@ func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (i
 		arg.Playlists,
 		arg.PlaylistsDeleted,
 		arg.PlaylistsSkipped,
+		arg.PlaylistsDeferred,
 		arg.ItemsAdded,
 		arg.ItemsRemoved,
 		arg.Requests,
 		arg.Units,
+		arg.Writes,
+		arg.WriteUnits,
 	)
 	var run_id int64
 	err := row.Scan(&run_id)
@@ -611,14 +773,28 @@ func (q *Queries) InsertTrack(ctx context.Context, arg InsertTrackParams) error 
 }
 
 const insertYouTubeWrite = `-- name: InsertYouTubeWrite :one
-INSERT INTO youtube_writes (method, playlist_id, sent_ts, quota_date, outcome)
-VALUES (?1, ?2, ?3, ?4, 'pending')
+INSERT INTO youtube_writes (method, playlist_id, item_id, video_id, entry_id, position, sent_ts, quota_date, outcome)
+VALUES (
+    ?1,
+    ?2,
+    ?3,
+    ?4,
+    ?5,
+    ?6,
+    ?7,
+    ?8,
+    'pending'
+)
 RETURNING write_id
 `
 
 type InsertYouTubeWriteParams struct {
 	Method     string
 	PlaylistID sql.NullString
+	ItemID     sql.NullString
+	VideoID    sql.NullString
+	EntryID    sql.NullInt64
+	Position   sql.NullInt64
 	SentTs     string
 	QuotaDate  string
 }
@@ -628,6 +804,10 @@ func (q *Queries) InsertYouTubeWrite(ctx context.Context, arg InsertYouTubeWrite
 	row := q.db.QueryRowContext(ctx, insertYouTubeWrite,
 		arg.Method,
 		arg.PlaylistID,
+		arg.ItemID,
+		arg.VideoID,
+		arg.EntryID,
+		arg.Position,
 		arg.SentTs,
 		arg.QuotaDate,
 	)
@@ -643,6 +823,7 @@ SELECT
 FROM youtube_writes
 WHERE
     playlist_id = ?1
+    AND method IN ('playlists.insert', 'playlists.update', 'playlists.delete')
     AND outcome IN ('applied', 'absent')
     AND settled_ts > ?2
 ORDER BY settled_ts DESC, write_id DESC
@@ -659,13 +840,95 @@ type LatestPlaylistWriteSettledAfterRow struct {
 	Outcome string
 }
 
-// The latest write to the playlist that settled after settled_after with
-// YouTube's answer that it made the write, or that the playlist does not exist.
+// The latest write creating, updating or deleting the playlist that settled
+// after settled_after with YouTube's answer that it made the write, or that the
+// playlist does not exist.
 func (q *Queries) LatestPlaylistWriteSettledAfter(ctx context.Context, arg LatestPlaylistWriteSettledAfterParams) (LatestPlaylistWriteSettledAfterRow, error) {
 	row := q.db.QueryRowContext(ctx, latestPlaylistWriteSettledAfter, arg.PlaylistID, arg.SettledAfter)
 	var i LatestPlaylistWriteSettledAfterRow
 	err := row.Scan(&i.Method, &i.Outcome)
 	return i, err
+}
+
+const listBaseItems = `-- name: ListBaseItems :many
+SELECT
+    item_id,
+    video_id,
+    is_placed
+FROM base_items
+WHERE playlist_id = ?
+ORDER BY position
+`
+
+type ListBaseItemsRow struct {
+	ItemID   string
+	VideoID  string
+	IsPlaced bool
+}
+
+// What YouTube held of a playlist after the server last read it, with each push
+// write YouTube answered since.
+func (q *Queries) ListBaseItems(ctx context.Context, playlistID string) ([]ListBaseItemsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listBaseItems, playlistID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBaseItemsRow
+	for rows.Next() {
+		var i ListBaseItemsRow
+		if err := rows.Scan(&i.ItemID, &i.VideoID, &i.IsPlaced); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEntries = `-- name: ListEntries :many
+SELECT
+    entry_id,
+    video_id,
+    item_id
+FROM playlist_entries
+WHERE playlist_id = ?
+ORDER BY position
+`
+
+type ListEntriesRow struct {
+	EntryID int64
+	VideoID string
+	ItemID  sql.NullString
+}
+
+// The server's order of a playlist.
+func (q *Queries) ListEntries(ctx context.Context, playlistID string) ([]ListEntriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listEntries, playlistID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEntriesRow
+	for rows.Next() {
+		var i ListEntriesRow
+		if err := rows.Scan(&i.EntryID, &i.VideoID, &i.ItemID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listLibraryVideos = `-- name: ListLibraryVideos :many
@@ -681,10 +944,10 @@ FROM videos AS v
 WHERE
     v.is_unavailable = 0
     AND EXISTS (
-        SELECT 1 FROM playlist_items AS pi
+        SELECT 1 FROM playlist_entries AS pe
         WHERE
-            pi.video_id = v.video_id
-            AND (CAST(?1 AS TEXT) IS NULL OR pi.playlist_id = ?1)
+            pe.video_id = v.video_id
+            AND (CAST(?1 AS TEXT) IS NULL OR pe.playlist_id = ?1)
     )
     AND (CAST(?2 AS INTEGER) IS NULL OR v.duration_seconds >= ?2)
     AND (CAST(?3 AS INTEGER) IS NULL OR v.duration_seconds <= ?3)
@@ -808,7 +1071,10 @@ SELECT
     items_added,
     items_removed,
     requests,
-    units
+    units,
+    playlists_deferred,
+    writes,
+    write_units
 FROM sync_runs
 ORDER BY run_id DESC
 LIMIT ?1
@@ -837,6 +1103,9 @@ func (q *Queries) ListNewestSyncRuns(ctx context.Context, maxRows int64) ([]Sync
 			&i.ItemsRemoved,
 			&i.Requests,
 			&i.Units,
+			&i.PlaylistsDeferred,
+			&i.Writes,
+			&i.WriteUnits,
 		); err != nil {
 			return nil, err
 		}
@@ -853,8 +1122,9 @@ func (q *Queries) ListNewestSyncRuns(ctx context.Context, maxRows int64) ([]Sync
 
 const listPlaylistEntries = `-- name: ListPlaylistEntries :many
 SELECT
-    pi.item_id,
-    pi.position,
+    pe.entry_id,
+    pe.item_id,
+    pe.position,
     v.video_id,
     v.title,
     v.channel_title,
@@ -863,14 +1133,15 @@ SELECT
     v.is_unavailable,
     v.enriched_ts,
     CAST((SELECT count(*) FROM tracks AS t WHERE t.video_id = v.video_id) AS INTEGER) AS track_count
-FROM playlist_items AS pi
-INNER JOIN videos AS v ON pi.video_id = v.video_id
-WHERE pi.playlist_id = ?
-ORDER BY pi.position
+FROM playlist_entries AS pe
+INNER JOIN videos AS v ON pe.video_id = v.video_id
+WHERE pe.playlist_id = ?
+ORDER BY pe.position
 `
 
 type ListPlaylistEntriesRow struct {
-	ItemID          string
+	EntryID         int64
+	ItemID          sql.NullString
 	Position        int64
 	VideoID         string
 	Title           string
@@ -882,7 +1153,8 @@ type ListPlaylistEntriesRow struct {
 	TrackCount      int64
 }
 
-// A playlist's items in order, each with its video and the video's track count.
+// The server's order of a playlist, each entry with its video and the video's
+// track count.
 func (q *Queries) ListPlaylistEntries(ctx context.Context, playlistID string) ([]ListPlaylistEntriesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPlaylistEntries, playlistID)
 	if err != nil {
@@ -893,6 +1165,7 @@ func (q *Queries) ListPlaylistEntries(ctx context.Context, playlistID string) ([
 	for rows.Next() {
 		var i ListPlaylistEntriesRow
 		if err := rows.Scan(
+			&i.EntryID,
 			&i.ItemID,
 			&i.Position,
 			&i.VideoID,
@@ -945,55 +1218,18 @@ func (q *Queries) ListPlaylistIDs(ctx context.Context) ([]string, error) {
 	return items, nil
 }
 
-const listPlaylistItems = `-- name: ListPlaylistItems :many
-SELECT
-    item_id,
-    video_id
-FROM playlist_items
-WHERE playlist_id = ?
-ORDER BY position
-`
-
-type ListPlaylistItemsRow struct {
-	ItemID  string
-	VideoID string
-}
-
-func (q *Queries) ListPlaylistItems(ctx context.Context, playlistID string) ([]ListPlaylistItemsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPlaylistItems, playlistID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListPlaylistItemsRow
-	for rows.Next() {
-		var i ListPlaylistItemsRow
-		if err := rows.Scan(&i.ItemID, &i.VideoID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listPlaylistSummaries = `-- name: ListPlaylistSummaries :many
 SELECT
     p.playlist_id,
     p.title,
     p.description,
     p.privacy,
-    CAST(count(pi.item_id) AS INTEGER) AS item_count,
+    CAST(count(pe.entry_id) AS INTEGER) AS item_count,
     CAST(coalesce(sum(v.is_unavailable), 0) AS INTEGER) AS unavailable_count,
     CAST(count(v.enriched_ts) AS INTEGER) AS enriched_count
 FROM playlists AS p
-LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
-LEFT JOIN videos AS v ON pi.video_id = v.video_id
+LEFT JOIN playlist_entries AS pe ON p.playlist_id = pe.playlist_id
+LEFT JOIN videos AS v ON pe.video_id = v.video_id
 GROUP BY p.playlist_id
 `
 
@@ -1171,10 +1407,10 @@ LEFT JOIN plays AS pl ON v.video_id = pl.video_id
 WHERE
     v.is_unavailable = 0
     AND EXISTS (
-        SELECT 1 FROM playlist_items AS pi
+        SELECT 1 FROM playlist_entries AS pe
         WHERE
-            pi.video_id = v.video_id
-            AND (CAST(?1 AS TEXT) IS NULL OR pi.playlist_id = ?1)
+            pe.video_id = v.video_id
+            AND (CAST(?1 AS TEXT) IS NULL OR pe.playlist_id = ?1)
     )
 GROUP BY v.video_id
 ORDER BY max(pl.played_ts) IS NOT NULL, max(pl.played_ts), random()
@@ -1325,7 +1561,10 @@ SELECT
     items_added,
     items_removed,
     requests,
-    units
+    units,
+    playlists_deferred,
+    writes,
+    write_units
 FROM sync_runs
 WHERE run_id < ?1
 ORDER BY run_id DESC
@@ -1360,6 +1599,9 @@ func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBefore
 			&i.ItemsRemoved,
 			&i.Requests,
 			&i.Units,
+			&i.PlaylistsDeferred,
+			&i.Writes,
+			&i.WriteUnits,
 		); err != nil {
 			return nil, err
 		}
@@ -1466,14 +1708,61 @@ func (q *Queries) ListVideoArtists(ctx context.Context, videoID sql.NullString) 
 	return items, nil
 }
 
+const listVideoAvailability = `-- name: ListVideoAvailability :many
+SELECT
+    video_id,
+    is_unavailable
+FROM videos
+WHERE video_id IN (/*SLICE:video_ids*/?)
+`
+
+type ListVideoAvailabilityRow struct {
+	VideoID       string
+	IsUnavailable bool
+}
+
+// Each of video_ids the store holds, and whether it is unavailable.
+func (q *Queries) ListVideoAvailability(ctx context.Context, videoIds []string) ([]ListVideoAvailabilityRow, error) {
+	query := listVideoAvailability
+	var queryParams []interface{}
+	if len(videoIds) > 0 {
+		for _, v := range videoIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:video_ids*/?", strings.Repeat(",?", len(videoIds))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:video_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVideoAvailabilityRow
+	for rows.Next() {
+		var i ListVideoAvailabilityRow
+		if err := rows.Scan(&i.VideoID, &i.IsUnavailable); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVideoPlaylists = `-- name: ListVideoPlaylists :many
 SELECT DISTINCT
-    pi.video_id,
+    pe.video_id,
     p.playlist_id,
     p.title
-FROM playlist_items AS pi
-INNER JOIN playlists AS p ON pi.playlist_id = p.playlist_id
-WHERE CAST(?1 AS TEXT) IS NULL OR pi.video_id = ?1
+FROM playlist_entries AS pe
+INNER JOIN playlists AS p ON pe.playlist_id = p.playlist_id
+WHERE CAST(?1 AS TEXT) IS NULL OR pe.video_id = ?1
 `
 
 type ListVideoPlaylistsRow struct {
@@ -1507,19 +1796,86 @@ func (q *Queries) ListVideoPlaylists(ctx context.Context, videoID sql.NullString
 	return items, nil
 }
 
+const setEntryItem = `-- name: SetEntryItem :execrows
+UPDATE playlist_entries SET item_id = ?1
+WHERE entry_id = ?2
+`
+
+type SetEntryItemParams struct {
+	ItemID  sql.NullString
+	EntryID int64
+}
+
+// Records the YouTube item an entry is held in, and changes nothing when no
+// entry has the id.
+func (q *Queries) SetEntryItem(ctx context.Context, arg SetEntryItemParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setEntryItem, arg.ItemID, arg.EntryID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setPlaylistSort = `-- name: SetPlaylistSort :exec
+UPDATE playlists SET sort = ?1
+WHERE playlist_id = ?2
+`
+
+type SetPlaylistSortParams struct {
+	Sort       string
+	PlaylistID string
+}
+
+func (q *Queries) SetPlaylistSort(ctx context.Context, arg SetPlaylistSortParams) error {
+	_, err := q.db.ExecContext(ctx, setPlaylistSort, arg.Sort, arg.PlaylistID)
+	return err
+}
+
+const setRefusedWrite = `-- name: SetRefusedWrite :exec
+UPDATE playlists SET refused_write_id = ?1
+WHERE playlist_id = ?2
+`
+
+type SetRefusedWriteParams struct {
+	RefusedWriteID sql.NullInt64
+	PlaylistID     string
+}
+
+func (q *Queries) SetRefusedWrite(ctx context.Context, arg SetRefusedWriteParams) error {
+	_, err := q.db.ExecContext(ctx, setRefusedWrite, arg.RefusedWriteID, arg.PlaylistID)
+	return err
+}
+
+const setUnansweredWrite = `-- name: SetUnansweredWrite :exec
+UPDATE playlists SET unanswered_write_id = ?1
+WHERE playlist_id = ?2
+`
+
+type SetUnansweredWriteParams struct {
+	UnansweredWriteID sql.NullInt64
+	PlaylistID        string
+}
+
+func (q *Queries) SetUnansweredWrite(ctx context.Context, arg SetUnansweredWriteParams) error {
+	_, err := q.db.ExecContext(ctx, setUnansweredWrite, arg.UnansweredWriteID, arg.PlaylistID)
+	return err
+}
+
 const settleYouTubeWrite = `-- name: SettleYouTubeWrite :execrows
 UPDATE youtube_writes SET
     playlist_id = ?1,
-    outcome = ?2,
-    settled_ts = ?3,
-    requests = ?4,
-    units = ?5,
-    error = ?6
-WHERE write_id = ?7 AND outcome = 'pending'
+    item_id = coalesce(?2, item_id),
+    outcome = ?3,
+    settled_ts = ?4,
+    requests = ?5,
+    units = ?6,
+    error = ?7
+WHERE write_id = ?8 AND outcome = 'pending'
 `
 
 type SettleYouTubeWriteParams struct {
 	PlaylistID sql.NullString
+	ItemID     sql.NullString
 	Outcome    string
 	SettledTs  sql.NullString
 	Requests   sql.NullInt64
@@ -1533,6 +1889,7 @@ type SettleYouTubeWriteParams struct {
 func (q *Queries) SettleYouTubeWrite(ctx context.Context, arg SettleYouTubeWriteParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, settleYouTubeWrite,
 		arg.PlaylistID,
+		arg.ItemID,
 		arg.Outcome,
 		arg.SettledTs,
 		arg.Requests,
@@ -1544,6 +1901,41 @@ func (q *Queries) SettleYouTubeWrite(ctx context.Context, arg SettleYouTubeWrite
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const sumRunReadUnits = `-- name: SumRunReadUnits :one
+SELECT CAST(coalesce(sum(units - write_units), 0) AS INTEGER) FROM sync_runs
+WHERE quota_date = ?
+`
+
+// The units the sync runs on quota_date spent reading.
+func (q *Queries) SumRunReadUnits(ctx context.Context, quotaDate string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, sumRunReadUnits, quotaDate)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const sumWriteUnits = `-- name: SumWriteUnits :one
+SELECT
+    CAST(coalesce(sum(units), 0) AS INTEGER) AS units,
+    CAST(coalesce(sum(CASE WHEN outcome = 'pending' THEN 1 ELSE 0 END), 0) AS INTEGER) AS pending
+FROM youtube_writes
+WHERE quota_date = ?
+`
+
+type SumWriteUnitsRow struct {
+	Units   int64
+	Pending int64
+}
+
+// The units the writes sent on quota_date cost, and how many of them have not
+// settled, whose cost is not yet recorded.
+func (q *Queries) SumWriteUnits(ctx context.Context, quotaDate string) (SumWriteUnitsRow, error) {
+	row := q.db.QueryRowContext(ctx, sumWriteUnits, quotaDate)
+	var i SumWriteUnitsRow
+	err := row.Scan(&i.Units, &i.Pending)
+	return i, err
 }
 
 const updatePlaylistDetails = `-- name: UpdatePlaylistDetails :execrows
@@ -1652,6 +2044,25 @@ type UpsertPlaylistPrivacyParams struct {
 
 func (q *Queries) UpsertPlaylistPrivacy(ctx context.Context, arg UpsertPlaylistPrivacyParams) error {
 	_, err := q.db.ExecContext(ctx, upsertPlaylistPrivacy, arg.Privacy, arg.Label, arg.Description)
+	return err
+}
+
+const upsertPlaylistSort = `-- name: UpsertPlaylistSort :exec
+INSERT INTO playlist_sorts (sort, label, description)
+VALUES (?, ?, ?)
+ON CONFLICT (sort) DO UPDATE SET
+    label = excluded.label,
+    description = excluded.description
+`
+
+type UpsertPlaylistSortParams struct {
+	Sort        string
+	Label       string
+	Description string
+}
+
+func (q *Queries) UpsertPlaylistSort(ctx context.Context, arg UpsertPlaylistSortParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPlaylistSort, arg.Sort, arg.Label, arg.Description)
 	return err
 }
 

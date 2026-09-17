@@ -23,9 +23,17 @@ type wirePlaylist struct {
 }
 
 type wirePlaylistItem struct {
-	ID       string           `json:"id"`
+	ID       *string          `json:"id"`
 	Position int64            `json:"position"`
 	Video    wireVideoSummary `json:"video"`
+}
+
+// itemID is item's id, or "" for an item not yet on YouTube.
+func (item wirePlaylistItem) itemID() string {
+	if item.ID == nil {
+		return ""
+	}
+	return *item.ID
 }
 
 type wireVideoSummary struct {
@@ -72,7 +80,8 @@ func TestAPlaylistShowsItsItemsInOrder(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
 
-	got := decode[wirePlaylist](t, f.get("/api/v1/playlists/PLA"), http.StatusOK)
+	rec := f.get("/api/v1/playlists/PLA")
+	got := decode[wirePlaylist](t, rec, http.StatusOK)
 	summary := wirePlaylistSummary{ID: "PLA", Title: "Alpha", Description: "First", Privacy: "private", ItemCount: 3, UnavailableCount: 1, EnrichedCount: 1}
 	if got.wirePlaylistSummary != summary {
 		t.Errorf("summary = %+v, want %+v", got.wirePlaylistSummary, summary)
@@ -82,8 +91,8 @@ func TestAPlaylistShowsItsItemsInOrder(t *testing.T) {
 	}
 	for i, want := range []struct{ item, video string }{{"ia", "a"}, {"ib", "b"}, {"iu", "u"}} {
 		item := got.Items[i]
-		if item.ID != want.item || item.Position != int64(i) || item.Video.ID != want.video {
-			t.Errorf("item %d = %s at %d holding %s, want %s at %d holding %s", i, item.ID, item.Position, item.Video.ID, want.item, i, want.video)
+		if item.itemID() != want.item || item.Position != int64(i) || item.Video.ID != want.video {
+			t.Errorf("item %d = %s at %d holding %s, want %s at %d holding %s", i, item.itemID(), item.Position, item.Video.ID, want.item, i, want.video)
 		}
 	}
 	first := got.Items[0].Video

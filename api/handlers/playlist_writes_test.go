@@ -35,6 +35,12 @@ type fakeYouTube struct {
 	// seconds of a write do.
 	stale  map[youtube.PlaylistID]youtube.Playlist
 	unseen map[youtube.PlaylistID]bool
+	// videos is each video a read of videos by id returns, and videoReads how
+	// many reads of videos were made. beforeVideos, when set, runs as each read
+	// of videos begins.
+	videos       map[youtube.VideoID]youtube.Video
+	videoReads   int
+	beforeVideos func()
 	// created, updated and deleted are the writes made, in order, and reads
 	// the reads by id.
 	created []youtube.PlaylistDetails
@@ -60,6 +66,7 @@ func newFakeYouTube() *fakeYouTube {
 		playlists: map[youtube.PlaylistID]youtube.Playlist{},
 		stale:     map[youtube.PlaylistID]youtube.Playlist{},
 		unseen:    map[youtube.PlaylistID]bool{},
+		videos:    map[youtube.VideoID]youtube.Video{},
 	}
 }
 
@@ -124,6 +131,27 @@ func (f *fakeYouTube) Playlist(ctx context.Context, id youtube.PlaylistID) (yout
 		return youtube.Playlist{}, fmt.Errorf("read playlist %s: %w", id, youtube.ErrPlaylistNotFound)
 	}
 	return held, nil
+}
+
+// Videos returns each of ids the fake holds a video for, as a read of videos by
+// id leaves out a deleted video and a private one another channel owns.
+func (f *fakeYouTube) Videos(ctx context.Context, ids []youtube.VideoID) ([]youtube.Video, error) {
+	if f.beforeVideos != nil {
+		f.beforeVideos()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.videoReads++
+	if err := f.begin(ctx, int64((len(ids)+49)/50), f.readErr); err != nil {
+		return nil, err
+	}
+	var found []youtube.Video
+	for _, id := range ids {
+		if video, ok := f.videos[id]; ok {
+			found = append(found, video)
+		}
+	}
+	return found, nil
 }
 
 func (f *fakeYouTube) CreatePlaylist(ctx context.Context, details youtube.PlaylistDetails) (youtube.Playlist, error) {
@@ -203,7 +231,7 @@ func (f *fixture) doCanceled(method, target, body string) *httptest.ResponseReco
 }
 
 // written is the store's record of the write numbered id, counting from 1.
-func (f *fixture) written(t *testing.T, id int64) generated.YoutubeWrite {
+func (f *fixture) written(t *testing.T, id int64) generated.GetYouTubeWriteRow {
 	t.Helper()
 	row, err := f.st.Queries.GetYouTubeWrite(context.Background(), id)
 	if err != nil {
@@ -620,6 +648,7 @@ func TestTheREADMEStatesTheWriteLimitsAndTheReadLag(t *testing.T) {
 	for _, want := range []string{
 		fmt.Sprintf("a title of at most %d characters", youtube.MaxTitleLength),
 		fmt.Sprintf("a description of at most %d,%03d", youtube.MaxDescriptionLength/1000, youtube.MaxDescriptionLength%1000),
+		fmt.Sprintf("up to the %d,%03d videos a YouTube playlist holds", youtube.MaxPlaylistItems/1000, youtube.MaxPlaylistItems%1000),
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the README does not say %q", want)
@@ -627,6 +656,35 @@ func TestTheREADMEStatesTheWriteLimitsAndTheReadLag(t *testing.T) {
 	}
 	if youtube.ReadLag != time.Minute || !strings.Contains(text, "within a minute of a write") {
 		t.Errorf("the README says a read lags a write by a minute, and youtube.ReadLag is %v", youtube.ReadLag)
+	}
+}
+
+// Every outcome a write can end as has its own answer. Applied and pending make
+// nothing to refuse, so each is an internal error, as an outcome the API does
+// not know is.
+func TestEveryWriteOutcomeHasItsOwnAnswer(t *testing.T) {
+	const unknown = "someFutureOutcome"
+	f := newFixture(t)
+	want := map[string]int{
+		store.WriteQuotaSpent: http.StatusServiceUnavailable,
+		store.WriteRefused:    http.StatusUnprocessableEntity,
+		store.WriteAbsent:     http.StatusUnprocessableEntity,
+		store.WriteUnanswered: http.StatusBadGateway,
+		store.WriteApplied:    http.StatusInternalServerError,
+		store.WritePending:    http.StatusInternalServerError,
+		unknown:               http.StatusInternalServerError,
+	}
+	for _, outcome := range append(store.WriteOutcomes(), unknown) {
+		status, ok := want[outcome]
+		if !ok {
+			t.Errorf("the outcome %q has no answer this test knows", outcome)
+			continue
+		}
+		rec := httptest.NewRecorder()
+		f.h.refuseUnmade(rec, httptest.NewRequest(http.MethodPatch, "/api/v1/playlists/PLA", nil), outcome, errInvalidSnippet)
+		if rec.Code != status {
+			t.Errorf("a write that ended %q answered %d, want %d: %s", outcome, rec.Code, status, rec.Body)
+		}
 	}
 }
 

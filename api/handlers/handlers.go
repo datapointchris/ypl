@@ -74,6 +74,8 @@ func (h *Handlers) routes() []route {
 		{http.MethodGet, "/api/v1/playlists/{id}", h.showPlaylist},
 		{http.MethodPatch, "/api/v1/playlists/{id}", h.updatePlaylist},
 		{http.MethodDelete, "/api/v1/playlists/{id}", h.deletePlaylist},
+		{http.MethodGet, "/api/v1/playlists/{id}/items", h.showPlaylistItems},
+		{http.MethodPut, "/api/v1/playlists/{id}/items", h.replacePlaylistItems},
 		{http.MethodGet, "/api/v1/videos", h.listVideos},
 		{http.MethodGet, "/api/v1/videos/{id}", h.showVideo},
 		{http.MethodPost, "/api/v1/plays", h.createPlay},
