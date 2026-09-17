@@ -107,19 +107,20 @@ ON CONFLICT (playlist_id) DO UPDATE SET
     description = excluded.description,
     privacy = excluded.privacy;
 
+-- name: UpsertPlaylistPrivacy :exec
+INSERT INTO playlist_privacies (privacy, label, description)
+VALUES (?, ?, ?)
+ON CONFLICT (privacy) DO UPDATE SET
+    label = excluded.label,
+    description = excluded.description;
+
 -- name: GetPlaylist :one
 SELECT
     playlist_id,
     title,
     description,
-    privacy,
-    is_sorted_manually
+    privacy
 FROM playlists
-WHERE playlist_id = ?;
-
--- name: MarkPlaylistNotSortedManually :exec
-UPDATE playlists
-SET is_sorted_manually = 0
 WHERE playlist_id = ?;
 
 -- name: ListPlaylistIDs :many
@@ -135,41 +136,16 @@ DELETE FROM playlist_items
 WHERE playlist_id = ?;
 
 -- name: InsertPlaylistItem :exec
-INSERT INTO playlist_items (playlist_id, position, video_id)
-VALUES (?, ?, ?);
-
--- name: ListPlaylistVideoIDs :many
-SELECT video_id FROM playlist_items
-WHERE playlist_id = ?
-ORDER BY position;
-
--- name: DeleteBaseItems :exec
-DELETE FROM base_items
-WHERE playlist_id = ?;
-
--- name: InsertBaseItem :exec
-INSERT INTO base_items (item_id, playlist_id, position, video_id)
+INSERT INTO playlist_items (item_id, playlist_id, position, video_id)
 VALUES (?, ?, ?, ?);
 
--- name: ListBaseItems :many
+-- name: ListPlaylistItems :many
 SELECT
     item_id,
     video_id
-FROM base_items
+FROM playlist_items
 WHERE playlist_id = ?
 ORDER BY position;
-
--- name: UpsertPushRefusal :exec
-INSERT INTO push_refusals (playlist_id, video_id, refused_ts, reason)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (playlist_id, video_id) DO UPDATE SET
-    refused_ts = excluded.refused_ts,
-    reason = excluded.reason;
-
--- name: ListPushRefusedVideoIDs :many
-SELECT video_id FROM push_refusals
-WHERE playlist_id = ?
-ORDER BY video_id;
 
 -- name: UpsertSyncOutcome :exec
 INSERT INTO sync_outcomes (outcome, label, description)
@@ -181,9 +157,9 @@ ON CONFLICT (outcome) DO UPDATE SET
 -- name: InsertSyncRun :one
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
-    pulled_in, pulled_out, writes, requests, read_units, write_units
+    items_added, items_removed, requests, units
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id;
 
 -- name: InsertSyncFailure :exec
@@ -200,12 +176,10 @@ SELECT
     playlists,
     playlists_deleted,
     playlists_skipped,
-    pulled_in,
-    pulled_out,
-    writes,
+    items_added,
+    items_removed,
     requests,
-    read_units,
-    write_units
+    units
 FROM sync_runs
 WHERE run_id = ?;
 
@@ -223,9 +197,3 @@ ORDER BY sync_failure_id;
 -- How many runs on quota_date ended on YouTube's quota refusal.
 SELECT count(*) FROM sync_runs
 WHERE quota_date = ? AND outcome = 'quota_spent';
-
--- name: SumWriteUnits :one
--- The write units every run on quota_date spent, which is the day's write
--- spend the worker's allowance is checked against.
-SELECT CAST(coalesce(sum(write_units), 0) AS INTEGER) FROM sync_runs
-WHERE quota_date = ?;

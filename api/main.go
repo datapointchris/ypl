@@ -28,8 +28,8 @@ import (
 const shutdownGrace = 10 * time.Second
 
 // defaultSyncInterval is the wait between sync runs when SYNC_INTERVAL is unset.
-// A run reads every page of every playlist at a unit a page, and the reads of a
-// day's runs are held back from what writes may spend.
+// A run reads every page of every playlist at a unit a page, so a day of runs
+// has to fit the day's quota.
 const defaultSyncInterval = time.Hour
 
 func main() {

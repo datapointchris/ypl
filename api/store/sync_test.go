@@ -26,102 +26,84 @@ func withPlaylist(t *testing.T) *Store {
 	return st
 }
 
-func inTx(t *testing.T, st *Store, fn func(ctx context.Context, tx *Tx) error) error {
+func replaceItems(t *testing.T, st *Store, playlist string, items ...PlaylistItem) error {
 	t.Helper()
 	ctx := context.Background()
-	return st.InTx(ctx, func(tx *Tx) error { return fn(ctx, tx) })
+	return st.InTx(ctx, func(tx *Tx) error { return tx.ReplacePlaylistItems(ctx, playlist, items) })
 }
 
-func TestOpenSeedsTheSyncOutcomes(t *testing.T) {
-	st, _ := open(t)
+func count(t *testing.T, st *Store, table string) int {
+	t.Helper()
 	var n int
-	if err := st.db.QueryRowContext(context.Background(), "SELECT count(*) FROM sync_outcomes").Scan(&n); err != nil {
-		t.Fatalf("count sync outcomes: %v", err)
+	if err := st.db.QueryRowContext(context.Background(), "SELECT count(*) FROM "+table).Scan(&n); err != nil {
+		t.Fatalf("count %s: %v", table, err)
 	}
-	if n != len(syncOutcomes) {
-		t.Fatalf("sync outcomes = %d, want %d", n, len(syncOutcomes))
+	return n
+}
+
+func TestOpenSeedsTheSyncOutcomesAndPlaylistPrivacies(t *testing.T) {
+	st, _ := open(t)
+	if n := count(t, st, "sync_outcomes"); n != len(syncOutcomes) {
+		t.Errorf("sync outcomes = %d, want %d", n, len(syncOutcomes))
+	}
+	if n := count(t, st, "playlist_privacies"); n != len(playlistPrivacies) {
+		t.Errorf("playlist privacies = %d, want %d", n, len(playlistPrivacies))
 	}
 }
 
-func TestReplacePlaylistItemsReplacesTheWholeOrder(t *testing.T) {
+func TestReplacePlaylistItemsReplacesTheWholePlaylist(t *testing.T) {
 	st := withPlaylist(t)
-	for _, order := range [][]string{{"a", "b", "c"}, {"c", "a"}} {
-		if err := inTx(t, st, func(ctx context.Context, tx *Tx) error { return tx.ReplacePlaylistItems(ctx, "PLA", order) }); err != nil {
-			t.Fatalf("replace with %v: %v", order, err)
+	first := []PlaylistItem{{ItemID: "i1", VideoID: "a"}, {ItemID: "i2", VideoID: "b"}}
+	second := []PlaylistItem{{ItemID: "i2", VideoID: "b"}, {ItemID: "i3", VideoID: "a"}}
+	for _, items := range [][]PlaylistItem{first, second} {
+		if err := replaceItems(t, st, "PLA", items...); err != nil {
+			t.Fatalf("replace with %v: %v", items, err)
 		}
 	}
-	got, err := st.Queries.ListPlaylistVideoIDs(context.Background(), "PLA")
-	if err != nil || !slices.Equal(got, []string{"c", "a"}) {
-		t.Fatalf("order = %v, %v, want [c a]", got, err)
-	}
-}
-
-func TestReplaceBaseItemsReplacesTheWholeBase(t *testing.T) {
-	st := withPlaylist(t)
-	first := []BaseItem{{ItemID: "i1", VideoID: "a"}, {ItemID: "i2", VideoID: "b"}}
-	second := []BaseItem{{ItemID: "i2", VideoID: "b"}, {ItemID: "i3", VideoID: "a"}}
-	for _, base := range [][]BaseItem{first, second} {
-		if err := inTx(t, st, func(ctx context.Context, tx *Tx) error { return tx.ReplaceBaseItems(ctx, "PLA", base) }); err != nil {
-			t.Fatalf("replace with %v: %v", base, err)
-		}
-	}
-	rows, err := st.Queries.ListBaseItems(context.Background(), "PLA")
+	rows, err := st.Queries.ListPlaylistItems(context.Background(), "PLA")
 	if err != nil {
-		t.Fatalf("list base: %v", err)
+		t.Fatalf("list items: %v", err)
 	}
-	want := []generated.ListBaseItemsRow{{ItemID: "i2", VideoID: "b"}, {ItemID: "i3", VideoID: "a"}}
+	want := []generated.ListPlaylistItemsRow{{ItemID: "i2", VideoID: "b"}, {ItemID: "i3", VideoID: "a"}}
 	if !slices.Equal(rows, want) {
-		t.Fatalf("base = %v, want %v", rows, want)
+		t.Fatalf("items = %v, want %v", rows, want)
 	}
 }
 
 // A replacement naming a video the store does not hold rolls back, so the
-// playlist keeps the order it had.
-func TestAnOrderNamingAnUnknownVideoKeepsThePreviousOrder(t *testing.T) {
+// playlist keeps the items it had.
+func TestItemsNamingAnUnknownVideoKeepThePreviousItems(t *testing.T) {
 	st := withPlaylist(t)
-	if err := inTx(t, st, func(ctx context.Context, tx *Tx) error { return tx.ReplacePlaylistItems(ctx, "PLA", []string{"a"}) }); err != nil {
+	if err := replaceItems(t, st, "PLA", PlaylistItem{ItemID: "i1", VideoID: "a"}); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
-	err := inTx(t, st, func(ctx context.Context, tx *Tx) error {
-		return tx.ReplacePlaylistItems(ctx, "PLA", []string{"b", "missing"})
-	})
-	if err == nil {
-		t.Fatal("stored an order naming a video the store does not hold")
+	if err := replaceItems(t, st, "PLA", PlaylistItem{ItemID: "i2", VideoID: "b"}, PlaylistItem{ItemID: "i3", VideoID: "missing"}); err == nil {
+		t.Fatal("stored an item naming a video the store does not hold")
 	}
-	got, err := st.Queries.ListPlaylistVideoIDs(context.Background(), "PLA")
-	if err != nil || !slices.Equal(got, []string{"a"}) {
-		t.Fatalf("order after the failed replacement = %v, %v, want [a]", got, err)
+	rows, err := st.Queries.ListPlaylistItems(context.Background(), "PLA")
+	if err != nil || len(rows) != 1 || rows[0].ItemID != "i1" {
+		t.Fatalf("items after the failed replacement = %v, %v, want i1 alone", rows, err)
 	}
 }
 
-func TestDeletingAPlaylistDeletesItsItemsBaseAndRefusals(t *testing.T) {
-	ctx := context.Background()
+func TestDeletingAPlaylistDeletesItsItems(t *testing.T) {
 	st := withPlaylist(t)
-	err := inTx(t, st, func(ctx context.Context, tx *Tx) error {
-		if err := tx.ReplacePlaylistItems(ctx, "PLA", []string{"a", "b"}); err != nil {
-			return err
-		}
-		return tx.ReplaceBaseItems(ctx, "PLA", []BaseItem{{ItemID: "i1", VideoID: "a"}})
-	})
-	if err != nil {
-		t.Fatalf("store items and base: %v", err)
+	if err := replaceItems(t, st, "PLA", PlaylistItem{ItemID: "i1", VideoID: "a"}); err != nil {
+		t.Fatalf("replace: %v", err)
 	}
-	refusal := generated.UpsertPushRefusalParams{PlaylistID: "PLA", VideoID: "gone", RefusedTs: "2026-09-17T00:00:00Z", Reason: "videoNotFound"}
-	if err := st.Queries.UpsertPushRefusal(ctx, refusal); err != nil {
-		t.Fatalf("upsert refusal: %v", err)
-	}
-
-	if err := st.Queries.DeletePlaylist(ctx, "PLA"); err != nil {
+	if err := st.Queries.DeletePlaylist(context.Background(), "PLA"); err != nil {
 		t.Fatalf("delete playlist: %v", err)
 	}
-	for _, table := range []string{"playlist_items", "base_items", "push_refusals"} {
-		var n int
-		if err := st.db.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
-			t.Fatalf("count %s: %v", table, err)
-		}
-		if n != 0 {
-			t.Errorf("%s holds %d rows after the playlist was deleted", table, n)
-		}
+	if n := count(t, st, "playlist_items"); n != 0 {
+		t.Fatalf("playlist_items holds %d rows after the playlist was deleted", n)
+	}
+}
+
+func TestAPlaylistWithAnUnknownPrivacyIsRefused(t *testing.T) {
+	st, _ := open(t)
+	err := st.Queries.UpsertPlaylist(context.Background(), generated.UpsertPlaylistParams{PlaylistID: "PLA", Title: "A", Privacy: "someFuturePrivacy"})
+	if err == nil {
+		t.Fatal("stored a playlist with a privacy the vocabulary does not hold")
 	}
 }
 
@@ -163,33 +145,24 @@ func TestAnUnavailableVideoTheStoreHasNeverSeenTakesTheReadTitle(t *testing.T) {
 	}
 }
 
-func TestTheDaysWriteUnitsAndQuotaRefusalsCountOnlyThatDate(t *testing.T) {
+func TestQuotaRefusalsCountOnlyTheirDate(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
 	runs := []struct {
 		date    string
 		outcome string
-		units   int64
 	}{
-		{"2026-09-16", OutcomeQuotaSpent, 900},
-		{"2026-09-17", OutcomeOK, 150},
-		{"2026-09-17", OutcomePartial, 50},
+		{"2026-09-16", OutcomeQuotaSpent},
+		{"2026-09-17", OutcomeOK},
+		{"2026-09-17", OutcomePartial},
 	}
 	for _, run := range runs {
 		_, err := st.Queries.InsertSyncRun(ctx, generated.InsertSyncRunParams{
-			StartedTs: run.date + "T08:00:00Z", FinishedTs: run.date + "T08:01:00Z", QuotaDate: run.date,
-			Outcome: run.outcome, WriteUnits: run.units,
+			StartedTs: run.date + "T08:00:00Z", FinishedTs: run.date + "T08:01:00Z", QuotaDate: run.date, Outcome: run.outcome,
 		})
 		if err != nil {
 			t.Fatalf("insert run: %v", err)
 		}
-	}
-
-	if units, err := st.Queries.SumWriteUnits(ctx, "2026-09-17"); err != nil || units != 200 {
-		t.Errorf("write units on 2026-09-17 = %d, %v, want 200", units, err)
-	}
-	if units, err := st.Queries.SumWriteUnits(ctx, "2026-09-18"); err != nil || units != 0 {
-		t.Errorf("write units on a date with no run = %d, %v, want 0", units, err)
 	}
 	if spent, err := st.Queries.CountQuotaSpentRuns(ctx, "2026-09-17"); err != nil || spent != 0 {
 		t.Errorf("quota refusals on 2026-09-17 = %d, %v, want 0", spent, err)

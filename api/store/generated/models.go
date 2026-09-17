@@ -8,13 +8,6 @@ import (
 	"database/sql"
 )
 
-type BaseItem struct {
-	ItemID     string
-	PlaylistID string
-	Position   int64
-	VideoID    string
-}
-
 type EnrichFailure struct {
 	VideoID     string
 	AttemptedTs string
@@ -22,25 +15,23 @@ type EnrichFailure struct {
 }
 
 type Playlist struct {
-	PlaylistID       string
-	Title            string
-	Description      string
-	Privacy          string
-	IsSortedManually bool
+	PlaylistID  string
+	Title       string
+	Description string
+	Privacy     string
 }
 
 type PlaylistItem struct {
-	PlaylistItemID int64
-	PlaylistID     string
-	Position       int64
-	VideoID        string
+	ItemID     string
+	PlaylistID string
+	Position   int64
+	VideoID    string
 }
 
-type PushRefusal struct {
-	PlaylistID string
-	VideoID    string
-	RefusedTs  string
-	Reason     string
+type PlaylistPrivacy struct {
+	Privacy     string
+	Label       string
+	Description string
 }
 
 type SyncFailure struct {
@@ -65,12 +56,10 @@ type SyncRun struct {
 	Playlists        int64
 	PlaylistsDeleted int64
 	PlaylistsSkipped int64
-	PulledIn         int64
-	PulledOut        int64
-	Writes           int64
+	ItemsAdded       int64
+	ItemsRemoved     int64
 	Requests         int64
-	ReadUnits        int64
-	WriteUnits       int64
+	Units            int64
 }
 
 type Track struct {

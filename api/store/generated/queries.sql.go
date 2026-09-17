@@ -56,16 +56,6 @@ func (q *Queries) CountVideos(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const deleteBaseItems = `-- name: DeleteBaseItems :exec
-DELETE FROM base_items
-WHERE playlist_id = ?
-`
-
-func (q *Queries) DeleteBaseItems(ctx context.Context, playlistID string) error {
-	_, err := q.db.ExecContext(ctx, deleteBaseItems, playlistID)
-	return err
-}
-
 const deletePlaylist = `-- name: DeletePlaylist :exec
 DELETE FROM playlists
 WHERE playlist_id = ?
@@ -117,8 +107,7 @@ SELECT
     playlist_id,
     title,
     description,
-    privacy,
-    is_sorted_manually
+    privacy
 FROM playlists
 WHERE playlist_id = ?
 `
@@ -131,7 +120,6 @@ func (q *Queries) GetPlaylist(ctx context.Context, playlistID string) (Playlist,
 		&i.Title,
 		&i.Description,
 		&i.Privacy,
-		&i.IsSortedManually,
 	)
 	return i, err
 }
@@ -146,12 +134,10 @@ SELECT
     playlists,
     playlists_deleted,
     playlists_skipped,
-    pulled_in,
-    pulled_out,
-    writes,
+    items_added,
+    items_removed,
     requests,
-    read_units,
-    write_units
+    units
 FROM sync_runs
 WHERE run_id = ?
 `
@@ -168,12 +154,10 @@ func (q *Queries) GetSyncRun(ctx context.Context, runID int64) (SyncRun, error) 
 		&i.Playlists,
 		&i.PlaylistsDeleted,
 		&i.PlaylistsSkipped,
-		&i.PulledIn,
-		&i.PulledOut,
-		&i.Writes,
+		&i.ItemsAdded,
+		&i.ItemsRemoved,
 		&i.Requests,
-		&i.ReadUnits,
-		&i.WriteUnits,
+		&i.Units,
 	)
 	return i, err
 }
@@ -250,41 +234,25 @@ func (q *Queries) ImportVideo(ctx context.Context, arg ImportVideoParams) error 
 	return err
 }
 
-const insertBaseItem = `-- name: InsertBaseItem :exec
-INSERT INTO base_items (item_id, playlist_id, position, video_id)
+const insertPlaylistItem = `-- name: InsertPlaylistItem :exec
+INSERT INTO playlist_items (item_id, playlist_id, position, video_id)
 VALUES (?, ?, ?, ?)
 `
 
-type InsertBaseItemParams struct {
+type InsertPlaylistItemParams struct {
 	ItemID     string
 	PlaylistID string
 	Position   int64
 	VideoID    string
 }
 
-func (q *Queries) InsertBaseItem(ctx context.Context, arg InsertBaseItemParams) error {
-	_, err := q.db.ExecContext(ctx, insertBaseItem,
+func (q *Queries) InsertPlaylistItem(ctx context.Context, arg InsertPlaylistItemParams) error {
+	_, err := q.db.ExecContext(ctx, insertPlaylistItem,
 		arg.ItemID,
 		arg.PlaylistID,
 		arg.Position,
 		arg.VideoID,
 	)
-	return err
-}
-
-const insertPlaylistItem = `-- name: InsertPlaylistItem :exec
-INSERT INTO playlist_items (playlist_id, position, video_id)
-VALUES (?, ?, ?)
-`
-
-type InsertPlaylistItemParams struct {
-	PlaylistID string
-	Position   int64
-	VideoID    string
-}
-
-func (q *Queries) InsertPlaylistItem(ctx context.Context, arg InsertPlaylistItemParams) error {
-	_, err := q.db.ExecContext(ctx, insertPlaylistItem, arg.PlaylistID, arg.Position, arg.VideoID)
 	return err
 }
 
@@ -307,9 +275,9 @@ func (q *Queries) InsertSyncFailure(ctx context.Context, arg InsertSyncFailurePa
 const insertSyncRun = `-- name: InsertSyncRun :one
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
-    pulled_in, pulled_out, writes, requests, read_units, write_units
+    items_added, items_removed, requests, units
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id
 `
 
@@ -321,12 +289,10 @@ type InsertSyncRunParams struct {
 	Playlists        int64
 	PlaylistsDeleted int64
 	PlaylistsSkipped int64
-	PulledIn         int64
-	PulledOut        int64
-	Writes           int64
+	ItemsAdded       int64
+	ItemsRemoved     int64
 	Requests         int64
-	ReadUnits        int64
-	WriteUnits       int64
+	Units            int64
 }
 
 func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (int64, error) {
@@ -338,12 +304,10 @@ func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (i
 		arg.Playlists,
 		arg.PlaylistsDeleted,
 		arg.PlaylistsSkipped,
-		arg.PulledIn,
-		arg.PulledOut,
-		arg.Writes,
+		arg.ItemsAdded,
+		arg.ItemsRemoved,
 		arg.Requests,
-		arg.ReadUnits,
-		arg.WriteUnits,
+		arg.Units,
 	)
 	var run_id int64
 	err := row.Scan(&run_id)
@@ -380,43 +344,6 @@ func (q *Queries) InsertTrack(ctx context.Context, arg InsertTrackParams) error 
 	return err
 }
 
-const listBaseItems = `-- name: ListBaseItems :many
-SELECT
-    item_id,
-    video_id
-FROM base_items
-WHERE playlist_id = ?
-ORDER BY position
-`
-
-type ListBaseItemsRow struct {
-	ItemID  string
-	VideoID string
-}
-
-func (q *Queries) ListBaseItems(ctx context.Context, playlistID string) ([]ListBaseItemsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listBaseItems, playlistID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListBaseItemsRow
-	for rows.Next() {
-		var i ListBaseItemsRow
-		if err := rows.Scan(&i.ItemID, &i.VideoID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listPlaylistIDs = `-- name: ListPlaylistIDs :many
 SELECT playlist_id FROM playlists
 ORDER BY playlist_id
@@ -445,54 +372,33 @@ func (q *Queries) ListPlaylistIDs(ctx context.Context) ([]string, error) {
 	return items, nil
 }
 
-const listPlaylistVideoIDs = `-- name: ListPlaylistVideoIDs :many
-SELECT video_id FROM playlist_items
+const listPlaylistItems = `-- name: ListPlaylistItems :many
+SELECT
+    item_id,
+    video_id
+FROM playlist_items
 WHERE playlist_id = ?
 ORDER BY position
 `
 
-func (q *Queries) ListPlaylistVideoIDs(ctx context.Context, playlistID string) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listPlaylistVideoIDs, playlistID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var video_id string
-		if err := rows.Scan(&video_id); err != nil {
-			return nil, err
-		}
-		items = append(items, video_id)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+type ListPlaylistItemsRow struct {
+	ItemID  string
+	VideoID string
 }
 
-const listPushRefusedVideoIDs = `-- name: ListPushRefusedVideoIDs :many
-SELECT video_id FROM push_refusals
-WHERE playlist_id = ?
-ORDER BY video_id
-`
-
-func (q *Queries) ListPushRefusedVideoIDs(ctx context.Context, playlistID string) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listPushRefusedVideoIDs, playlistID)
+func (q *Queries) ListPlaylistItems(ctx context.Context, playlistID string) ([]ListPlaylistItemsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaylistItems, playlistID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []string
+	var items []ListPlaylistItemsRow
 	for rows.Next() {
-		var video_id string
-		if err := rows.Scan(&video_id); err != nil {
+		var i ListPlaylistItemsRow
+		if err := rows.Scan(&i.ItemID, &i.VideoID); err != nil {
 			return nil, err
 		}
-		items = append(items, video_id)
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -591,31 +497,6 @@ func (q *Queries) ListTracks(ctx context.Context, videoID string) ([]Track, erro
 	return items, nil
 }
 
-const markPlaylistNotSortedManually = `-- name: MarkPlaylistNotSortedManually :exec
-UPDATE playlists
-SET is_sorted_manually = 0
-WHERE playlist_id = ?
-`
-
-func (q *Queries) MarkPlaylistNotSortedManually(ctx context.Context, playlistID string) error {
-	_, err := q.db.ExecContext(ctx, markPlaylistNotSortedManually, playlistID)
-	return err
-}
-
-const sumWriteUnits = `-- name: SumWriteUnits :one
-SELECT CAST(coalesce(sum(write_units), 0) AS INTEGER) FROM sync_runs
-WHERE quota_date = ?
-`
-
-// The write units every run on quota_date spent, which is the day's write
-// spend the worker's allowance is checked against.
-func (q *Queries) SumWriteUnits(ctx context.Context, quotaDate string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, sumWriteUnits, quotaDate)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
 const upsertAvailableVideo = `-- name: UpsertAvailableVideo :exec
 INSERT INTO videos (video_id, title, channel_title, is_unavailable)
 VALUES (?, ?, ?, 0)
@@ -683,28 +564,22 @@ func (q *Queries) UpsertPlaylist(ctx context.Context, arg UpsertPlaylistParams) 
 	return err
 }
 
-const upsertPushRefusal = `-- name: UpsertPushRefusal :exec
-INSERT INTO push_refusals (playlist_id, video_id, refused_ts, reason)
-VALUES (?, ?, ?, ?)
-ON CONFLICT (playlist_id, video_id) DO UPDATE SET
-    refused_ts = excluded.refused_ts,
-    reason = excluded.reason
+const upsertPlaylistPrivacy = `-- name: UpsertPlaylistPrivacy :exec
+INSERT INTO playlist_privacies (privacy, label, description)
+VALUES (?, ?, ?)
+ON CONFLICT (privacy) DO UPDATE SET
+    label = excluded.label,
+    description = excluded.description
 `
 
-type UpsertPushRefusalParams struct {
-	PlaylistID string
-	VideoID    string
-	RefusedTs  string
-	Reason     string
+type UpsertPlaylistPrivacyParams struct {
+	Privacy     string
+	Label       string
+	Description string
 }
 
-func (q *Queries) UpsertPushRefusal(ctx context.Context, arg UpsertPushRefusalParams) error {
-	_, err := q.db.ExecContext(ctx, upsertPushRefusal,
-		arg.PlaylistID,
-		arg.VideoID,
-		arg.RefusedTs,
-		arg.Reason,
-	)
+func (q *Queries) UpsertPlaylistPrivacy(ctx context.Context, arg UpsertPlaylistPrivacyParams) error {
+	_, err := q.db.ExecContext(ctx, upsertPlaylistPrivacy, arg.Privacy, arg.Label, arg.Description)
 	return err
 }
 

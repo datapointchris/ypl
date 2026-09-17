@@ -29,10 +29,9 @@ empty playlist still taking one.
 The server edits playlists through the Data API as well. Creating, renaming or deleting a playlist,
 and inserting, moving or deleting an item, costs 50 units a request.
 
-The server syncs every `SYNC_INTERVAL`, an hour when unset. Each run reads every playlist, merges
-it with the server's copy, and pushes the server's edits back. A day's writes stop short of the
-quota by what a full day of runs spends on reads, and resume after the quota resets at midnight
-Pacific.
+The server syncs every `SYNC_INTERVAL`, an hour when unset. Each run reads every playlist and
+stores it as YouTube holds it, at a unit a page. A run whose interval would read more in a day than
+the quota allows is recorded as partly synced.
 
 ## Install
 

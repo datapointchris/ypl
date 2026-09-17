@@ -72,31 +72,25 @@ type method struct {
 	retryAborted bool
 }
 
-// ReadUnits is the quota one list request costs, and WriteUnits the quota one
-// insert, update or delete costs, as the Data API's quota calculator prices them.
-const (
-	ReadUnits  = 1
-	WriteUnits = 50
-)
-
-// The methods this package calls, at those prices.
+// The methods this package calls, priced as the Data API's quota calculator
+// prices them.
 var (
-	playlistsList   = method{name: "playlists.list", units: ReadUnits}
-	playlistsInsert = method{name: "playlists.insert", units: WriteUnits}
-	playlistsUpdate = method{name: "playlists.update", units: WriteUnits}
+	playlistsList   = method{name: "playlists.list", units: 1}
+	playlistsInsert = method{name: "playlists.insert", units: 50}
+	playlistsUpdate = method{name: "playlists.update", units: 50}
 	playlistsDelete = method{
-		name: "playlists.delete", units: WriteUnits,
+		name: "playlists.delete", units: 50,
 		refusals: map[string]error{"playlistNotFound": ErrPlaylistNotFound},
 	}
 	playlistItemsList = method{
-		name: "playlistItems.list", units: ReadUnits,
+		name: "playlistItems.list", units: 1,
 		refusals: map[string]error{"playlistNotFound": ErrPlaylistNotFound},
 	}
 	// An insert sent right after its playlist was created was aborted twice,
 	// and each playlist afterwards held only the copies from inserts that
 	// returned 200.
 	playlistItemsInsert = method{
-		name: "playlistItems.insert", units: WriteUnits,
+		name: "playlistItems.insert", units: 50,
 		refusals: map[string]error{
 			"playlistNotFound":   ErrPlaylistNotFound,
 			"videoNotFound":      ErrVideoNotFound,
@@ -108,14 +102,14 @@ var (
 	// A move always sends the item's playlist, video and position, and YouTube
 	// answered one naming a deleted item with invalidSnippet.
 	playlistItemsUpdate = method{
-		name: "playlistItems.update", units: WriteUnits,
+		name: "playlistItems.update", units: 50,
 		refusals: map[string]error{
 			"invalidSnippet":     ErrItemNotFound,
 			"manualSortRequired": ErrManualSortRequired,
 		},
 	}
 	playlistItemsDelete = method{
-		name: "playlistItems.delete", units: WriteUnits,
+		name: "playlistItems.delete", units: 50,
 		refusals: map[string]error{"playlistItemNotFound": ErrItemNotFound},
 	}
 )

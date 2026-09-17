@@ -42,16 +42,24 @@ const (
 
 // syncOutcomes is the sync_outcomes vocabulary, upserted on every open.
 var syncOutcomes = []generated.UpsertSyncOutcomeParams{
-	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was reconciled, and each push was made or left for a later day's allowance"},
-	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and at least one playlist was skipped or had its push stopped"},
+	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was read and stored"},
+	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and at least one playlist was not stored or the interval's runs read more than a day's quota"},
 	{Outcome: OutcomeQuotaSpent, Label: "Quota spent", Description: "YouTube refused a request for the day's quota, in this run or an earlier one on the same Pacific date"},
-	{Outcome: OutcomeFailed, Label: "Failed", Description: "The run stopped on an error before it read every playlist"},
+	{Outcome: OutcomeFailed, Label: "Failed", Description: "An error ended the run before it finished"},
 	{Outcome: OutcomeCanceled, Label: "Canceled", Description: "The run was canceled before it finished"},
 }
 
-// BaseItem is one slot of a playlist's base: YouTube's playlistItem id and the
-// video in it.
-type BaseItem struct {
+// playlistPrivacies is the playlist_privacies vocabulary, upserted on every
+// open. It holds each privacy YouTube reports for a playlist.
+var playlistPrivacies = []generated.UpsertPlaylistPrivacyParams{
+	{Privacy: "public", Label: "Public", Description: "Anyone can find and watch the playlist"},
+	{Privacy: "unlisted", Label: "Unlisted", Description: "Anyone with the link can watch the playlist"},
+	{Privacy: "private", Label: "Private", Description: "Only the channel can see the playlist"},
+}
+
+// PlaylistItem is one item of a playlist as YouTube holds it: its playlistItem id
+// and the video in it.
+type PlaylistItem struct {
 	ItemID  string
 	VideoID string
 }
@@ -158,31 +166,16 @@ func (tx *Tx) ReplaceTracks(ctx context.Context, videoID string, tracks []genera
 	return nil
 }
 
-// ReplacePlaylistItems sets the server's order of the playlist playlistID to
-// videoIDs, removing every item it held before.
-func (tx *Tx) ReplacePlaylistItems(ctx context.Context, playlistID string, videoIDs []string) error {
+// ReplacePlaylistItems sets the items of the playlist playlistID to items, in
+// order, removing every item it held before.
+func (tx *Tx) ReplacePlaylistItems(ctx context.Context, playlistID string, items []PlaylistItem) error {
 	if err := tx.DeletePlaylistItems(ctx, playlistID); err != nil {
 		return fmt.Errorf("delete the items of %s: %w", playlistID, err)
 	}
-	for position, videoID := range videoIDs {
-		item := generated.InsertPlaylistItemParams{PlaylistID: playlistID, Position: int64(position), VideoID: videoID}
-		if err := tx.InsertPlaylistItem(ctx, item); err != nil {
-			return fmt.Errorf("insert video %s at %d in %s: %w", videoID, position, playlistID, err)
-		}
-	}
-	return nil
-}
-
-// ReplaceBaseItems sets the base of the playlist playlistID to items, in order,
-// removing every item it held before.
-func (tx *Tx) ReplaceBaseItems(ctx context.Context, playlistID string, items []BaseItem) error {
-	if err := tx.DeleteBaseItems(ctx, playlistID); err != nil {
-		return fmt.Errorf("delete the base of %s: %w", playlistID, err)
-	}
 	for position, item := range items {
-		row := generated.InsertBaseItemParams{ItemID: item.ItemID, PlaylistID: playlistID, Position: int64(position), VideoID: item.VideoID}
-		if err := tx.InsertBaseItem(ctx, row); err != nil {
-			return fmt.Errorf("insert base item %s at %d in %s: %w", item.ItemID, position, playlistID, err)
+		row := generated.InsertPlaylistItemParams{ItemID: item.ItemID, PlaylistID: playlistID, Position: int64(position), VideoID: item.VideoID}
+		if err := tx.InsertPlaylistItem(ctx, row); err != nil {
+			return fmt.Errorf("insert item %s at %d in %s: %w", item.ItemID, position, playlistID, err)
 		}
 	}
 	return nil
@@ -212,6 +205,11 @@ func (s *Store) seed(ctx context.Context) error {
 	for _, outcome := range syncOutcomes {
 		if err := s.Queries.UpsertSyncOutcome(ctx, outcome); err != nil {
 			return fmt.Errorf("seed sync outcome %s: %w", outcome.Outcome, err)
+		}
+	}
+	for _, privacy := range playlistPrivacies {
+		if err := s.Queries.UpsertPlaylistPrivacy(ctx, privacy); err != nil {
+			return fmt.Errorf("seed playlist privacy %s: %w", privacy.Privacy, err)
 		}
 	}
 	return nil
