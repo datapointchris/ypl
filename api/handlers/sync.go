@@ -14,10 +14,13 @@ import (
 )
 
 // syncRun is one run of the sync: when it ran, the Pacific date whose quota it
-// spent, how it ended, what it changed, the writes it pushed, what it cost, and
-// each playlist it could not sync. A playlist deferred is one whose items were
-// written too recently for the run's read to show, and a failure with a null
-// playlist_id failed the run as a whole.
+// spent, how it ended, what it changed, the writes it pushed, what it cost, what
+// its enrichment read, and each playlist or video it could not sync or read. A
+// playlist deferred is one whose items were written too recently for the run's
+// read to show. A video unreadable is one YouTube will never let a signed-out
+// read return, and is_rate_limited says YouTube refused the run's reads of
+// videos for now. A failure with a null playlist_id and video_id failed the run
+// as a whole, or its enrichment.
 type syncRun struct {
 	ID                int64         `json:"id"`
 	StartedTs         string        `json:"started_ts"`
@@ -34,11 +37,17 @@ type syncRun struct {
 	Requests          int64         `json:"requests"`
 	Units             int64         `json:"units"`
 	WriteUnits        int64         `json:"write_units"`
+	VideoReads        int64         `json:"video_reads"`
+	VideosEnriched    int64         `json:"videos_enriched"`
+	TracksFound       int64         `json:"tracks_found"`
+	VideosUnreadable  int64         `json:"videos_unreadable"`
+	IsRateLimited     bool          `json:"is_rate_limited"`
 	Failures          []syncFailure `json:"failures"`
 }
 
 type syncFailure struct {
 	PlaylistID *string `json:"playlist_id"`
+	VideoID    *string `json:"video_id"`
 	Error      string  `json:"error"`
 }
 
@@ -179,6 +188,11 @@ func syncRunFrom(row generated.SyncRun) syncRun {
 		Requests:          row.Requests,
 		Units:             row.Units,
 		WriteUnits:        row.WriteUnits,
+		VideoReads:        row.VideoReads,
+		VideosEnriched:    row.VideosEnriched,
+		TracksFound:       row.TracksFound,
+		VideosUnreadable:  row.VideosUnreadable,
+		IsRateLimited:     row.IsRateLimited,
 		Failures:          []syncFailure{},
 	}
 }
@@ -195,7 +209,7 @@ func attachFailures(runs []syncRun, failures []generated.SyncFailure) error {
 		if !ok {
 			return fmt.Errorf("failure %d belongs to run %d, which is not among the runs read", f.SyncFailureID, f.RunID)
 		}
-		run.Failures = append(run.Failures, syncFailure{PlaylistID: nullableText(f.PlaylistID), Error: f.Error})
+		run.Failures = append(run.Failures, syncFailure{PlaylistID: nullableText(f.PlaylistID), VideoID: nullableText(f.VideoID), Error: f.Error})
 	}
 	return nil
 }

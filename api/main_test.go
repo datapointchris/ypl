@@ -275,6 +275,44 @@ func TestSyncIntervalDefaultsToAnHourAndRefusesAnythingButAPositiveDuration(t *t
 	}
 }
 
+func TestTheREADMEStatesTheEnrichmentDefaults(t *testing.T) {
+	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(string(readme)), " ")
+	want := fmt.Sprintf("at most `ENRICH_VIDEOS_PER_RUN` videos, %d when unset, `ENRICH_PACE` apart, %d seconds when unset", defaultEnrichVideos, int(defaultEnrichPace.Seconds()))
+	if !strings.Contains(text, want) {
+		t.Fatalf("the README does not say %q", want)
+	}
+}
+
+func TestEnrichmentDefaultsAndRefusesAnythingButAPositivePaceAndACount(t *testing.T) {
+	t.Setenv("ENRICH_PACE", "")
+	t.Setenv("ENRICH_VIDEOS_PER_RUN", "")
+	if pace, videos, err := enrichment(); err != nil || pace != defaultEnrichPace || videos != defaultEnrichVideos {
+		t.Fatalf("enrichment unset = %v, %d, %v, want %v and %d", pace, videos, err, defaultEnrichPace, defaultEnrichVideos)
+	}
+	t.Setenv("ENRICH_PACE", "30s")
+	t.Setenv("ENRICH_VIDEOS_PER_RUN", "0")
+	if pace, videos, err := enrichment(); err != nil || pace != 30*time.Second || videos != 0 {
+		t.Fatalf("enrichment of 30s and 0 = %v, %d, %v, want 30s and no videos", pace, videos, err)
+	}
+	for name, env := range map[string][2]string{
+		"no pace":       {"0s", "30"},
+		"a pace behind": {"-10s", "30"},
+		"a pace word":   {"slow", "30"},
+		"a count below": {"10s", "-1"},
+		"a count word":  {"10s", "thirty"},
+	} {
+		t.Setenv("ENRICH_PACE", env[0])
+		t.Setenv("ENRICH_VIDEOS_PER_RUN", env[1])
+		if _, _, err := enrichment(); err == nil {
+			t.Errorf("enrichment with %s succeeded, want a refusal", name)
+		}
+	}
+}
+
 func TestIdentityProviderRequiresAnIssuerAndDefaultsThePrefix(t *testing.T) {
 	t.Setenv("OIDC_ISSUER", "")
 	if _, _, err := identityProvider(); err == nil {

@@ -20,6 +20,8 @@ type EnrichFailure struct {
 	VideoID     string
 	AttemptedTs string
 	Reason      string
+	Attempts    int64
+	RetryTs     sql.NullString
 }
 
 type Play struct {
@@ -65,6 +67,7 @@ type SyncFailure struct {
 	RunID         int64
 	PlaylistID    sql.NullString
 	Error         string
+	VideoID       sql.NullString
 }
 
 type SyncOutcome struct {
@@ -89,6 +92,11 @@ type SyncRun struct {
 	PlaylistsDeferred int64
 	Writes            int64
 	WriteUnits        int64
+	VideoReads        int64
+	VideosEnriched    int64
+	TracksFound       int64
+	VideosUnreadable  int64
+	IsRateLimited     bool
 }
 
 type Track struct {

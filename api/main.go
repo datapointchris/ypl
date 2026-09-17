@@ -5,6 +5,10 @@
 // to stdout, and drains in-flight requests and the sync run on SIGINT or
 // SIGTERM.
 //
+// Each sync run ends by reading tracklists with the yt-dlp binary YTDLP_PATH
+// names (yt-dlp on PATH when unset): at most ENRICH_VIDEOS_PER_RUN videos (30
+// when unset), ENRICH_PACE apart (10s when unset) or up to half as long again.
+//
 // It answers /api/v1 only to a request carrying an access token the identity
 // provider OIDC_ISSUER signed for a client whose id starts with
 // CLI_CLIENT_ID_PREFIX (ypl-cli- when unset). The provider is read beside the
@@ -21,16 +25,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/datapointchris/ypl/api/auth"
+	"github.com/datapointchris/ypl/api/enrich"
 	"github.com/datapointchris/ypl/api/handlers"
 	"github.com/datapointchris/ypl/api/reconcile"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/wire"
 	"github.com/datapointchris/ypl/api/youtube"
+	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
 // shutdownGrace bounds how long in-flight requests get to finish after the
@@ -71,6 +78,14 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	reader, err := ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp"))
+	if err != nil {
+		return fmt.Errorf("%w: install yt-dlp or set YTDLP_PATH to it", err)
+	}
+	pace, batch, err := enrichment()
+	if err != nil {
+		return err
+	}
 	issuer, clientIDPrefix, err := identityProvider()
 	if err != nil {
 		return err
@@ -92,7 +107,8 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	worker := reconcile.NewWorker(reconcile.NewRunner(st, syncChannel, interval), interval, slog.Default())
+	runner := reconcile.NewRunner(st, syncChannel, enrich.New(st, reader, pace, batch), interval)
+	worker := reconcile.NewWorker(runner, interval, slog.Default())
 	provider := auth.NewConnecting(issuer, clientIDPrefix)
 	api := handlers.New(st, apiChannel, slog.Default())
 	work := func(ctx context.Context) {
@@ -130,6 +146,36 @@ func syncInterval() (time.Duration, error) {
 		return 0, fmt.Errorf("SYNC_INTERVAL %q is not a positive duration, such as 1h or 30m", raw)
 	}
 	return interval, nil
+}
+
+const (
+	// defaultEnrichPace is the least time between two reads of videos when
+	// ENRICH_PACE is unset. yt-dlp reads from the server's own address, which
+	// YouTube throttles after reads that come too fast.
+	defaultEnrichPace = 10 * time.Second
+	// defaultEnrichVideos is the most videos a run reads when
+	// ENRICH_VIDEOS_PER_RUN is unset, which holds a run's reads to a few
+	// minutes.
+	defaultEnrichVideos = 30
+)
+
+// enrichment is ENRICH_PACE as a duration and ENRICH_VIDEOS_PER_RUN as a count,
+// or defaultEnrichPace and defaultEnrichVideos for each unset.
+func enrichment() (pace time.Duration, videos int, err error) {
+	pace, videos = defaultEnrichPace, defaultEnrichVideos
+	if raw := os.Getenv("ENRICH_PACE"); raw != "" {
+		pace, err = time.ParseDuration(raw)
+		if err != nil || pace <= 0 {
+			return 0, 0, fmt.Errorf("ENRICH_PACE %q is not a positive duration, such as 10s", raw)
+		}
+	}
+	if raw := os.Getenv("ENRICH_VIDEOS_PER_RUN"); raw != "" {
+		videos, err = strconv.Atoi(raw)
+		if err != nil || videos < 0 {
+			return 0, 0, fmt.Errorf("ENRICH_VIDEOS_PER_RUN %q is not a count of videos, such as 30, or 0 to read none", raw)
+		}
+	}
+	return pace, videos, nil
 }
 
 // run binds addr and serves h on it, doing work beside the server. A port that

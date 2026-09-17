@@ -224,7 +224,7 @@ func TestAnIntervalWhoseRunsOutreadTheQuotaIsReported(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = st.Close() })
 
-			report := mustRun(t, context.Background(), NewRunner(st, f, c.interval), c.outcome)
+			report := mustRun(t, context.Background(), NewRunner(st, f, &fakeEnricher{}, c.interval), c.outcome)
 			exceeds := slices.ContainsFunc(report.Failures, func(f Failure) bool { return errors.Is(f.Err, ErrReadsExceedQuota) })
 			if exceeds != (c.outcome == store.OutcomePartial) || report.Playlists != 1 {
 				t.Fatalf("report %+v, want the playlist stored and ErrReadsExceedQuota reported only when the day's reads pass the quota", report)

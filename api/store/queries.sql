@@ -58,19 +58,53 @@ WHERE video_id = ?
 ORDER BY position;
 
 -- name: UpsertEnrichFailure :exec
-INSERT INTO enrich_failures (video_id, attempted_ts, reason)
-VALUES (?, ?, ?)
+INSERT INTO enrich_failures (video_id, attempted_ts, reason, attempts, retry_ts)
+VALUES (?, ?, ?, ?, ?)
 ON CONFLICT (video_id) DO UPDATE SET
     attempted_ts = excluded.attempted_ts,
-    reason = excluded.reason;
+    reason = excluded.reason,
+    attempts = excluded.attempts,
+    retry_ts = excluded.retry_ts;
 
 -- name: GetEnrichFailure :one
 SELECT
     video_id,
     attempted_ts,
-    reason
+    reason,
+    attempts,
+    retry_ts
 FROM enrich_failures
 WHERE video_id = ?;
+
+-- name: DeleteEnrichFailure :exec
+DELETE FROM enrich_failures
+WHERE video_id = ?;
+
+-- name: ListVideosToEnrich :many
+-- The videos some playlist holds that play and that enrichment has not read,
+-- less those a failure holds back past now, the ones a playlist gained latest
+-- first. A failure whose retry_ts is NULL holds its video back for good.
+SELECT v.video_id
+FROM videos AS v
+INNER JOIN playlist_entries AS pe ON v.video_id = pe.video_id
+LEFT JOIN enrich_failures AS f ON v.video_id = f.video_id
+WHERE
+    v.enriched_ts IS NULL
+    AND v.is_unavailable = 0
+    AND (f.video_id IS NULL OR f.retry_ts <= sqlc.arg(now))
+GROUP BY v.video_id
+ORDER BY max(pe.entry_id) DESC
+LIMIT sqlc.arg(max_videos);
+
+-- name: SetVideoEnrichment :execrows
+-- Stores what a full read of a video reports that a playlist read does not, and
+-- when enrichment read it.
+UPDATE videos SET
+    duration_seconds = sqlc.narg(duration_seconds),
+    description = sqlc.arg(description),
+    upload_date = sqlc.narg(upload_date),
+    enriched_ts = sqlc.arg(enriched_ts)
+WHERE video_id = sqlc.arg(video_id);
 
 -- name: CountVideos :one
 SELECT count(*) FROM videos;
@@ -241,14 +275,21 @@ ON CONFLICT (outcome) DO UPDATE SET
 -- name: InsertSyncRun :one
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
-    playlists_deferred, items_added, items_removed, requests, units, writes, write_units
+    playlists_deferred, items_added, items_removed, requests, units, writes, write_units,
+    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id;
 
 -- name: InsertSyncFailure :exec
-INSERT INTO sync_failures (run_id, playlist_id, error)
-VALUES (?, ?, ?);
+INSERT INTO sync_failures (run_id, playlist_id, video_id, error)
+VALUES (?, ?, ?, ?);
+
+-- name: CountRateLimitedRunsSince :one
+-- How many runs that finished after since had YouTube refuse their reads of
+-- videos for now.
+SELECT count(*) FROM sync_runs
+WHERE is_rate_limited = 1 AND finished_ts > sqlc.arg(since);
 
 -- name: GetSyncRun :one
 SELECT
@@ -266,7 +307,12 @@ SELECT
     units,
     playlists_deferred,
     writes,
-    write_units
+    write_units,
+    video_reads,
+    videos_enriched,
+    tracks_found,
+    videos_unreadable,
+    is_rate_limited
 FROM sync_runs
 WHERE run_id = ?;
 
@@ -275,7 +321,8 @@ SELECT
     sync_failure_id,
     run_id,
     playlist_id,
-    error
+    error,
+    video_id
 FROM sync_failures
 WHERE run_id = ?
 ORDER BY sync_failure_id;
@@ -512,7 +559,12 @@ SELECT
     units,
     playlists_deferred,
     writes,
-    write_units
+    write_units,
+    video_reads,
+    videos_enriched,
+    tracks_found,
+    videos_unreadable,
+    is_rate_limited
 FROM sync_runs
 ORDER BY run_id DESC
 LIMIT sqlc.arg(max_rows);
@@ -534,7 +586,12 @@ SELECT
     units,
     playlists_deferred,
     writes,
-    write_units
+    write_units,
+    video_reads,
+    videos_enriched,
+    tracks_found,
+    videos_unreadable,
+    is_rate_limited
 FROM sync_runs
 WHERE run_id < sqlc.arg(run_id)
 ORDER BY run_id DESC
@@ -546,7 +603,8 @@ SELECT
     sync_failure_id,
     run_id,
     playlist_id,
-    error
+    error,
+    video_id
 FROM sync_failures
 WHERE run_id BETWEEN sqlc.arg(first_run_id) AND sqlc.arg(last_run_id)
 ORDER BY run_id, sync_failure_id;
@@ -567,7 +625,12 @@ SELECT
     units,
     playlists_deferred,
     writes,
-    write_units
+    write_units,
+    video_reads,
+    videos_enriched,
+    tracks_found,
+    videos_unreadable,
+    is_rate_limited
 FROM sync_runs
 WHERE outcome = ?
 ORDER BY run_id DESC

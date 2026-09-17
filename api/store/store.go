@@ -27,11 +27,12 @@ import (
 var migrations embed.FS
 
 // trackSources is the vocabulary tracks.source draws from, upserted on every
-// open. It matches the Python tool's seed, so every track a Python mirror can
-// hold has its source here.
+// open. It holds the Python tool's seed, so every track a Python mirror can hold
+// has its source here, and comment, which only the server reads.
 var trackSources = []generated.UpsertTrackSourceParams{
 	{Source: "chapter", Label: "Chapter", Description: "YouTube chapter marker, carries real timestamps"},
 	{Source: "description", Label: "Description", Description: "Parsed from the video description"},
+	{Source: "comment", Label: "Comment", Description: "Parsed from timestamped lines in one of the video's top comments"},
 	{Source: "llm", Label: "Claude", Description: "Extracted by Claude from unstructured text"},
 	{Source: "manual", Label: "Manual", Description: "Entered by hand"},
 }
@@ -47,8 +48,8 @@ const (
 
 // syncOutcomes is the sync_outcomes vocabulary, upserted on every open.
 var syncOutcomes = []generated.UpsertSyncOutcomeParams{
-	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was merged, or left for the next run because its items were written within the read lag, and no push write was refused, unanswered or held back"},
-	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and a playlist was skipped, a push write was refused, unanswered or held back, the day's quota had no room for a write beside the reads of the day's remaining runs, or the interval's runs read more than a day's quota"},
+	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was merged, or left for the next run because its items were written within the read lag, no push write was refused, unanswered or held back, and no read of a video failed"},
+	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and a playlist was skipped, a push write was refused, unanswered or held back, the day's quota had no room for a write beside the reads of the day's remaining runs, the interval's runs read more than a day's quota, a read of a video failed, or reads of videos were paused after YouTube refused one"},
 	{Outcome: OutcomeQuotaSpent, Label: "Quota spent", Description: "YouTube refused a request for the day's quota, in this run or an earlier one on the same Pacific date"},
 	{Outcome: OutcomeFailed, Label: "Failed", Description: "An error ended the run before it finished"},
 	{Outcome: OutcomeCanceled, Label: "Canceled", Description: "The run was canceled before it finished"},
