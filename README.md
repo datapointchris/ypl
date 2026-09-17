@@ -163,6 +163,57 @@ most 100.
 A refused request answers `{"error": "<sentence>", "code": "<code>"}`. The sentence is for a person
 and can change. The code is for a client to branch on, and `api/wire` lists every one.
 
+## The command-line client
+
+`cli/` is the `ypl` every machine runs. It holds no database and reads nothing from YouTube — every
+answer comes from the server, so several machines see one library rather than each keeping a copy
+that drifts.
+
+Nothing about a deployment is built into the binary. The server's address and the identity provider
+that signs its tokens each name one installation, so they are read from
+`$XDG_CONFIG_HOME/ypl/config.toml` or from the environment:
+
+```toml
+api_base = "https://ypl.example.com"
+issuer = "https://auth.example.com"
+```
+
+`YPL_API_BASE`, `YPL_OIDC_ISSUER` and `YPL_CLIENT_ID` override the file. `ypl config show` prints
+every setting with the layer that set it, because a value alone does not say whether it came from
+the file or from an export made months ago.
+
+`ypl auth login` authenticates the machine with the OAuth 2.0 device authorization grant: the CLI
+prints a code and a URL, and approving it in a browser anywhere logs this machine in. That is what
+makes it work over SSH on a machine with no browser. The token goes in the OS keychain, or in a
+mode-600 file on a host that has none, and it is refreshed under a lock so two commands at once
+cannot spend the same refresh token twice. The client id is `ypl-cli-<machine>`, one per machine, so
+a token can be revoked for one machine without touching the others.
+
+| Command | Answers with |
+| --- | --- |
+| `ypl playlists list` | Every playlist, with how many videos it holds and how many are read or gone |
+| `ypl playlists show <playlist>` | One playlist and its videos in order |
+| `ypl videos list` | The library as one set, narrowed by `--playlist`, `--artist`, `--min-minutes`, `--max-minutes` and ordered by `--sort` |
+| `ypl videos show <video-id>` | One video with its tracklist |
+| `ypl videos sorts` | The orders `--sort` accepts |
+| `ypl plays list` | What has been listened to, newest first |
+| `ypl plays show <play>` | One play, by its handle, its id, or the last eight characters of that id |
+| `ypl next` | What to put on next: never-played first, then least recently played |
+| `ypl status` | What the store holds, the latest sync run, and the latest that ended ok |
+| `ypl sync runs list` | The sync's own history with the failures each run recorded |
+| `ypl config show` | Every resolved setting and where it came from |
+| `ypl auth login\|logout\|status\|token` | This machine's session |
+
+A playlist is named by its title or its YouTube id at every command that takes one, and the title's
+case, spacing and punctuation do not have to be reproduced. `ypl playlists show 'sunday morning'`
+finds Sunday Morning.
+
+Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
+nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
+success, 2 for an invocation the CLI would not accept, and 1 for a command that ran and failed;
+`ypl auth status` and `ypl next` exit 1 to report a real state rather than a failure, so a status bar
+can run either unguarded.
+
 ## Install
 
 ```bash

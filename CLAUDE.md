@@ -63,6 +63,23 @@ is permanent without a route back. A video is queued on whether it holds tracks,
 a read has reached it, and `api/cmd/reset-enrichment` shows every video enrichment has stopped
 reading and puts them back. Anything added that excludes a video from future work ships the same.
 
+## The CLI knows the wire contract and nothing else
+
+`cli/internal/api` holds the JSON shapes the server sends, not the server's types, and it ignores a
+field the server adds. Reaching into `api/handlers` for a struct would make every server refactor a
+CLI release, and a CLI is on machines the server cannot redeploy.
+
+Nothing about a deployment is compiled in. The server's address and the identity provider each name
+one installation, so both are read from config and an unset one resolves as unset. A default here
+would point the CLI somewhere plausible instead of saying it was never told, which is the harder
+failure to diagnose. `cli/internal/config` declares every setting in one table, and the rows
+`ypl config show` prints are built from it, so a setting cannot be added without the command
+learning to print it.
+
+The two things the command tree reaches — the server and the machine's keychain — are fields on
+`app`. A command that reached either directly could not be tested without a live server and the real
+keychain, which is shared machine state a test may not write.
+
 ## Where the Python tool fits
 
 `src/` and `tests/` are the original single-user Python tool. It is the source of the library the
