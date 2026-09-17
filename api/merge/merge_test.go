@@ -1,6 +1,7 @@
 package merge
 
 import (
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -187,6 +188,30 @@ func TestTheSameEditsWithNoBaseResurrectWhatWasDeleted(t *testing.T) {
 	result := merged("", "abdfg", "acdef")
 	if !sameMembers(result.PendingAdd, "ce") {
 		t.Errorf("pending add = %q, want c and e", result.PendingAdd)
+	}
+}
+
+// A server that edited nothing since the last reconcile takes YouTube's playlist
+// as it stands, whatever YouTube did, so a sync of an unedited server writes
+// nothing back. Random lists over a four-video alphabet make copies common.
+func TestAnUneditedServerTakesYouTubesOrderAndPushesNothing(t *testing.T) {
+	random := rand.New(rand.NewPCG(3, 4))
+	draw := func() []string {
+		videos := make([]string, random.IntN(12))
+		for i := range videos {
+			videos[i] = string(rune('a' + random.IntN(4)))
+		}
+		return videos
+	}
+	for range 2000 {
+		base, remote := draw(), draw()
+		result := Merge(base, remote, base)
+		if !slices.Equal(result.Order, remote) {
+			t.Fatalf("merging %q from %q with the server unchanged gives %q", remote, base, result.Order)
+		}
+		if push := PlanPush(remote, result.Order); !push.Empty() {
+			t.Fatalf("an unedited server plans %+v against %q", push, remote)
+		}
 	}
 }
 
