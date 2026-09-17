@@ -104,6 +104,12 @@ provider beside the sync, retrying while it is down, and `/ready` answers 200 on
 | `GET /api/v1/sync/runs` | Sync runs newest first with their failures, a page at a time |
 | `GET /api/v1/status` | What the store holds, the latest run, and the latest run that ended ok |
 
+A playlist is named by its YouTube id or by its title, wherever one is named — in the path, and in
+the `playlist` parameter of videos and suggestions. Titles are matched with their case, spacing and
+punctuation removed, so `deep house` and `Deep / House!` both reach the same playlist, and a title
+matching the whole of what was sent beats one merely holding it. A name matching two playlists is
+refused naming each, rather than answered with one of them.
+
 `GET /api/v1/videos` narrows by `playlist`, `min_seconds`, `max_seconds` and `artist`, which
 matches part of an artist's name ignoring case and accents. `sort` is one of `longest`, `shortest`,
 `newest`, `oldest`, `title` or `random`. The first is the order when `sort` is absent.
@@ -156,6 +162,63 @@ most 100.
 
 A refused request answers `{"error": "<sentence>", "code": "<code>"}`. The sentence is for a person
 and can change. The code is for a client to branch on, and `api/wire` lists every one.
+
+## The command-line client
+
+**Two programs in this repository are called `ypl`, and this section is the Go one in `cli/`.**
+Every section from *Install* down is the Python tool in `src/`, which is the single-user original
+and is retired once the server takes over. They share a name and several words — `sync` runs a sync
+in one and reads the server's history in the other, `auth` signs into YouTube in one and into the
+server's identity provider in the other — so a command from one section does not mean the same
+thing in the other. They do share `$XDG_CONFIG_HOME/ypl/config.toml` safely: each reads only the
+keys it knows and leaves the rest alone.
+
+`cli/` holds no database and reads nothing from YouTube. Every answer comes from the server, so
+several machines see one library rather than each keeping a copy that drifts.
+
+Nothing about a deployment is built into the binary. The server's address and the identity provider
+that signs its tokens each name one installation, so they are read from
+`$XDG_CONFIG_HOME/ypl/config.toml` or from the environment:
+
+```toml
+api_base = "https://ypl.example.com"
+issuer = "https://auth.example.com"
+```
+
+`YPL_API_BASE`, `YPL_OIDC_ISSUER` and `YPL_CLIENT_ID` override the file. `ypl config show` prints
+every setting with the layer that set it, because a value alone does not say whether it came from
+the file or from an export made months ago.
+
+`ypl auth login` authenticates the machine with the OAuth 2.0 device authorization grant: the CLI
+prints a code and a URL, and approving it in a browser anywhere logs this machine in. That is what
+makes it work over SSH on a machine with no browser. The token goes in the OS keychain, or in a
+mode-600 file on a host that has none, and it is refreshed under a lock so two commands at once
+cannot spend the same refresh token twice. The client id is `ypl-cli-<machine>`, one per machine, so
+a token can be revoked for one machine without touching the others.
+
+A first run is three commands:
+
+```bash
+ypl config example > "$(ypl config path)"   # fill in api_base and issuer
+ypl auth login                              # approve the code in a browser
+ypl status                                  # what the server holds
+```
+
+`ypl --help` is the command surface, grouped by what someone is trying to do. It is not repeated
+here, because a list in markdown goes stale and `--help` cannot.
+
+A playlist is named by its title or its YouTube id at every command that takes one, and the title's
+case, spacing and punctuation do not have to be reproduced. `ypl playlists show 'sunday morning'`
+finds Sunday Morning. A read also takes part of a title, so `ypl playlists show morning` finds it
+too — but only a read. A rename or a delete takes the id or the whole title, because a fragment
+that happens to match one playlist matches it unambiguously, and there is nothing for the
+two-matches refusal to catch.
+
+Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
+nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
+success, 2 for an invocation the CLI would not accept, and 1 for a command that ran and failed;
+`ypl auth status` and `ypl next` exit 1 to report a real state rather than a failure, so a status bar
+can run either unguarded.
 
 ## Install
 

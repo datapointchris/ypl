@@ -1,0 +1,53 @@
+{
+  "id": "PLA",
+  "title": "Alpha",
+  "description": "First",
+  "privacy": "private",
+  "item_count": 3,
+  "unavailable_count": 1,
+  "enriched_count": 1,
+  "items": [
+    {
+      "id": "ia",
+      "position": 0,
+      "video": {
+        "id": "a",
+        "title": "Zebra",
+        "channel_title": "One",
+        "duration_seconds": 3600,
+        "upload_date": "2020-01-01",
+        "is_unavailable": false,
+        "enriched_ts": "2026-01-01T00:00:00Z",
+        "track_count": 4
+      }
+    },
+    {
+      "id": "ib",
+      "position": 1,
+      "video": {
+        "id": "b",
+        "title": "apple",
+        "channel_title": "Two",
+        "duration_seconds": 1800,
+        "upload_date": "2022-05-01",
+        "is_unavailable": false,
+        "enriched_ts": null,
+        "track_count": 1
+      }
+    },
+    {
+      "id": "iu",
+      "position": 2,
+      "video": {
+        "id": "u",
+        "title": "Gone",
+        "channel_title": "Four",
+        "duration_seconds": null,
+        "upload_date": null,
+        "is_unavailable": true,
+        "enriched_ts": null,
+        "track_count": 0
+      }
+    }
+  ]
+}

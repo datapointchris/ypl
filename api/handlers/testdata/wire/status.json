@@ -1,0 +1,12 @@
+{
+  "library": {
+    "playlists": 3,
+    "videos": 5,
+    "unavailable_videos": 1,
+    "enriched_videos": 1,
+    "tracks": 5,
+    "plays": 1
+  },
+  "last_run": null,
+  "last_ok_run": null
+}

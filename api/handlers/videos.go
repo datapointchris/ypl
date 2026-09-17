@@ -136,9 +136,11 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 	var playlists []generated.ListVideoPlaylistsRow
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		if filter.PlaylistID.Valid {
-			if _, err := q.GetPlaylist(ctx, filter.PlaylistID.String); err != nil {
-				return paramRow(err, referenceError{name: "playlist", value: filter.PlaylistID.String})
+			id, err := resolvePlaylist(ctx, q, "playlist", filter.PlaylistID.String, loosely)
+			if err != nil {
+				return err
 			}
+			filter.PlaylistID.String = id
 		}
 		var err error
 		if rows, err = q.ListLibraryVideos(ctx, filter); err != nil {

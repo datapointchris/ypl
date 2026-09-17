@@ -1,0 +1,80 @@
+[
+  {
+    "id": "a",
+    "title": "Zebra",
+    "channel_title": "One",
+    "duration_seconds": 3600,
+    "upload_date": "2020-01-01",
+    "is_unavailable": false,
+    "enriched_ts": "2026-01-01T00:00:00Z",
+    "track_count": 4,
+    "artists": [
+      "Björk",
+      "Âme",
+      "Moby"
+    ],
+    "playlists": [
+      {
+        "id": "PLA",
+        "title": "Alpha"
+      }
+    ]
+  },
+  {
+    "id": "e",
+    "title": "Aardvark",
+    "channel_title": "Three",
+    "duration_seconds": 1800,
+    "upload_date": null,
+    "is_unavailable": false,
+    "enriched_ts": null,
+    "track_count": 0,
+    "artists": [],
+    "playlists": [
+      {
+        "id": "PLB",
+        "title": "zulu"
+      }
+    ]
+  },
+  {
+    "id": "b",
+    "title": "apple",
+    "channel_title": "Two",
+    "duration_seconds": 1800,
+    "upload_date": "2022-05-01",
+    "is_unavailable": false,
+    "enriched_ts": null,
+    "track_count": 1,
+    "artists": [
+      "moby"
+    ],
+    "playlists": [
+      {
+        "id": "PLA",
+        "title": "Alpha"
+      },
+      {
+        "id": "PLB",
+        "title": "zulu"
+      }
+    ]
+  },
+  {
+    "id": "c",
+    "title": "Évora",
+    "channel_title": "Two",
+    "duration_seconds": null,
+    "upload_date": null,
+    "is_unavailable": false,
+    "enriched_ts": null,
+    "track_count": 0,
+    "artists": [],
+    "playlists": [
+      {
+        "id": "PLB",
+        "title": "zulu"
+      }
+    ]
+  }
+]

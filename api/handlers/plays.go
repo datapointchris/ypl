@@ -200,7 +200,11 @@ func resolvePlay(ctx context.Context, q *generated.Queries, name, ref string) (g
 		handles[i] = row.Handle
 	}
 	slices.Sort(handles)
-	return generated.GetPlayRow{}, referenceError{name: name, value: ref, candidates: handles}
+	candidates := make([]string, len(handles))
+	for i, handle := range handles {
+		candidates[i] = strconv.FormatInt(handle, 10)
+	}
+	return generated.GetPlayRow{}, referenceError{name: name, value: ref, candidates: candidates}
 }
 
 // isTail reports whether ref has the shape of a play id's last tailLength
@@ -269,9 +273,11 @@ func (h *Handlers) listSuggestions(w http.ResponseWriter, r *http.Request) {
 	var rows []generated.ListSuggestionsRow
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		if params.PlaylistID.Valid {
-			if _, err := q.GetPlaylist(ctx, params.PlaylistID.String); err != nil {
-				return paramRow(err, referenceError{name: "playlist", value: params.PlaylistID.String})
+			id, err := resolvePlaylist(ctx, q, "playlist", params.PlaylistID.String, loosely)
+			if err != nil {
+				return err
 			}
+			params.PlaylistID.String = id
 		}
 		var err error
 		rows, err = q.ListSuggestions(ctx, params)

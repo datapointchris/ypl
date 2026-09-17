@@ -3,8 +3,13 @@ package handlers
 import (
 	"cmp"
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/wire"
@@ -75,18 +80,118 @@ func (h *Handlers) listPlaylists(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	id := r.PathValue("id")
+	ref := r.PathValue("id")
 	var shown playlist
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
-		var err error
+		id, err := resolvePlaylist(ctx, q, "playlist", ref, loosely)
+		if err != nil {
+			return err
+		}
 		shown, err = readPlaylist(ctx, q, id)
 		return err
 	})
 	if err != nil {
-		h.writeItemError(w, r, err, "playlist "+id)
+		h.writeItemError(w, r, err, "playlist "+ref)
 		return
 	}
 	wire.JSON(w, http.StatusOK, shown)
+}
+
+// reach is how far a reference is allowed to reach past the exact forms.
+type reach int
+
+const (
+	// exactly resolves an id, a whole title, and a title whose slug is the
+	// whole of what was sent. Nothing else.
+	exactly reach = iota
+	// loosely also resolves a title merely holding what was sent.
+	loosely
+)
+
+// resolvePlaylist is the id of the playlist ref names, looking as far as how
+// says. name is what the error calls ref.
+//
+// The exact forms are the id, the title as written, and the title as a slug —
+// the slug so that case, spacing and punctuation do not have to be reproduced,
+// and the title as written first so that Deep House and Deep-House each stay
+// reachable by their own text although they slug alike.
+//
+// Holding what was sent is the last resort and is offered to the reads alone.
+// The ambiguity refusal below is what makes loose matching safe, and it fires
+// only on two matches — a single *wrong* match is unambiguous, so it resolves
+// cleanly to a playlist nobody named. That costs a read another read, and it
+// costs a delete the playlist. Worse, it is a guard that weakens as the channel
+// shrinks: on a channel holding one playlist, any one letter reaches it.
+func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string, how reach) (string, error) {
+	// The id is the form every stored client already sends, so it stays a keyed
+	// read. Listing every playlist to find it would grow the cost of the common
+	// case with the channel, invisibly, since the id still resolves either way.
+	if _, err := q.GetPlaylist(ctx, ref); err == nil {
+		return ref, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+
+	rows, err := q.ListPlaylistReferences(ctx)
+	if err != nil {
+		return "", err
+	}
+	found := playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
+		return row.Title == ref
+	})
+	if len(found) == 0 && slug(ref) != "" {
+		found = playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
+			return slug(row.Title) == slug(ref)
+		})
+	}
+	if len(found) == 0 && how == loosely && slug(ref) != "" {
+		found = playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
+			return strings.Contains(slug(row.Title), slug(ref))
+		})
+	}
+	switch len(found) {
+	case 0:
+		return "", referenceError{name: name, value: ref}
+	case 1:
+		return found[0].PlaylistID, nil
+	}
+	candidates := make([]string, len(found))
+	for i, row := range found {
+		candidates[i] = fmt.Sprintf("%q (%s)", row.Title, row.PlaylistID)
+	}
+	return "", referenceError{name: name, value: ref, candidates: candidates}
+}
+
+// playlistsTitled is every row of rows that matches.
+func playlistsTitled(rows []generated.ListPlaylistReferencesRow, matches func(generated.ListPlaylistReferencesRow) bool) []generated.ListPlaylistReferencesRow {
+	var found []generated.ListPlaylistReferencesRow
+	for _, row := range rows {
+		if matches(row) {
+			found = append(found, row)
+		}
+	}
+	return found
+}
+
+// slug is title lowercased, with every run of anything that is not a letter or
+// a digit standing as one hyphen, and none at either end. Letters outside ASCII
+// are kept rather than dropped, since dropping them leaves a playlist named in
+// one unreachable by its own name.
+func slug(title string) string {
+	var slugged strings.Builder
+	var pending bool
+	for _, r := range title {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			pending = true
+			continue
+		}
+		if pending && slugged.Len() > 0 {
+			slugged.WriteByte('-')
+		}
+		pending = false
+		slugged.WriteRune(unicode.ToLower(r))
+	}
+	return slugged.String()
 }
 
 // readPlaylist is the stored playlist id with its items in the server's order.

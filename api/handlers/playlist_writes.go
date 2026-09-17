@@ -74,6 +74,26 @@ func recordContext(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(r.Context()), recordTimeout)
 }
 
+// playlistWritten is the id of the playlist a write names, read on a
+// recordContext so that a caller who goes away before the write begins is
+// answered by the same write the caller who stays gets. ok is false once it has
+// answered the reference naming no playlist, or more than one.
+//
+// It resolves exactly. These two verbs delete a playlist on YouTube and rename
+// one there, and neither is rebuildable from here — so a reference reaches them
+// only in a form somebody could have meant, never one a title merely happens to
+// hold.
+func (h *Handlers) playlistWritten(w http.ResponseWriter, r *http.Request, ref string) (string, bool) {
+	ctx, cancel := recordContext(r)
+	defer cancel()
+	id, err := resolvePlaylist(ctx, h.store.Queries, "playlist", ref, exactly)
+	if err != nil {
+		h.writeItemError(w, r, err, "playlist "+ref)
+		return "", false
+	}
+	return id, true
+}
+
 // validDetails refuses a blank title, and a title or description longer than
 // YouTube stores, counted as YouTube counts it. ok is false once it has
 // answered a 422.
@@ -148,7 +168,7 @@ func (h *Handlers) createPlaylist(w http.ResponseWriter, r *http.Request) {
 // on YouTube and in the store. YouTube replaces both together, so the field a
 // request leaves out is sent as YouTube holds it, read just before the write.
 func (h *Handlers) updatePlaylist(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	ref := r.PathValue("id")
 	body, ok := decodeJSON[playlistDetails](w, r, maxPlaylistBody, "a playlist")
 	if !ok {
 		return
@@ -158,6 +178,10 @@ func (h *Handlers) updatePlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validDetails(w, body) {
+		return
+	}
+	id, ok := h.playlistWritten(w, r, ref)
+	if !ok {
 		return
 	}
 
@@ -266,7 +290,11 @@ func (h *Handlers) currentDetails(w http.ResponseWriter, r *http.Request, id str
 // deletePlaylist deletes a stored playlist on YouTube and from the store, with
 // its items. A playlist YouTube has already deleted is deleted from the store.
 func (h *Handlers) deletePlaylist(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	ref := r.PathValue("id")
+	id, ok := h.playlistWritten(w, r, ref)
+	if !ok {
+		return
+	}
 	release, ok := h.takeWriteTurn(r)
 	if !ok {
 		return
@@ -276,7 +304,7 @@ func (h *Handlers) deletePlaylist(w http.ResponseWriter, r *http.Request) {
 	_, err := h.store.Queries.GetPlaylist(ctx, id)
 	cancel()
 	if err != nil {
-		h.writeItemError(w, r, err, "playlist "+id)
+		h.writeItemError(w, r, err, "playlist "+ref)
 		return
 	}
 
