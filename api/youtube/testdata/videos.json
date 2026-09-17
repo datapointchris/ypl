@@ -1,0 +1,49 @@
+{
+  "kind": "youtube#videoListResponse",
+  "etag": "x0recordedVideosPageEtag000",
+  "items": [
+    {
+      "kind": "youtube#video",
+      "etag": "x0recordedVideoEtag00000000",
+      "id": "x0public001",
+      "snippet": {
+        "publishedAt": "2020-02-07T15:30:11Z",
+        "channelId": "UCx0otherChannel00000000",
+        "title": "A Continuous Mix",
+        "description": "Tracklist:\n00:00 - Artist One - First\n03:10 - Artist Two - Second",
+        "thumbnails": {
+          "default": {
+            "url": "https://i.ytimg.com/vi/x0public001/default.jpg",
+            "width": 120,
+            "height": 90
+          }
+        },
+        "channelTitle": "A Label",
+        "tags": [
+          "Deep House",
+          "DJ Mix"
+        ],
+        "categoryId": "10",
+        "liveBroadcastContent": "none",
+        "defaultLanguage": "en",
+        "localized": {
+          "title": "A Continuous Mix",
+          "description": "Tracklist:\n00:00 - Artist One - First\n03:10 - Artist Two - Second"
+        },
+        "defaultAudioLanguage": "en-GB"
+      },
+      "status": {
+        "uploadStatus": "processed",
+        "privacyStatus": "public",
+        "license": "youtube",
+        "embeddable": true,
+        "publicStatsViewable": true,
+        "madeForKids": false
+      }
+    }
+  ],
+  "pageInfo": {
+    "totalResults": 1,
+    "resultsPerPage": 1
+  }
+}

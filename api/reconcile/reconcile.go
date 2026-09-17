@@ -1,13 +1,21 @@
-// Package reconcile syncs the channel's playlists into the store. A run reads
-// every playlist the channel owns and every item in each, and stores them as
-// YouTube holds them. Every run leaves a sync_runs row saying how it ended and
-// what it did.
+// Package reconcile syncs the channel's playlists with the store both ways. A
+// run reads every playlist the channel owns and every item in each, merges each
+// read into the server's order of the playlist against the playlist's base, and
+// then pushes the server's order of every merged playlist back to YouTube, one
+// write at a time. Every run leaves a sync_runs row saying how it ended and what
+// it did.
 //
 // The API writes playlists too, and a read can predate a write YouTube has
 // answered. So a run changes nothing a read could not yet show: it keeps the
 // details of a playlist the API wrote after a read began, keeps a playlist the
-// API created, and does not restore one the API deleted. The next run, whose
-// reads follow the write, stores what YouTube holds.
+// API created, does not restore one the API deleted, and leaves the items of a
+// playlist whose items were written within the lag of its read for the next
+// run. The next run, whose reads follow the write, stores what YouTube holds.
+//
+// A push write is recorded before it is sent, and settled with YouTube's answer
+// in the transaction that applies the answer to the playlist's base and entries.
+// A write that gets no answer leaves the playlist's base unconfirmed, which the
+// next merge of the playlist accounts for.
 package reconcile
 
 import (
@@ -18,6 +26,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/datapointchris/ypl/api/merge"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/youtube"
@@ -28,14 +37,30 @@ import (
 // later runs draw YouTube's quota refusal.
 var ErrReadsExceedQuota = errors.New("a day of runs at this interval reads more than the day's quota")
 
+// ErrAbsenceNotConfirmed is the failure of a playlist whose read lacks an item
+// that a read of the item by id finds. The playlist changed between the pages of
+// its read, so the run leaves it for the next.
+var ErrAbsenceNotConfirmed = errors.New("an item missing from the playlist's read is still on YouTube")
+
+// ErrAllowanceSpent is the failure of a run that stopped pushing because the
+// day's quota has no room for another write beside the reads of the day's
+// remaining runs.
+var ErrAllowanceSpent = errors.New("the day's quota has no room for another write beside the reads of the day's remaining runs")
+
 // DailyQuota is the units YouTube allows the Cloud project each Pacific day.
 const DailyQuota = 10_000
 
-// Channel is what a run reads YouTube through, as youtube.Channel does.
+// Channel is what a run reads and writes YouTube through, as youtube.Channel
+// does.
 type Channel interface {
 	Playlists(ctx context.Context) ([]youtube.Playlist, error)
 	Playlist(ctx context.Context, id youtube.PlaylistID) (youtube.Playlist, error)
 	Items(ctx context.Context, playlist youtube.PlaylistID) ([]youtube.Item, error)
+	ExistingItems(ctx context.Context, ids []youtube.ItemID) ([]youtube.ItemID, error)
+	InsertItem(ctx context.Context, playlist youtube.PlaylistID, video youtube.VideoID, position int64) (youtube.ItemID, error)
+	AppendItem(ctx context.Context, playlist youtube.PlaylistID, video youtube.VideoID) (youtube.ItemID, error)
+	MoveItem(ctx context.Context, item youtube.Item, position int64) error
+	DeleteItem(ctx context.Context, id youtube.ItemID) error
 	Requests() int64
 	Units() int64
 }
@@ -44,7 +69,9 @@ type Channel interface {
 type Runner struct {
 	store   *store.Store
 	channel Channel
-	// runsPerDay is how many runs a day the worker makes at its interval.
+	// interval is the wait between runs, and runsPerDay how many runs a day the
+	// worker makes at it.
+	interval   time.Duration
 	runsPerDay int64
 	now        func() time.Time
 }
@@ -54,6 +81,7 @@ func NewRunner(st *store.Store, channel Channel, interval time.Duration) *Runner
 	return &Runner{
 		store:      st,
 		channel:    channel,
+		interval:   interval,
 		runsPerDay: int64((24*time.Hour + interval - 1) / interval),
 		now:        time.Now,
 	}
@@ -61,16 +89,19 @@ func NewRunner(st *store.Store, channel Channel, interval time.Duration) *Runner
 
 // Report is what one run did, as its sync_runs row records it.
 type Report struct {
-	RunID            int64
-	Outcome          string
-	Playlists        int
-	PlaylistsDeleted int
-	PlaylistsSkipped int
-	ItemsAdded       int
-	ItemsRemoved     int
-	Requests         int64
-	Units            int64
-	Failures         []Failure
+	RunID             int64
+	Outcome           string
+	Playlists         int
+	PlaylistsDeleted  int
+	PlaylistsSkipped  int
+	PlaylistsDeferred int
+	ItemsAdded        int
+	ItemsRemoved      int
+	Writes            int
+	Requests          int64
+	Units             int64
+	WriteUnits        int64
+	Failures          []Failure
 }
 
 // Failure is one thing that went wrong in a run. Playlist is empty for a failure
@@ -104,6 +135,10 @@ type run struct {
 	requests0 int64
 	units0    int64
 	report    Report
+	// merged is each playlist merged, in the order it was read, for the push.
+	merged []merged
+	// readUnits is what the run's reads cost.
+	readUnits int64
 	// ended is why the run stopped before its end: YouTube's quota refusal, the
 	// context ending, or a failure of the whole run.
 	ended error
@@ -131,17 +166,29 @@ func (run *run) execute() {
 		return
 	}
 	for _, playlist := range listed {
-		if err := run.storePlaylist(playlist, listedAt); err != nil {
+		if err := run.mergePlaylist(playlist, listedAt); err != nil {
 			run.ended = err
 			return
 		}
 	}
 
-	units := run.channel.Units() - run.units0
-	if run.runsPerDay*units > DailyQuota {
+	run.readUnits = run.channel.Units() - run.units0
+	if run.runsPerDay*run.readUnits > DailyQuota {
 		run.report.Failures = append(run.report.Failures, Failure{
-			Err: fmt.Errorf("%w: %d runs a day at %d units each", ErrReadsExceedQuota, run.runsPerDay, units),
+			Err: fmt.Errorf("%w: %d runs a day at %d units each", ErrReadsExceedQuota, run.runsPerDay, run.readUnits),
 		})
+	}
+
+	for _, playlist := range run.merged {
+		err := run.push(playlist)
+		if errors.Is(err, ErrAllowanceSpent) {
+			run.report.Failures = append(run.report.Failures, Failure{Playlist: youtube.PlaylistID(playlist.id), Err: err})
+			return
+		}
+		if err != nil {
+			run.ended = err
+			return
+		}
 	}
 }
 
@@ -173,8 +220,7 @@ func (run *run) deleteUnlisted(listed []youtube.Playlist) error {
 		case errors.Is(err, youtube.ErrQuotaSpent) || run.ctx.Err() != nil:
 			return err
 		default:
-			run.report.PlaylistsSkipped++
-			run.report.Failures = append(run.report.Failures, Failure{Playlist: youtube.PlaylistID(id), Err: err})
+			run.skip(youtube.PlaylistID(id), err)
 		}
 	}
 	return nil
@@ -201,33 +247,70 @@ func (run *run) deleteGone(id string, readAt time.Time) error {
 	return nil
 }
 
-// storePlaylist reads one listed playlist's items and stores the playlist as
-// YouTube holds it, in one transaction. listedAt is when the listing that named
-// it was sent. A failure about this playlist alone is recorded and returns nil;
-// the error is for one that ends the run.
-func (run *run) storePlaylist(playlist youtube.Playlist, listedAt time.Time) error {
+// skip records a failure about the playlist alone, which the run passes over.
+func (run *run) skip(playlist youtube.PlaylistID, err error) {
+	run.report.PlaylistsSkipped++
+	run.report.Failures = append(run.report.Failures, Failure{Playlist: playlist, Err: err})
+}
+
+// merged is a playlist a run merged, as the push starts from it: the revision
+// the merge left, how YouTube orders it, what YouTube holds, and the server's
+// order with every entry's id.
+type merged struct {
+	id       string
+	revision int64
+	sort     string
+	base     []merge.Item
+	entries  []merge.Entry
+}
+
+// mergePlaylist reads one listed playlist's items and merges them into the
+// store, in one transaction: its details as YouTube holds them, and its items
+// into the server's order against its base. listedAt is when the listing that
+// named it was sent. A failure about this playlist alone is recorded and
+// returns nil; the error is for one that ends the run.
+func (run *run) mergePlaylist(playlist youtube.Playlist, listedAt time.Time) error {
 	if err := run.ctx.Err(); err != nil {
 		return err
 	}
 	id := string(playlist.ID)
-	itemsAt := run.now()
+	readAt := run.now()
 	items, err := run.channel.Items(run.ctx, playlist.ID)
 	switch {
 	case errors.Is(err, youtube.ErrPlaylistNotFound):
 		// The playlist was deleted after the channel listed it, or created so
 		// recently that YouTube does not yet list its items.
-		return run.deleteGone(id, itemsAt)
+		return run.deleteGone(id, readAt)
+	case errors.Is(err, youtube.ErrQuotaSpent) || (err != nil && run.ctx.Err() != nil):
+		return err
 	case err != nil:
-		if errors.Is(err, youtube.ErrQuotaSpent) || run.ctx.Err() != nil {
-			return err
-		}
-		run.report.PlaylistsSkipped++
-		run.report.Failures = append(run.report.Failures, Failure{Playlist: playlist.ID, Err: err})
+		run.skip(playlist.ID, err)
 		return nil
 	}
+	read := make([]merge.Item, len(items))
+	for i, item := range items {
+		read[i] = merge.Item{ID: string(item.ID), VideoID: string(item.VideoID)}
+	}
 
-	var added, removed int
-	stored := false
+	deferred, err := store.ItemWritesSince(run.ctx, run.store.Queries, id, readAt)
+	if err != nil {
+		return err
+	}
+	var base []store.BaseItem
+	if !deferred {
+		base, err = store.Base(run.ctx, run.store.Queries, id)
+		if err != nil {
+			return err
+		}
+		confirmed, err := run.confirmAbsences(playlist.ID, base, read)
+		if err != nil || !confirmed {
+			return err
+		}
+	}
+
+	var result merge.Result
+	var stored merged
+	var outcome mergeOutcome
 	err = run.store.InTx(run.ctx, func(tx *store.Tx) error {
 		method, written, err := store.WriteNewerThanRead(run.ctx, tx.Queries, id, listedAt)
 		switch {
@@ -235,6 +318,7 @@ func (run *run) storePlaylist(playlist youtube.Playlist, listedAt time.Time) err
 			return err
 		case written && method == youtube.MethodPlaylistsDelete:
 			// The API deleted the playlist later than the listing can show.
+			outcome = mergeSkipped
 			return nil
 		case !written:
 			err := tx.UpsertPlaylist(run.ctx, generated.UpsertPlaylistParams{
@@ -246,35 +330,176 @@ func (run *run) storePlaylist(playlist youtube.Playlist, listedAt time.Time) err
 		}
 		// A playlist the API created or updated later than the listing can show
 		// keeps the details the API stored.
-		stored = true
-		held, err := tx.ListPlaylistItems(run.ctx, id)
-		if err != nil {
-			return err
-		}
-		read := make([]store.PlaylistItem, len(items))
-		for i, item := range items {
-			read[i] = store.PlaylistItem{ItemID: string(item.ID), VideoID: string(item.VideoID)}
+		for _, item := range items {
 			if err := upsertVideo(run.ctx, tx, item); err != nil {
 				return err
 			}
-			if !slices.ContainsFunc(held, func(row generated.ListPlaylistItemsRow) bool { return row.ItemID == string(item.ID) }) {
-				added++
-			}
 		}
-		for _, row := range held {
-			if !slices.ContainsFunc(items, func(item youtube.Item) bool { return string(item.ID) == row.ItemID }) {
-				removed++
-			}
+		if deferred {
+			outcome = mergeDeferred
+			return nil
 		}
-		return tx.ReplacePlaylistItems(run.ctx, id, read)
+		stored, result, err = mergeInto(run.ctx, tx, id, base, read)
+		if err != nil {
+			return err
+		}
+		outcome = mergeStored
+		return nil
 	})
-	if err != nil || !stored {
+	if errors.Is(err, errBaseMoved) {
+		run.skip(playlist.ID, err)
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	run.report.Playlists++
-	run.report.ItemsAdded += added
-	run.report.ItemsRemoved += removed
+	switch outcome {
+	case mergeStored:
+		run.merged = append(run.merged, stored)
+		run.report.Playlists++
+		run.report.ItemsAdded += result.Added
+		run.report.ItemsRemoved += result.Removed
+	case mergeDeferred:
+		run.report.PlaylistsDeferred++
+	}
 	return nil
+}
+
+// mergeOutcome is what a merge of one playlist did.
+type mergeOutcome int
+
+const (
+	// mergeSkipped stored nothing, since the API deleted the playlist.
+	mergeSkipped mergeOutcome = iota
+	// mergeDeferred stored the playlist's details and left its items for the
+	// next run.
+	mergeDeferred
+	// mergeStored stored the playlist's details and merged its items.
+	mergeStored
+)
+
+// errBaseMoved is the failure of a playlist whose base changed between the
+// absences confirmed against it and the merge.
+var errBaseMoved = errors.New("the playlist's base changed while its absences were confirmed")
+
+// confirmAbsences reads by id each item of base that read lacks. It returns
+// false, having recorded the playlist as skipped, when YouTube still has one or
+// the read fails; the error is for a failure that ends the run.
+func (run *run) confirmAbsences(playlist youtube.PlaylistID, base []store.BaseItem, read []merge.Item) (bool, error) {
+	var absent []youtube.ItemID
+	for _, item := range base {
+		if !slices.ContainsFunc(read, func(r merge.Item) bool { return r.ID == item.ItemID }) {
+			absent = append(absent, youtube.ItemID(item.ItemID))
+		}
+	}
+	if len(absent) == 0 {
+		return true, nil
+	}
+	still, err := run.channel.ExistingItems(run.ctx, absent)
+	switch {
+	case errors.Is(err, youtube.ErrQuotaSpent) || (err != nil && run.ctx.Err() != nil):
+		return false, err
+	case err != nil:
+		run.skip(playlist, err)
+		return false, nil
+	case len(still) > 0:
+		run.skip(playlist, fmt.Errorf("%w: %d of %d, the first %s", ErrAbsenceNotConfirmed, len(still), len(absent), still[0]))
+		return false, nil
+	}
+	return true, nil
+}
+
+// mergeInto merges read into the playlist id inside tx, against the base whose
+// absences were confirmed, and stores the result: the server's order, a revision
+// counting the change when the order changed, and read as the base, now
+// confirmed.
+func mergeInto(ctx context.Context, tx *store.Tx, id string, confirmedBase []store.BaseItem, read []merge.Item) (merged, merge.Result, error) {
+	state, err := tx.GetPlaylistState(ctx, id)
+	if err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	base, err := store.Base(ctx, tx.Queries, id)
+	if err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	if !slices.Equal(base, confirmedBase) {
+		return merged{}, merge.Result{}, errBaseMoved
+	}
+	entries, err := store.Entries(ctx, tx.Queries, id)
+	if err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	baseState := merge.Confirmed
+	if state.BaseState == store.BaseUnconfirmed {
+		baseState = merge.Unconfirmed
+	}
+	result := merge.Merge(mergeItems(base), read, mergeEntries(entries), baseState)
+	revision := state.Revision
+	if result.Changed {
+		if err := tx.ReplaceEntries(ctx, id, storeEntries(result.Entries)); err != nil {
+			return merged{}, merge.Result{}, err
+		}
+		if err := bumpRevision(ctx, tx, id, revision); err != nil {
+			return merged{}, merge.Result{}, err
+		}
+		revision++
+	}
+	if err := tx.ReplaceBase(ctx, id, storeBase(read)); err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	if err := tx.SetBaseState(ctx, generated.SetBaseStateParams{PlaylistID: id, BaseState: store.BaseCurrent}); err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	withIDs, err := store.Entries(ctx, tx.Queries, id)
+	if err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	return merged{id: id, revision: revision, sort: state.Sort, base: read, entries: mergeEntries(withIDs)}, result, nil
+}
+
+// bumpRevision counts a change to the server's order of the playlist id, which
+// the transaction holding it found at revision.
+func bumpRevision(ctx context.Context, tx *store.Tx, id string, revision int64) error {
+	n, err := tx.BumpRevision(ctx, generated.BumpRevisionParams{PlaylistID: id, Revision: revision})
+	switch {
+	case err != nil:
+		return err
+	case n != 1:
+		return fmt.Errorf("playlist %s is no longer at revision %d", id, revision)
+	}
+	return nil
+}
+
+func mergeItems(base []store.BaseItem) []merge.Item {
+	items := make([]merge.Item, len(base))
+	for i, item := range base {
+		items[i] = merge.Item{ID: item.ItemID, VideoID: item.VideoID}
+	}
+	return items
+}
+
+func storeBase(items []merge.Item) []store.BaseItem {
+	base := make([]store.BaseItem, len(items))
+	for i, item := range items {
+		base[i] = store.BaseItem{ItemID: item.ID, VideoID: item.VideoID}
+	}
+	return base
+}
+
+func mergeEntries(entries []store.Entry) []merge.Entry {
+	converted := make([]merge.Entry, len(entries))
+	for i, entry := range entries {
+		converted[i] = merge.Entry(entry)
+	}
+	return converted
+}
+
+func storeEntries(entries []merge.Entry) []store.Entry {
+	converted := make([]store.Entry, len(entries))
+	for i, entry := range entries {
+		converted[i] = store.Entry(entry)
+	}
+	return converted
 }
 
 func upsertVideo(ctx context.Context, tx *store.Tx, item youtube.Item) error {
@@ -309,17 +534,20 @@ func (run *run) record() (Report, error) {
 	ctx := context.WithoutCancel(run.ctx)
 	err := run.store.InTx(ctx, func(tx *store.Tx) error {
 		id, err := tx.InsertSyncRun(ctx, generated.InsertSyncRunParams{
-			StartedTs:        store.Timestamp(run.started),
-			FinishedTs:       store.Timestamp(run.now()),
-			QuotaDate:        run.date,
-			Outcome:          rep.Outcome,
-			Playlists:        int64(rep.Playlists),
-			PlaylistsDeleted: int64(rep.PlaylistsDeleted),
-			PlaylistsSkipped: int64(rep.PlaylistsSkipped),
-			ItemsAdded:       int64(rep.ItemsAdded),
-			ItemsRemoved:     int64(rep.ItemsRemoved),
-			Requests:         rep.Requests,
-			Units:            rep.Units,
+			StartedTs:         store.Timestamp(run.started),
+			FinishedTs:        store.Timestamp(run.now()),
+			QuotaDate:         run.date,
+			Outcome:           rep.Outcome,
+			Playlists:         int64(rep.Playlists),
+			PlaylistsDeleted:  int64(rep.PlaylistsDeleted),
+			PlaylistsSkipped:  int64(rep.PlaylistsSkipped),
+			PlaylistsDeferred: int64(rep.PlaylistsDeferred),
+			ItemsAdded:        int64(rep.ItemsAdded),
+			ItemsRemoved:      int64(rep.ItemsRemoved),
+			Requests:          rep.Requests,
+			Units:             rep.Units,
+			Writes:            int64(rep.Writes),
+			WriteUnits:        rep.WriteUnits,
 		})
 		if err != nil {
 			return err

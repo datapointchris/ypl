@@ -21,6 +21,7 @@ import (
 // as *youtube.Channel does. Requests and Units count every request it has sent.
 type PlaylistWriter interface {
 	Playlist(ctx context.Context, id youtube.PlaylistID) (youtube.Playlist, error)
+	Videos(ctx context.Context, ids []youtube.VideoID) ([]youtube.Video, error)
 	CreatePlaylist(ctx context.Context, details youtube.PlaylistDetails) (youtube.Playlist, error)
 	UpdatePlaylist(ctx context.Context, id youtube.PlaylistID, details youtube.PlaylistDetails) (youtube.PlaylistDetails, error)
 	DeletePlaylist(ctx context.Context, id youtube.PlaylistID) error
@@ -352,7 +353,12 @@ func (h *Handlers) writeToYouTube(w http.ResponseWriter, r *http.Request, yw you
 	}
 
 	ctx, cancel := recordContext(r)
-	writeID, err := h.store.BeginWrite(ctx, yw.method, yw.playlist, h.now())
+	var writeID int64
+	err := h.store.InTx(ctx, func(tx *store.Tx) error {
+		var err error
+		writeID, err = tx.BeginWrite(ctx, store.Write{Method: yw.method, PlaylistID: yw.playlist, SentAt: h.now()})
+		return err
+	})
 	cancel()
 	if err != nil {
 		h.writeInternalError(w, r, err)
@@ -363,7 +369,7 @@ func (h *Handlers) writeToYouTube(w http.ResponseWriter, r *http.Request, yw you
 	ctx, cancel = youtubeContext(r)
 	playlist, sendErr := yw.send(ctx)
 	cancel()
-	outcome := outcomeOf(sendErr)
+	outcome := store.WriteOutcome(sendErr)
 	made := outcome == store.WriteApplied || (outcome == store.WriteAbsent && yw.madeWhenAbsent)
 
 	settlement := store.Settlement{
@@ -408,22 +414,6 @@ func (h *Handlers) writeToYouTube(w http.ResponseWriter, r *http.Request, yw you
 			"YouTube did not confirm the write, which may still have landed; the next sync shows what YouTube holds")
 	}
 	return false
-}
-
-// outcomeOf is how a YouTube write that returned err ended.
-func outcomeOf(err error) string {
-	switch {
-	case err == nil:
-		return store.WriteApplied
-	case errors.Is(err, youtube.ErrQuotaSpent):
-		return store.WriteQuotaSpent
-	case errors.Is(err, youtube.ErrPlaylistNotFound):
-		return store.WriteAbsent
-	case errors.Is(err, youtube.ErrRefused):
-		return store.WriteRefused
-	default:
-		return store.WriteUnanswered
-	}
 }
 
 // refuseSpentQuota answers YouTube's refusal of a request for a spent quota

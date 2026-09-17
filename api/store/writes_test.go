@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -12,14 +13,30 @@ import (
 // sent is 22:00:00 Pacific on 2026-09-17, which is already the 18th in UTC.
 var sent = time.Date(2026, 9, 18, 5, 0, 0, 0, time.UTC)
 
-func TestOpenSeedsTheYouTubeWriteVocabularies(t *testing.T) {
+func TestOpenSeedsTheYouTubeWriteAndPlaylistVocabularies(t *testing.T) {
 	st, _ := open(t)
-	if n := count(t, st, "youtube_write_outcomes"); n != len(youtubeWriteOutcomes) {
-		t.Errorf("write outcomes = %d, want %d", n, len(youtubeWriteOutcomes))
+	for table, want := range map[string]int{
+		"youtube_write_outcomes": len(youtubeWriteOutcomes),
+		"youtube_write_methods":  len(youtubeWriteMethods),
+		"playlist_sorts":         len(playlistSorts),
+		"base_states":            len(baseStates),
+	} {
+		if n := count(t, st, table); n != want {
+			t.Errorf("%s = %d rows, want %d", table, n, want)
+		}
 	}
-	if n := count(t, st, "youtube_write_methods"); n != len(youtubeWriteMethods) {
-		t.Errorf("write methods = %d, want %d", n, len(youtubeWriteMethods))
-	}
+}
+
+// begin records w as pending.
+func begin(st *Store, w Write) (int64, error) {
+	ctx := context.Background()
+	var id int64
+	err := st.InTx(ctx, func(tx *Tx) error {
+		var err error
+		id, err = tx.BeginWrite(ctx, w)
+		return err
+	})
+	return id, err
 }
 
 // settle records a write of method to playlist, sent at sent, settled as
@@ -27,7 +44,7 @@ func TestOpenSeedsTheYouTubeWriteVocabularies(t *testing.T) {
 func settle(t *testing.T, st *Store, method, playlist, outcome string, settledAt time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	id, err := st.BeginWrite(ctx, method, playlist, sent)
+	id, err := begin(st, Write{Method: method, PlaylistID: playlist, SentAt: sent})
 	if err != nil {
 		t.Fatalf("BeginWrite: %v", err)
 	}
@@ -47,7 +64,7 @@ func TestAWriteIsRecordedPendingAndSettlesOnce(t *testing.T) {
 	st, _ := open(t)
 	ctx := context.Background()
 
-	id, err := st.BeginWrite(ctx, youtube.MethodPlaylistsInsert, "", sent)
+	id, err := begin(st, Write{Method: youtube.MethodPlaylistsInsert, SentAt: sent})
 	if err != nil {
 		t.Fatalf("BeginWrite: %v", err)
 	}
@@ -70,6 +87,36 @@ func TestAWriteIsRecordedPendingAndSettlesOnce(t *testing.T) {
 	}
 }
 
+// An insert names its video and position and learns its item when it settles.
+// A move names its item as it begins, and settling keeps it.
+func TestAnItemWriteRecordsWhatItNamed(t *testing.T) {
+	st, _ := open(t)
+	ctx := context.Background()
+	insert, err := begin(st, Write{Method: youtube.MethodPlaylistItemsInsert, PlaylistID: "PLA", VideoID: "a", Position: sql.NullInt64{Int64: 2, Valid: true}, SentAt: sent})
+	if err != nil {
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	move, err := begin(st, Write{Method: youtube.MethodPlaylistItemsUpdate, PlaylistID: "PLA", ItemID: "i1", Position: sql.NullInt64{Int64: 0, Valid: true}, SentAt: sent})
+	if err != nil {
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	err = st.InTx(ctx, func(tx *Tx) error {
+		if err := tx.SettleWrite(ctx, Settlement{WriteID: insert, PlaylistID: "PLA", ItemID: "i9", Outcome: WriteApplied, SettledAt: sent, Requests: 1, Units: 50}); err != nil {
+			return err
+		}
+		return tx.SettleWrite(ctx, Settlement{WriteID: move, PlaylistID: "PLA", Outcome: WriteApplied, SettledAt: sent, Requests: 1, Units: 50})
+	})
+	if err != nil {
+		t.Fatalf("SettleWrite: %v", err)
+	}
+	if row, err := st.Queries.GetYouTubeWrite(ctx, insert); err != nil || row.VideoID.String != "a" || row.Position.Int64 != 2 || row.ItemID.String != "i9" {
+		t.Errorf("insert = %+v, %v, want video a at 2 made as item i9", row, err)
+	}
+	if row, err := st.Queries.GetYouTubeWrite(ctx, move); err != nil || row.ItemID.String != "i1" || !row.Position.Valid || row.Position.Int64 != 0 || row.VideoID.Valid {
+		t.Errorf("move = %+v, %v, want item i1 to 0 and no video", row, err)
+	}
+}
+
 // Only a write that did not apply carries why, so an outcome and its error
 // cannot disagree.
 func TestAWriteSettledWithAnErrorItsOutcomeContradictsIsRefused(t *testing.T) {
@@ -81,7 +128,7 @@ func TestAWriteSettledWithAnErrorItsOutcomeContradictsIsRefused(t *testing.T) {
 		"settled as pending":      {Outcome: WritePending},
 	}
 	for name, settlement := range cases {
-		id, err := st.BeginWrite(ctx, youtube.MethodPlaylistsDelete, "PLA", sent)
+		id, err := begin(st, Write{Method: youtube.MethodPlaylistsDelete, PlaylistID: "PLA", SentAt: sent})
 		if err != nil {
 			t.Fatalf("BeginWrite: %v", err)
 		}
@@ -90,7 +137,7 @@ func TestAWriteSettledWithAnErrorItsOutcomeContradictsIsRefused(t *testing.T) {
 			t.Errorf("%s: SettleWrite succeeded, want the row refused", name)
 		}
 	}
-	if _, err := st.BeginWrite(ctx, "playlists.rename", "PLA", sent); err == nil {
+	if _, err := begin(st, Write{Method: "playlists.rename", PlaylistID: "PLA", SentAt: sent}); err == nil {
 		t.Error("a write of a method the vocabulary does not hold was recorded")
 	}
 }
@@ -103,7 +150,7 @@ func TestWriteNewerThanReadFindsOnlyAnAnsweredWriteWithinTheLag(t *testing.T) {
 	settle(t, st, youtube.MethodPlaylistsDelete, "PLB", WriteAbsent, answered)
 	settle(t, st, youtube.MethodPlaylistsUpdate, "PLC", WriteRefused, answered)
 	settle(t, st, youtube.MethodPlaylistsUpdate, "PLD", WriteUnanswered, answered)
-	if _, err := st.BeginWrite(ctx, youtube.MethodPlaylistsUpdate, "PLE", sent); err != nil {
+	if _, err := begin(st, Write{Method: youtube.MethodPlaylistsUpdate, PlaylistID: "PLE", SentAt: sent}); err != nil {
 		t.Fatalf("BeginWrite: %v", err)
 	}
 	settle(t, st, youtube.MethodPlaylistsUpdate, "PLF", WriteApplied, answered)
@@ -128,6 +175,37 @@ func TestWriteNewerThanReadFindsOnlyAnAnsweredWriteWithinTheLag(t *testing.T) {
 		method, ok, err := WriteNewerThanRead(ctx, st.Queries, c.playlist, c.readAt)
 		if err != nil || method != c.method || ok != (c.method != "") {
 			t.Errorf("WriteNewerThanRead(%s, read %s) = %q, %v, %v, want %q", c.playlist, c.readAt.Sub(answered), method, ok, err, c.method)
+		}
+	}
+}
+
+// An item write whatever its outcome, settled or still pending, holds back a
+// read within the lag of it. A playlist write does not.
+func TestItemWritesSinceSeesEveryItemWriteWithinTheLag(t *testing.T) {
+	st, _ := open(t)
+	ctx := context.Background()
+	answered := sent.Add(time.Second)
+	settle(t, st, youtube.MethodPlaylistItemsInsert, "PLA", WriteRefused, answered)
+	settle(t, st, youtube.MethodPlaylistsUpdate, "PLB", WriteApplied, answered)
+	if _, err := begin(st, Write{Method: youtube.MethodPlaylistItemsDelete, PlaylistID: "PLC", ItemID: "i1", SentAt: sent}); err != nil {
+		t.Fatalf("BeginWrite: %v", err)
+	}
+
+	cases := []struct {
+		playlist string
+		readAt   time.Time
+		want     bool
+	}{
+		{"PLA", answered.Add(youtube.ReadLag - time.Second), true},
+		{"PLA", answered.Add(youtube.ReadLag), false},
+		{"PLB", answered, false},
+		{"PLC", sent.Add(youtube.ReadLag - time.Second), true},
+		{"PLC", sent.Add(youtube.ReadLag), false},
+		{"PLZ", answered, false},
+	}
+	for _, c := range cases {
+		if got, err := ItemWritesSince(ctx, st.Queries, c.playlist, c.readAt); err != nil || got != c.want {
+			t.Errorf("ItemWritesSince(%s, read %s after sending) = %v, %v, want %v", c.playlist, c.readAt.Sub(sent), got, err, c.want)
 		}
 	}
 }

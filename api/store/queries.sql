@@ -75,6 +75,14 @@ WHERE video_id = ?;
 -- name: CountVideos :one
 SELECT count(*) FROM videos;
 
+-- name: ListVideoAvailability :many
+-- Each of video_ids the store holds, and whether it is unavailable.
+SELECT
+    video_id,
+    is_unavailable
+FROM videos
+WHERE video_id IN (sqlc.slice(video_ids));
+
 -- name: CountTracks :one
 SELECT count(*) FROM tracks;
 
@@ -127,7 +135,10 @@ SELECT
     playlist_id,
     title,
     description,
-    privacy
+    privacy,
+    revision,
+    sort,
+    base_state
 FROM playlists
 WHERE playlist_id = ?;
 
@@ -139,21 +150,85 @@ ORDER BY playlist_id;
 DELETE FROM playlists
 WHERE playlist_id = ?;
 
--- name: DeletePlaylistItems :exec
-DELETE FROM playlist_items
+-- name: GetPlaylistState :one
+-- The revision of the server's order of a playlist, how YouTube orders it, and
+-- whether its base is what YouTube holds.
+SELECT
+    revision,
+    sort,
+    base_state
+FROM playlists
 WHERE playlist_id = ?;
 
--- name: InsertPlaylistItem :exec
-INSERT INTO playlist_items (item_id, playlist_id, position, video_id)
-VALUES (?, ?, ?, ?);
+-- name: BumpRevision :execrows
+-- Counts a change to the server's order of a playlist, and changes nothing
+-- unless the playlist is at revision.
+UPDATE playlists SET revision = revision + 1
+WHERE playlist_id = sqlc.arg(playlist_id) AND revision = sqlc.arg(revision);
 
--- name: ListPlaylistItems :many
+-- name: SetPlaylistSort :exec
+UPDATE playlists SET sort = sqlc.arg(sort)
+WHERE playlist_id = sqlc.arg(playlist_id);
+
+-- name: SetBaseState :exec
+UPDATE playlists SET base_state = sqlc.arg(base_state)
+WHERE playlist_id = sqlc.arg(playlist_id);
+
+-- name: UpsertPlaylistSort :exec
+INSERT INTO playlist_sorts (sort, label, description)
+VALUES (?, ?, ?)
+ON CONFLICT (sort) DO UPDATE SET
+    label = excluded.label,
+    description = excluded.description;
+
+-- name: UpsertBaseState :exec
+INSERT INTO base_states (base_state, label, description)
+VALUES (?, ?, ?)
+ON CONFLICT (base_state) DO UPDATE SET
+    label = excluded.label,
+    description = excluded.description;
+
+-- name: ListEntries :many
+-- The server's order of a playlist.
+SELECT
+    entry_id,
+    video_id,
+    item_id
+FROM playlist_entries
+WHERE playlist_id = ?
+ORDER BY position;
+
+-- name: DeleteEntries :exec
+DELETE FROM playlist_entries
+WHERE playlist_id = ?;
+
+-- name: InsertEntry :exec
+-- Inserts an entry under entry_id, or under a new id when entry_id is NULL.
+INSERT INTO playlist_entries (entry_id, playlist_id, position, video_id, item_id)
+VALUES (sqlc.narg(entry_id), sqlc.arg(playlist_id), sqlc.arg(position), sqlc.arg(video_id), sqlc.narg(item_id));
+
+-- name: SetEntryItem :execrows
+-- Records the YouTube item an entry is held in, and changes nothing when no
+-- entry has the id.
+UPDATE playlist_entries SET item_id = sqlc.arg(item_id)
+WHERE entry_id = sqlc.arg(entry_id);
+
+-- name: ListBaseItems :many
+-- What YouTube held of a playlist after the server last read or wrote it.
 SELECT
     item_id,
     video_id
-FROM playlist_items
+FROM base_items
 WHERE playlist_id = ?
 ORDER BY position;
+
+-- name: DeleteBaseItems :exec
+DELETE FROM base_items
+WHERE playlist_id = ?;
+
+-- name: InsertBaseItem :exec
+INSERT INTO base_items (item_id, playlist_id, position, video_id)
+VALUES (?, ?, ?, ?);
 
 -- name: UpsertSyncOutcome :exec
 INSERT INTO sync_outcomes (outcome, label, description)
@@ -165,9 +240,9 @@ ON CONFLICT (outcome) DO UPDATE SET
 -- name: InsertSyncRun :one
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
-    items_added, items_removed, requests, units
+    playlists_deferred, items_added, items_removed, requests, units, writes, write_units
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id;
 
 -- name: InsertSyncFailure :exec
@@ -187,7 +262,10 @@ SELECT
     items_added,
     items_removed,
     requests,
-    units
+    units,
+    playlists_deferred,
+    writes,
+    write_units
 FROM sync_runs
 WHERE run_id = ?;
 
@@ -215,12 +293,12 @@ SELECT
     p.title,
     p.description,
     p.privacy,
-    CAST(count(pi.item_id) AS INTEGER) AS item_count,
+    CAST(count(pe.entry_id) AS INTEGER) AS item_count,
     CAST(coalesce(sum(v.is_unavailable), 0) AS INTEGER) AS unavailable_count,
     CAST(count(v.enriched_ts) AS INTEGER) AS enriched_count
 FROM playlists AS p
-LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
-LEFT JOIN videos AS v ON pi.video_id = v.video_id
+LEFT JOIN playlist_entries AS pe ON p.playlist_id = pe.playlist_id
+LEFT JOIN videos AS v ON pe.video_id = v.video_id
 GROUP BY p.playlist_id;
 
 -- name: GetPlaylistSummary :one
@@ -230,20 +308,22 @@ SELECT
     p.title,
     p.description,
     p.privacy,
-    CAST(count(pi.item_id) AS INTEGER) AS item_count,
+    CAST(count(pe.entry_id) AS INTEGER) AS item_count,
     CAST(coalesce(sum(v.is_unavailable), 0) AS INTEGER) AS unavailable_count,
     CAST(count(v.enriched_ts) AS INTEGER) AS enriched_count
 FROM playlists AS p
-LEFT JOIN playlist_items AS pi ON p.playlist_id = pi.playlist_id
-LEFT JOIN videos AS v ON pi.video_id = v.video_id
+LEFT JOIN playlist_entries AS pe ON p.playlist_id = pe.playlist_id
+LEFT JOIN videos AS v ON pe.video_id = v.video_id
 WHERE p.playlist_id = ?
 GROUP BY p.playlist_id;
 
 -- name: ListPlaylistEntries :many
--- A playlist's items in order, each with its video and the video's track count.
+-- The server's order of a playlist, each entry with its video and the video's
+-- track count.
 SELECT
-    pi.item_id,
-    pi.position,
+    pe.entry_id,
+    pe.item_id,
+    pe.position,
     v.video_id,
     v.title,
     v.channel_title,
@@ -252,10 +332,10 @@ SELECT
     v.is_unavailable,
     v.enriched_ts,
     CAST((SELECT count(*) FROM tracks AS t WHERE t.video_id = v.video_id) AS INTEGER) AS track_count
-FROM playlist_items AS pi
-INNER JOIN videos AS v ON pi.video_id = v.video_id
-WHERE pi.playlist_id = ?
-ORDER BY pi.position;
+FROM playlist_entries AS pe
+INNER JOIN videos AS v ON pe.video_id = v.video_id
+WHERE pe.playlist_id = ?
+ORDER BY pe.position;
 
 -- name: ListLibraryVideos :many
 -- Every available video some playlist holds, narrowed by each filter that is
@@ -273,10 +353,10 @@ FROM videos AS v
 WHERE
     v.is_unavailable = 0
     AND EXISTS (
-        SELECT 1 FROM playlist_items AS pi
+        SELECT 1 FROM playlist_entries AS pe
         WHERE
-            pi.video_id = v.video_id
-            AND (CAST(sqlc.narg(playlist_id) AS TEXT) IS NULL OR pi.playlist_id = sqlc.narg(playlist_id))
+            pe.video_id = v.video_id
+            AND (CAST(sqlc.narg(playlist_id) AS TEXT) IS NULL OR pe.playlist_id = sqlc.narg(playlist_id))
     )
     AND (CAST(sqlc.narg(min_seconds) AS INTEGER) IS NULL OR v.duration_seconds >= sqlc.narg(min_seconds))
     AND (CAST(sqlc.narg(max_seconds) AS INTEGER) IS NULL OR v.duration_seconds <= sqlc.narg(max_seconds))
@@ -299,12 +379,12 @@ GROUP BY video_id, artist;
 -- Every playlist holding each video, or only the video video_id when it is not
 -- NULL, in no order.
 SELECT DISTINCT
-    pi.video_id,
+    pe.video_id,
     p.playlist_id,
     p.title
-FROM playlist_items AS pi
-INNER JOIN playlists AS p ON pi.playlist_id = p.playlist_id
-WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR pi.video_id = sqlc.narg(video_id);
+FROM playlist_entries AS pe
+INNER JOIN playlists AS p ON pe.playlist_id = p.playlist_id
+WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR pe.video_id = sqlc.narg(video_id);
 
 -- name: InsertPlay :execrows
 -- Records a play under the next handle, and records nothing when a play with
@@ -405,10 +485,10 @@ LEFT JOIN plays AS pl ON v.video_id = pl.video_id
 WHERE
     v.is_unavailable = 0
     AND EXISTS (
-        SELECT 1 FROM playlist_items AS pi
+        SELECT 1 FROM playlist_entries AS pe
         WHERE
-            pi.video_id = v.video_id
-            AND (CAST(sqlc.narg(playlist_id) AS TEXT) IS NULL OR pi.playlist_id = sqlc.narg(playlist_id))
+            pe.video_id = v.video_id
+            AND (CAST(sqlc.narg(playlist_id) AS TEXT) IS NULL OR pe.playlist_id = sqlc.narg(playlist_id))
     )
 GROUP BY v.video_id
 ORDER BY max(pl.played_ts) IS NOT NULL, max(pl.played_ts), random()
@@ -428,7 +508,10 @@ SELECT
     items_added,
     items_removed,
     requests,
-    units
+    units,
+    playlists_deferred,
+    writes,
+    write_units
 FROM sync_runs
 ORDER BY run_id DESC
 LIMIT sqlc.arg(max_rows);
@@ -447,7 +530,10 @@ SELECT
     items_added,
     items_removed,
     requests,
-    units
+    units,
+    playlists_deferred,
+    writes,
+    write_units
 FROM sync_runs
 WHERE run_id < sqlc.arg(run_id)
 ORDER BY run_id DESC
@@ -477,7 +563,10 @@ SELECT
     items_added,
     items_removed,
     requests,
-    units
+    units,
+    playlists_deferred,
+    writes,
+    write_units
 FROM sync_runs
 WHERE outcome = ?
 ORDER BY run_id DESC
@@ -491,19 +580,19 @@ SELECT
     CAST((SELECT count(*) FROM playlists) AS INTEGER) AS playlists,
     CAST((
         SELECT count(*) FROM videos AS v
-        WHERE EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+        WHERE EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
     ) AS INTEGER) AS videos,
     CAST((
         SELECT count(*) FROM videos AS v
         WHERE
             v.is_unavailable = 1
-            AND EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+            AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
     ) AS INTEGER) AS unavailable_videos,
     CAST((
         SELECT count(*) FROM videos AS v
         WHERE
             v.enriched_ts IS NOT NULL
-            AND EXISTS (SELECT 1 FROM playlist_items AS pi WHERE pi.video_id = v.video_id)
+            AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
     ) AS INTEGER) AS enriched_videos,
     CAST((SELECT count(*) FROM tracks) AS INTEGER) AS tracks,
     CAST((SELECT count(*) FROM plays) AS INTEGER) AS plays;
@@ -524,8 +613,17 @@ ON CONFLICT (outcome) DO UPDATE SET
 
 -- name: InsertYouTubeWrite :one
 -- Records a write as pending, before it is sent.
-INSERT INTO youtube_writes (method, playlist_id, sent_ts, quota_date, outcome)
-VALUES (sqlc.arg(method), sqlc.narg(playlist_id), sqlc.arg(sent_ts), sqlc.arg(quota_date), 'pending')
+INSERT INTO youtube_writes (method, playlist_id, item_id, video_id, position, sent_ts, quota_date, outcome)
+VALUES (
+    sqlc.arg(method),
+    sqlc.narg(playlist_id),
+    sqlc.narg(item_id),
+    sqlc.narg(video_id),
+    sqlc.narg(position),
+    sqlc.arg(sent_ts),
+    sqlc.arg(quota_date),
+    'pending'
+)
 RETURNING write_id;
 
 -- name: SettleYouTubeWrite :execrows
@@ -533,6 +631,7 @@ RETURNING write_id;
 -- settled.
 UPDATE youtube_writes SET
     playlist_id = sqlc.narg(playlist_id),
+    item_id = coalesce(sqlc.narg(item_id), item_id),
     outcome = sqlc.arg(outcome),
     settled_ts = sqlc.arg(settled_ts),
     requests = sqlc.arg(requests),
@@ -545,6 +644,9 @@ SELECT
     write_id,
     method,
     playlist_id,
+    item_id,
+    video_id,
+    position,
     sent_ts,
     quota_date,
     outcome,
@@ -554,6 +656,29 @@ SELECT
     error
 FROM youtube_writes
 WHERE write_id = ?;
+
+-- name: CountItemWritesAfter :one
+-- How many writes to the items of a playlist settled after after, or were sent
+-- after it and have not settled.
+SELECT count(*) FROM youtube_writes
+WHERE
+    playlist_id = sqlc.arg(playlist_id)
+    AND method IN ('playlistItems.insert', 'playlistItems.update', 'playlistItems.delete')
+    AND coalesce(settled_ts, sent_ts) > sqlc.arg(after);
+
+-- name: SumWriteUnits :one
+-- The units the writes sent on quota_date cost, and how many of them have not
+-- settled, whose cost is not yet recorded.
+SELECT
+    CAST(coalesce(sum(units), 0) AS INTEGER) AS units,
+    CAST(coalesce(sum(CASE WHEN outcome = 'pending' THEN 1 ELSE 0 END), 0) AS INTEGER) AS pending
+FROM youtube_writes
+WHERE quota_date = ?;
+
+-- name: SumRunReadUnits :one
+-- The units the sync runs on quota_date spent reading.
+SELECT CAST(coalesce(sum(units - write_units), 0) AS INTEGER) FROM sync_runs
+WHERE quota_date = ?;
 
 -- name: LatestPlaylistWriteSettledAfter :one
 -- The latest write to the playlist that settled after settled_after with

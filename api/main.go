@@ -34,11 +34,12 @@ import (
 )
 
 // shutdownGrace bounds how long in-flight requests get to finish after the
-// first SIGINT or SIGTERM. No playlist write begins once the drain starts, and
-// one begun before it ends within handlers.WriteDuration, so the grace outlasts
-// every write with 5 seconds to answer. A container's stop timeout has to be
-// longer still.
-const shutdownGrace = handlers.WriteDuration + 5*time.Second
+// first SIGINT or SIGTERM. No playlist write begins once the drain starts and no
+// push write once the sync is canceled, which happen together, and a write begun
+// before then ends within handlers.WriteDuration or reconcile.WriteDuration. So
+// the grace outlasts every write with 5 seconds to answer. A container's stop
+// timeout has to be longer still.
+const shutdownGrace = max(handlers.WriteDuration, reconcile.WriteDuration) + 5*time.Second
 
 // defaultSyncInterval is the wait between sync runs when SYNC_INTERVAL is unset.
 // A run reads every page of every playlist at a unit a page, so a day of runs

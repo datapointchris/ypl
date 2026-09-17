@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"cmp"
+	"context"
 	"net/http"
 	"slices"
 
@@ -20,16 +21,19 @@ type playlistSummary struct {
 	EnrichedCount    int64  `json:"enriched_count"`
 }
 
-// playlist is one playlist with its items, in YouTube's order.
+// playlist is one playlist with its items in the server's order, and the
+// revision of that order, which an edit of the order names in If-Match.
 type playlist struct {
 	playlistSummary
-	Items []playlistItem `json:"items"`
+	Revision int64          `json:"revision"`
+	Items    []playlistItem `json:"items"`
 }
 
-// playlistItem is one slot of a playlist: YouTube's playlistItem id, its
+// playlistItem is one slot of the server's order of a playlist: the id of the
+// YouTube item holding it, which is null until the sync adds it to YouTube, its
 // position counting from 0, and the video in it.
 type playlistItem struct {
-	ID       string       `json:"id"`
+	ID       *string      `json:"id"`
 	Position int64        `json:"position"`
 	Video    videoSummary `json:"video"`
 }
@@ -74,19 +78,34 @@ func (h *Handlers) listPlaylists(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := r.PathValue("id")
-	var stored generated.Playlist
-	var rows []generated.ListPlaylistEntriesRow
+	var shown playlist
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		var err error
-		if stored, err = q.GetPlaylist(ctx, id); err != nil {
-			return err
-		}
-		rows, err = q.ListPlaylistEntries(ctx, id)
+		shown, err = readPlaylist(ctx, q, id)
 		return err
 	})
 	if err != nil {
 		h.writeItemError(w, r, err, "playlist "+id)
 		return
+	}
+	writePlaylist(w, shown)
+}
+
+// writePlaylist answers 200 with shown, and its revision as the ETag.
+func writePlaylist(w http.ResponseWriter, shown playlist) {
+	w.Header().Set("ETag", entityTag(shown.Revision))
+	wire.JSON(w, http.StatusOK, shown)
+}
+
+// readPlaylist is the stored playlist id with its items in the server's order.
+func readPlaylist(ctx context.Context, q *generated.Queries, id string) (playlist, error) {
+	stored, err := q.GetPlaylist(ctx, id)
+	if err != nil {
+		return playlist{}, err
+	}
+	rows, err := q.ListPlaylistEntries(ctx, id)
+	if err != nil {
+		return playlist{}, err
 	}
 	shown := playlist{
 		playlistSummary: playlistSummary{
@@ -96,7 +115,8 @@ func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 			Privacy:     stored.Privacy,
 			ItemCount:   int64(len(rows)),
 		},
-		Items: make([]playlistItem, len(rows)),
+		Revision: stored.Revision,
+		Items:    make([]playlistItem, len(rows)),
 	}
 	for i, row := range rows {
 		if row.IsUnavailable {
@@ -106,7 +126,7 @@ func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 			shown.EnrichedCount++
 		}
 		shown.Items[i] = playlistItem{
-			ID:       row.ItemID,
+			ID:       nullableText(row.ItemID),
 			Position: row.Position,
 			Video: videoSummary{
 				ID:              row.VideoID,
@@ -120,5 +140,5 @@ func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 	}
-	wire.JSON(w, http.StatusOK, shown)
+	return shown, nil
 }

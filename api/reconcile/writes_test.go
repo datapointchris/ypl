@@ -19,11 +19,11 @@ import (
 func apiWrote(t *testing.T, st *store.Store, method string, playlist youtube.PlaylistID, settledAt time.Time, change func(context.Context, *store.Tx) error) {
 	t.Helper()
 	ctx := context.Background()
-	id, err := st.BeginWrite(ctx, method, string(playlist), settledAt)
-	if err != nil {
-		t.Fatalf("BeginWrite: %v", err)
-	}
-	err = st.InTx(ctx, func(tx *store.Tx) error {
+	err := st.InTx(ctx, func(tx *store.Tx) error {
+		id, err := tx.BeginWrite(ctx, store.Write{Method: method, PlaylistID: string(playlist), SentAt: settledAt})
+		if err != nil {
+			return err
+		}
 		settlement := store.Settlement{WriteID: id, PlaylistID: string(playlist), Outcome: store.WriteApplied, SettledAt: settledAt, Requests: 1, Units: 50}
 		if err := tx.SettleWrite(ctx, settlement); err != nil {
 			return err

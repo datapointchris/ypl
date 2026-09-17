@@ -13,19 +13,22 @@ import (
 )
 
 type wireSyncRun struct {
-	ID               int64             `json:"id"`
-	StartedTs        string            `json:"started_ts"`
-	FinishedTs       string            `json:"finished_ts"`
-	QuotaDate        string            `json:"quota_date"`
-	Outcome          string            `json:"outcome"`
-	Playlists        int64             `json:"playlists"`
-	PlaylistsDeleted int64             `json:"playlists_deleted"`
-	PlaylistsSkipped int64             `json:"playlists_skipped"`
-	ItemsAdded       int64             `json:"items_added"`
-	ItemsRemoved     int64             `json:"items_removed"`
-	Requests         int64             `json:"requests"`
-	Units            int64             `json:"units"`
-	Failures         []wireSyncFailure `json:"failures"`
+	ID                int64             `json:"id"`
+	StartedTs         string            `json:"started_ts"`
+	FinishedTs        string            `json:"finished_ts"`
+	QuotaDate         string            `json:"quota_date"`
+	Outcome           string            `json:"outcome"`
+	Playlists         int64             `json:"playlists"`
+	PlaylistsDeleted  int64             `json:"playlists_deleted"`
+	PlaylistsSkipped  int64             `json:"playlists_skipped"`
+	PlaylistsDeferred int64             `json:"playlists_deferred"`
+	ItemsAdded        int64             `json:"items_added"`
+	ItemsRemoved      int64             `json:"items_removed"`
+	Writes            int64             `json:"writes"`
+	Requests          int64             `json:"requests"`
+	Units             int64             `json:"units"`
+	WriteUnits        int64             `json:"write_units"`
+	Failures          []wireSyncFailure `json:"failures"`
 }
 
 type wireSyncFailure struct {

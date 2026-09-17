@@ -8,6 +8,19 @@ import (
 	"database/sql"
 )
 
+type BaseItem struct {
+	ItemID     string
+	PlaylistID string
+	Position   int64
+	VideoID    string
+}
+
+type BaseState struct {
+	BaseState   string
+	Label       string
+	Description string
+}
+
 type EnrichFailure struct {
 	VideoID     string
 	AttemptedTs string
@@ -26,17 +39,27 @@ type Playlist struct {
 	Title       string
 	Description string
 	Privacy     string
+	Revision    int64
+	Sort        string
+	BaseState   string
 }
 
-type PlaylistItem struct {
-	ItemID     string
+type PlaylistEntry struct {
+	EntryID    int64
 	PlaylistID string
 	Position   int64
 	VideoID    string
+	ItemID     sql.NullString
 }
 
 type PlaylistPrivacy struct {
 	Privacy     string
+	Label       string
+	Description string
+}
+
+type PlaylistSort struct {
+	Sort        string
 	Label       string
 	Description string
 }
@@ -55,18 +78,21 @@ type SyncOutcome struct {
 }
 
 type SyncRun struct {
-	RunID            int64
-	StartedTs        string
-	FinishedTs       string
-	QuotaDate        string
-	Outcome          string
-	Playlists        int64
-	PlaylistsDeleted int64
-	PlaylistsSkipped int64
-	ItemsAdded       int64
-	ItemsRemoved     int64
-	Requests         int64
-	Units            int64
+	RunID             int64
+	StartedTs         string
+	FinishedTs        string
+	QuotaDate         string
+	Outcome           string
+	Playlists         int64
+	PlaylistsDeleted  int64
+	PlaylistsSkipped  int64
+	ItemsAdded        int64
+	ItemsRemoved      int64
+	Requests          int64
+	Units             int64
+	PlaylistsDeferred int64
+	Writes            int64
+	WriteUnits        int64
 }
 
 type Track struct {
@@ -109,6 +135,9 @@ type YoutubeWrite struct {
 	Requests   sql.NullInt64
 	Units      sql.NullInt64
 	Error      sql.NullString
+	ItemID     sql.NullString
+	VideoID    sql.NullString
+	Position   sql.NullInt64
 }
 
 type YoutubeWriteMethod struct {

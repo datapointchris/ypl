@@ -22,6 +22,7 @@ const (
 	CodeUnknownReference   Code = "unknown_reference"
 	CodeAmbiguousReference Code = "ambiguous_reference"
 	CodeInvalidBody        Code = "invalid_body"
+	CodeInvalidRevision    Code = "invalid_revision"
 
 	// 401
 	CodeMissingToken Code = "missing_token"
@@ -37,6 +38,9 @@ const (
 	// 409
 	CodePlayConflict Code = "play_conflict"
 
+	// 412
+	CodeRevisionMismatch Code = "revision_mismatch"
+
 	// 422
 	CodeTitleRequired       Code = "title_required"
 	CodeTitleTooLong        Code = "title_too_long"
@@ -49,6 +53,13 @@ const (
 	CodeInvalidPlayedTs     Code = "invalid_played_ts"
 	CodePlayedTsOutOfRange  Code = "played_ts_out_of_range"
 	CodePlayedTsInTheFuture Code = "played_ts_in_the_future"
+	CodeVideoIDsRequired    Code = "video_ids_required"
+	CodeInvalidVideoID      Code = "invalid_video_id"
+	CodeVideoNotFound       Code = "video_not_found"
+	CodeVideoUnavailable    Code = "video_unavailable"
+
+	// 428
+	CodeRevisionRequired Code = "revision_required"
 
 	// 500
 	CodeInternal               Code = "internal"

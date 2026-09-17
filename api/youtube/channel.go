@@ -92,18 +92,23 @@ const (
 	MethodPlaylistItemsInsert = "playlistItems.insert"
 	MethodPlaylistItemsUpdate = "playlistItems.update"
 	MethodPlaylistItemsDelete = "playlistItems.delete"
+	MethodVideosList          = "videos.list"
 )
+
+// WriteUnits is what one request of any write this package makes costs, as the
+// Data API's quota calculator prices it. A read costs 1.
+const WriteUnits = 50
 
 // The methods this package calls, priced as the Data API's quota calculator
 // prices them.
 var (
 	playlistsList   = method{name: MethodPlaylistsList, units: 1}
-	playlistsInsert = method{name: MethodPlaylistsInsert, units: 50}
+	playlistsInsert = method{name: MethodPlaylistsInsert, units: WriteUnits}
 	// An update sent right after its playlist was created was aborted, and the
 	// playlist kept its title through reads 5, 10 and 15 seconds later.
-	playlistsUpdate = method{name: MethodPlaylistsUpdate, units: 50, retryAborted: true}
+	playlistsUpdate = method{name: MethodPlaylistsUpdate, units: WriteUnits, retryAborted: true}
 	playlistsDelete = method{
-		name: MethodPlaylistsDelete, units: 50,
+		name: MethodPlaylistsDelete, units: WriteUnits,
 		refusals: map[string]error{"playlistNotFound": ErrPlaylistNotFound},
 	}
 	playlistItemsList = method{
@@ -114,7 +119,7 @@ var (
 	// and each playlist afterwards held only the copies from inserts that
 	// returned 200.
 	playlistItemsInsert = method{
-		name: MethodPlaylistItemsInsert, units: 50,
+		name: MethodPlaylistItemsInsert, units: WriteUnits,
 		refusals: map[string]error{
 			"playlistNotFound":   ErrPlaylistNotFound,
 			"videoNotFound":      ErrVideoNotFound,
@@ -126,16 +131,17 @@ var (
 	// A move always sends the item's playlist, video and position, and YouTube
 	// answered one naming a deleted item with invalidSnippet.
 	playlistItemsUpdate = method{
-		name: MethodPlaylistItemsUpdate, units: 50,
+		name: MethodPlaylistItemsUpdate, units: WriteUnits,
 		refusals: map[string]error{
 			"invalidSnippet":     ErrItemNotFound,
 			"manualSortRequired": ErrManualSortRequired,
 		},
 	}
 	playlistItemsDelete = method{
-		name: MethodPlaylistItemsDelete, units: 50,
+		name: MethodPlaylistItemsDelete, units: WriteUnits,
 		refusals: map[string]error{"playlistItemNotFound": ErrItemNotFound},
 	}
+	videosList = method{name: MethodVideosList, units: 1}
 )
 
 const (

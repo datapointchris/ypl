@@ -94,9 +94,44 @@ var playlistPrivacies = []generated.UpsertPlaylistPrivacyParams{
 	{Privacy: "private", Label: "Private", Description: "Only the channel can see the playlist"},
 }
 
-// PlaylistItem is one item of a playlist as YouTube holds it: its playlistItem id
-// and the video in it.
-type PlaylistItem struct {
+// How YouTube orders a playlist, the vocabulary playlists.sort draws from.
+const (
+	SortManual    = "manual"
+	SortAutomatic = "automatic"
+)
+
+// playlistSorts is the playlist_sorts vocabulary, upserted on every open.
+var playlistSorts = []generated.UpsertPlaylistSortParams{
+	{Sort: SortManual, Label: "Manual", Description: "YouTube keeps the order writes put the playlist in, so a write names a position"},
+	{Sort: SortAutomatic, Label: "Automatic", Description: "YouTube orders the playlist itself and refused a write naming a position, so a video is added at the end and nothing is moved"},
+}
+
+// Whether a playlist's base is what YouTube holds, the vocabulary
+// playlists.base_state draws from.
+const (
+	BaseCurrent     = "current"
+	BaseUnconfirmed = "unconfirmed"
+)
+
+// baseStates is the base_states vocabulary, upserted on every open.
+var baseStates = []generated.UpsertBaseStateParams{
+	{BaseState: BaseCurrent, Label: "Current", Description: "The base is what YouTube held after the server's last read of the playlist or its last write to it"},
+	{BaseState: BaseUnconfirmed, Label: "Unconfirmed", Description: "A write to the playlist was sent and its answer not recorded, so YouTube may hold more than the base, and the next read becomes the base"},
+}
+
+// Entry is one entry of the server's order of a playlist: its id, the video in
+// it, and the id of the YouTube item holding the video, which is empty until
+// YouTube has one. An entry whose ID is 0 is new, and takes an id as it is
+// stored.
+type Entry struct {
+	ID      int64
+	VideoID string
+	ItemID  string
+}
+
+// BaseItem is one item of a playlist as YouTube held it: its playlistItem id and
+// the video in it.
+type BaseItem struct {
 	ItemID  string
 	VideoID string
 }
@@ -245,16 +280,65 @@ func (tx *Tx) ReplaceTracks(ctx context.Context, videoID string, tracks []genera
 	return nil
 }
 
-// ReplacePlaylistItems sets the items of the playlist playlistID to items, in
-// order, removing every item it held before.
-func (tx *Tx) ReplacePlaylistItems(ctx context.Context, playlistID string, items []PlaylistItem) error {
-	if err := tx.DeletePlaylistItems(ctx, playlistID); err != nil {
-		return fmt.Errorf("delete the items of %s: %w", playlistID, err)
+// Entries is the server's order of the playlist playlistID.
+func Entries(ctx context.Context, q *generated.Queries, playlistID string) ([]Entry, error) {
+	rows, err := q.ListEntries(ctx, playlistID)
+	if err != nil {
+		return nil, fmt.Errorf("read the entries of %s: %w", playlistID, err)
+	}
+	entries := make([]Entry, len(rows))
+	for i, row := range rows {
+		entries[i] = Entry{ID: row.EntryID, VideoID: row.VideoID, ItemID: row.ItemID.String}
+	}
+	return entries, nil
+}
+
+// Base is what YouTube held of the playlist playlistID after the server last
+// read or wrote it.
+func Base(ctx context.Context, q *generated.Queries, playlistID string) ([]BaseItem, error) {
+	rows, err := q.ListBaseItems(ctx, playlistID)
+	if err != nil {
+		return nil, fmt.Errorf("read the base of %s: %w", playlistID, err)
+	}
+	items := make([]BaseItem, len(rows))
+	for i, row := range rows {
+		items[i] = BaseItem{ItemID: row.ItemID, VideoID: row.VideoID}
+	}
+	return items, nil
+}
+
+// ReplaceEntries sets the server's order of the playlist playlistID to entries,
+// removing every entry it held before. An entry keeps its id, and a new one
+// takes the next.
+func (tx *Tx) ReplaceEntries(ctx context.Context, playlistID string, entries []Entry) error {
+	if err := tx.DeleteEntries(ctx, playlistID); err != nil {
+		return fmt.Errorf("delete the entries of %s: %w", playlistID, err)
+	}
+	for position, entry := range entries {
+		row := generated.InsertEntryParams{
+			EntryID:    sql.NullInt64{Int64: entry.ID, Valid: entry.ID != 0},
+			PlaylistID: playlistID,
+			Position:   int64(position),
+			VideoID:    entry.VideoID,
+			ItemID:     sql.NullString{String: entry.ItemID, Valid: entry.ItemID != ""},
+		}
+		if err := tx.InsertEntry(ctx, row); err != nil {
+			return fmt.Errorf("insert entry %d of video %s at %d in %s: %w", entry.ID, entry.VideoID, position, playlistID, err)
+		}
+	}
+	return nil
+}
+
+// ReplaceBase sets the base of the playlist playlistID to items, in order,
+// removing every item it held before.
+func (tx *Tx) ReplaceBase(ctx context.Context, playlistID string, items []BaseItem) error {
+	if err := tx.DeleteBaseItems(ctx, playlistID); err != nil {
+		return fmt.Errorf("delete the base of %s: %w", playlistID, err)
 	}
 	for position, item := range items {
-		row := generated.InsertPlaylistItemParams{ItemID: item.ItemID, PlaylistID: playlistID, Position: int64(position), VideoID: item.VideoID}
-		if err := tx.InsertPlaylistItem(ctx, row); err != nil {
-			return fmt.Errorf("insert item %s at %d in %s: %w", item.ItemID, position, playlistID, err)
+		row := generated.InsertBaseItemParams{ItemID: item.ItemID, PlaylistID: playlistID, Position: int64(position), VideoID: item.VideoID}
+		if err := tx.InsertBaseItem(ctx, row); err != nil {
+			return fmt.Errorf("insert base item %s at %d in %s: %w", item.ItemID, position, playlistID, err)
 		}
 	}
 	return nil
@@ -301,7 +385,31 @@ func (s *Store) seed(ctx context.Context) error {
 			return fmt.Errorf("seed YouTube write method %s: %w", method.Method, err)
 		}
 	}
+	for _, sort := range playlistSorts {
+		if err := s.Queries.UpsertPlaylistSort(ctx, sort); err != nil {
+			return fmt.Errorf("seed playlist sort %s: %w", sort.Sort, err)
+		}
+	}
+	for _, state := range baseStates {
+		if err := s.Queries.UpsertBaseState(ctx, state); err != nil {
+			return fmt.Errorf("seed base state %s: %w", state.BaseState, err)
+		}
+	}
 	return nil
+}
+
+// ItemWritesSince is whether a write to the items of the playlist playlistID
+// settled later than youtube.ReadLag before readAt, or was sent then and has not
+// settled, so that a read sent at readAt may not show it.
+func ItemWritesSince(ctx context.Context, q *generated.Queries, playlistID string, readAt time.Time) (bool, error) {
+	n, err := q.CountItemWritesAfter(ctx, generated.CountItemWritesAfterParams{
+		PlaylistID: sql.NullString{String: playlistID, Valid: true},
+		After:      sql.NullString{String: Timestamp(readAt.Add(-youtube.ReadLag)), Valid: true},
+	})
+	if err != nil {
+		return false, fmt.Errorf("count the recent writes to the items of %s: %w", playlistID, err)
+	}
+	return n > 0, nil
 }
 
 // Timestamp is t as the store holds a time: UTC, to the second, in RFC 3339.
@@ -310,28 +418,60 @@ func Timestamp(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-// BeginWrite records a pending write of method to the playlist playlistID, or
-// to no playlist yet when playlistID is empty, sent at sentAt, and returns its
-// id. It is recorded before the write is sent.
-func (s *Store) BeginWrite(ctx context.Context, method, playlistID string, sentAt time.Time) (int64, error) {
-	id, err := s.Queries.InsertYouTubeWrite(ctx, generated.InsertYouTubeWriteParams{
-		Method:     method,
-		PlaylistID: sql.NullString{String: playlistID, Valid: playlistID != ""},
-		SentTs:     Timestamp(sentAt),
-		QuotaDate:  youtube.QuotaDate(sentAt),
+// Write is a write about to be sent: its method, what it names, and when it is
+// sent. PlaylistID is empty for a create, ItemID for a write naming no item, and
+// VideoID for a write adding no video. Position is not valid for a write naming
+// no position.
+type Write struct {
+	Method     string
+	PlaylistID string
+	ItemID     string
+	VideoID    string
+	Position   sql.NullInt64
+	SentAt     time.Time
+}
+
+// BeginWrite records w as pending, before it is sent, and returns its id.
+func (tx *Tx) BeginWrite(ctx context.Context, w Write) (int64, error) {
+	id, err := tx.InsertYouTubeWrite(ctx, generated.InsertYouTubeWriteParams{
+		Method:     w.Method,
+		PlaylistID: sql.NullString{String: w.PlaylistID, Valid: w.PlaylistID != ""},
+		ItemID:     sql.NullString{String: w.ItemID, Valid: w.ItemID != ""},
+		VideoID:    sql.NullString{String: w.VideoID, Valid: w.VideoID != ""},
+		Position:   w.Position,
+		SentTs:     Timestamp(w.SentAt),
+		QuotaDate:  youtube.QuotaDate(w.SentAt),
 	})
 	if err != nil {
-		return 0, fmt.Errorf("record the %s write before sending it: %w", method, err)
+		return 0, fmt.Errorf("record the %s write before sending it: %w", w.Method, err)
 	}
 	return id, nil
+}
+
+// WriteOutcome is how a YouTube write that returned err ended.
+func WriteOutcome(err error) string {
+	switch {
+	case err == nil:
+		return WriteApplied
+	case errors.Is(err, youtube.ErrQuotaSpent):
+		return WriteQuotaSpent
+	case errors.Is(err, youtube.ErrPlaylistNotFound), errors.Is(err, youtube.ErrItemNotFound):
+		return WriteAbsent
+	case errors.Is(err, youtube.ErrRefused):
+		return WriteRefused
+	default:
+		return WriteUnanswered
+	}
 }
 
 // Settlement is how a pending write ended.
 type Settlement struct {
 	WriteID int64
 	// PlaylistID is the playlist the write named or created, and empty for a
-	// create that returned none.
+	// create that returned none. ItemID is the item an insert made, and empty
+	// for every other write, which keeps the item it named.
 	PlaylistID string
+	ItemID     string
 	Outcome    string
 	SettledAt  time.Time
 	// Requests and Units are what the write's attempts cost.
@@ -346,6 +486,7 @@ func (tx *Tx) SettleWrite(ctx context.Context, s Settlement) error {
 	params := generated.SettleYouTubeWriteParams{
 		WriteID:    s.WriteID,
 		PlaylistID: sql.NullString{String: s.PlaylistID, Valid: s.PlaylistID != ""},
+		ItemID:     sql.NullString{String: s.ItemID, Valid: s.ItemID != ""},
 		Outcome:    s.Outcome,
 		SettledTs:  sql.NullString{String: Timestamp(s.SettledAt), Valid: true},
 		Requests:   sql.NullInt64{Int64: s.Requests, Valid: true},

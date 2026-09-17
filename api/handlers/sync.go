@@ -14,22 +14,27 @@ import (
 )
 
 // syncRun is one run of the sync: when it ran, the Pacific date whose quota it
-// spent, how it ended, what it changed, what it cost, and each playlist it
-// could not sync. A failure with a null playlist_id failed the run as a whole.
+// spent, how it ended, what it changed, the writes it pushed, what it cost, and
+// each playlist it could not sync. A playlist deferred is one whose items were
+// written too recently for the run's read to show, and a failure with a null
+// playlist_id failed the run as a whole.
 type syncRun struct {
-	ID               int64         `json:"id"`
-	StartedTs        string        `json:"started_ts"`
-	FinishedTs       string        `json:"finished_ts"`
-	QuotaDate        string        `json:"quota_date"`
-	Outcome          string        `json:"outcome"`
-	Playlists        int64         `json:"playlists"`
-	PlaylistsDeleted int64         `json:"playlists_deleted"`
-	PlaylistsSkipped int64         `json:"playlists_skipped"`
-	ItemsAdded       int64         `json:"items_added"`
-	ItemsRemoved     int64         `json:"items_removed"`
-	Requests         int64         `json:"requests"`
-	Units            int64         `json:"units"`
-	Failures         []syncFailure `json:"failures"`
+	ID                int64         `json:"id"`
+	StartedTs         string        `json:"started_ts"`
+	FinishedTs        string        `json:"finished_ts"`
+	QuotaDate         string        `json:"quota_date"`
+	Outcome           string        `json:"outcome"`
+	Playlists         int64         `json:"playlists"`
+	PlaylistsDeleted  int64         `json:"playlists_deleted"`
+	PlaylistsSkipped  int64         `json:"playlists_skipped"`
+	PlaylistsDeferred int64         `json:"playlists_deferred"`
+	ItemsAdded        int64         `json:"items_added"`
+	ItemsRemoved      int64         `json:"items_removed"`
+	Writes            int64         `json:"writes"`
+	Requests          int64         `json:"requests"`
+	Units             int64         `json:"units"`
+	WriteUnits        int64         `json:"write_units"`
+	Failures          []syncFailure `json:"failures"`
 }
 
 type syncFailure struct {
@@ -159,19 +164,22 @@ func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
 // syncRunFrom is row with no failures attached.
 func syncRunFrom(row generated.SyncRun) syncRun {
 	return syncRun{
-		ID:               row.RunID,
-		StartedTs:        row.StartedTs,
-		FinishedTs:       row.FinishedTs,
-		QuotaDate:        row.QuotaDate,
-		Outcome:          row.Outcome,
-		Playlists:        row.Playlists,
-		PlaylistsDeleted: row.PlaylistsDeleted,
-		PlaylistsSkipped: row.PlaylistsSkipped,
-		ItemsAdded:       row.ItemsAdded,
-		ItemsRemoved:     row.ItemsRemoved,
-		Requests:         row.Requests,
-		Units:            row.Units,
-		Failures:         []syncFailure{},
+		ID:                row.RunID,
+		StartedTs:         row.StartedTs,
+		FinishedTs:        row.FinishedTs,
+		QuotaDate:         row.QuotaDate,
+		Outcome:           row.Outcome,
+		Playlists:         row.Playlists,
+		PlaylistsDeleted:  row.PlaylistsDeleted,
+		PlaylistsSkipped:  row.PlaylistsSkipped,
+		PlaylistsDeferred: row.PlaylistsDeferred,
+		ItemsAdded:        row.ItemsAdded,
+		ItemsRemoved:      row.ItemsRemoved,
+		Writes:            row.Writes,
+		Requests:          row.Requests,
+		Units:             row.Units,
+		WriteUnits:        row.WriteUnits,
+		Failures:          []syncFailure{},
 	}
 }
 

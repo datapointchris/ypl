@@ -35,6 +35,12 @@ type fakeYouTube struct {
 	// seconds of a write do.
 	stale  map[youtube.PlaylistID]youtube.Playlist
 	unseen map[youtube.PlaylistID]bool
+	// videos is each video a read of videos by id returns, and videoReads how
+	// many reads of videos were made. beforeVideos, when set, runs as each read
+	// of videos begins.
+	videos       map[youtube.VideoID]youtube.Video
+	videoReads   int
+	beforeVideos func()
 	// created, updated and deleted are the writes made, in order, and reads
 	// the reads by id.
 	created []youtube.PlaylistDetails
@@ -60,6 +66,7 @@ func newFakeYouTube() *fakeYouTube {
 		playlists: map[youtube.PlaylistID]youtube.Playlist{},
 		stale:     map[youtube.PlaylistID]youtube.Playlist{},
 		unseen:    map[youtube.PlaylistID]bool{},
+		videos:    map[youtube.VideoID]youtube.Video{},
 	}
 }
 
@@ -124,6 +131,27 @@ func (f *fakeYouTube) Playlist(ctx context.Context, id youtube.PlaylistID) (yout
 		return youtube.Playlist{}, fmt.Errorf("read playlist %s: %w", id, youtube.ErrPlaylistNotFound)
 	}
 	return held, nil
+}
+
+// Videos returns each of ids the fake holds a video for, as a read of videos by
+// id leaves out a deleted video and a private one another channel owns.
+func (f *fakeYouTube) Videos(ctx context.Context, ids []youtube.VideoID) ([]youtube.Video, error) {
+	if f.beforeVideos != nil {
+		f.beforeVideos()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.videoReads++
+	if err := f.begin(ctx, int64((len(ids)+49)/50), f.readErr); err != nil {
+		return nil, err
+	}
+	var found []youtube.Video
+	for _, id := range ids {
+		if video, ok := f.videos[id]; ok {
+			found = append(found, video)
+		}
+	}
+	return found, nil
 }
 
 func (f *fakeYouTube) CreatePlaylist(ctx context.Context, details youtube.PlaylistDetails) (youtube.Playlist, error) {
@@ -203,7 +231,7 @@ func (f *fixture) doCanceled(method, target, body string) *httptest.ResponseReco
 }
 
 // written is the store's record of the write numbered id, counting from 1.
-func (f *fixture) written(t *testing.T, id int64) generated.YoutubeWrite {
+func (f *fixture) written(t *testing.T, id int64) generated.GetYouTubeWriteRow {
 	t.Helper()
 	row, err := f.st.Queries.GetYouTubeWrite(context.Background(), id)
 	if err != nil {

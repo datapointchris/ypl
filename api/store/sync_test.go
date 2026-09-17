@@ -3,8 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"io/fs"
+	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/datapointchris/ypl/api/store/generated"
 )
@@ -26,10 +30,19 @@ func withPlaylist(t *testing.T) *Store {
 	return st
 }
 
-func replaceItems(t *testing.T, st *Store, playlist string, items ...PlaylistItem) error {
+func replaceEntries(t *testing.T, st *Store, playlist string, entries ...Entry) error {
 	t.Helper()
 	ctx := context.Background()
-	return st.InTx(ctx, func(tx *Tx) error { return tx.ReplacePlaylistItems(ctx, playlist, items) })
+	return st.InTx(ctx, func(tx *Tx) error { return tx.ReplaceEntries(ctx, playlist, entries) })
+}
+
+func entries(t *testing.T, st *Store, playlist string) []Entry {
+	t.Helper()
+	held, err := Entries(context.Background(), st.Queries, playlist)
+	if err != nil {
+		t.Fatalf("Entries: %v", err)
+	}
+	return held
 }
 
 func count(t *testing.T, st *Store, table string) int {
@@ -51,51 +64,142 @@ func TestOpenSeedsTheSyncOutcomesAndPlaylistPrivacies(t *testing.T) {
 	}
 }
 
-func TestReplacePlaylistItemsReplacesTheWholePlaylist(t *testing.T) {
+// A replacement keeps the id of each entry it names, and gives a new entry the
+// next id.
+func TestReplaceEntriesReplacesTheWholeOrderAndKeepsEachEntrysID(t *testing.T) {
 	st := withPlaylist(t)
-	first := []PlaylistItem{{ItemID: "i1", VideoID: "a"}, {ItemID: "i2", VideoID: "b"}}
-	second := []PlaylistItem{{ItemID: "i2", VideoID: "b"}, {ItemID: "i3", VideoID: "a"}}
-	for _, items := range [][]PlaylistItem{first, second} {
-		if err := replaceItems(t, st, "PLA", items...); err != nil {
-			t.Fatalf("replace with %v: %v", items, err)
+	if err := replaceEntries(t, st, "PLA", Entry{VideoID: "a", ItemID: "i1"}, Entry{VideoID: "b"}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	first := entries(t, st, "PLA")
+	if len(first) != 2 || first[0].ID == 0 || first[1].ID == first[0].ID || first[0].ItemID != "i1" || first[1].ItemID != "" {
+		t.Fatalf("entries = %+v, want a with item i1 and a pending b, each with an id", first)
+	}
+
+	second := []Entry{{ID: first[1].ID, VideoID: "b", ItemID: "i2"}, {VideoID: "a"}}
+	if err := replaceEntries(t, st, "PLA", second...); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	got := entries(t, st, "PLA")
+	if len(got) != 2 || got[0] != second[0] || got[1].VideoID != "a" || got[1].ItemID != "" || got[1].ID == 0 || got[1].ID == first[1].ID {
+		t.Fatalf("entries = %+v, want b keeping its id with item i2, then a pending a with a new id", got)
+	}
+}
+
+// A replacement naming a video the store does not hold, or an item another
+// entry holds, rolls back, so the playlist keeps the order it had.
+func TestAnEntryTheStoreCannotHoldKeepsThePreviousOrder(t *testing.T) {
+	st := withPlaylist(t)
+	if err := replaceEntries(t, st, "PLA", Entry{VideoID: "a", ItemID: "i1"}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	for name, replacement := range map[string][]Entry{
+		"an unknown video": {{VideoID: "b", ItemID: "i2"}, {VideoID: "missing"}},
+		"one item twice":   {{VideoID: "b", ItemID: "i2"}, {VideoID: "c", ItemID: "i2"}},
+	} {
+		if err := replaceEntries(t, st, "PLA", replacement...); err == nil {
+			t.Errorf("stored entries holding %s", name)
 		}
 	}
-	rows, err := st.Queries.ListPlaylistItems(context.Background(), "PLA")
-	if err != nil {
-		t.Fatalf("list items: %v", err)
-	}
-	want := []generated.ListPlaylistItemsRow{{ItemID: "i2", VideoID: "b"}, {ItemID: "i3", VideoID: "a"}}
-	if !slices.Equal(rows, want) {
-		t.Fatalf("items = %v, want %v", rows, want)
+	if got := entries(t, st, "PLA"); len(got) != 1 || got[0].ItemID != "i1" {
+		t.Fatalf("entries after the failed replacements = %+v, want i1 alone", got)
 	}
 }
 
-// A replacement naming a video the store does not hold rolls back, so the
-// playlist keeps the items it had.
-func TestItemsNamingAnUnknownVideoKeepThePreviousItems(t *testing.T) {
+func TestReplaceBaseReplacesTheWholeBase(t *testing.T) {
 	st := withPlaylist(t)
-	if err := replaceItems(t, st, "PLA", PlaylistItem{ItemID: "i1", VideoID: "a"}); err != nil {
-		t.Fatalf("replace: %v", err)
+	ctx := context.Background()
+	for _, items := range [][]BaseItem{{{ItemID: "i1", VideoID: "a"}, {ItemID: "i2", VideoID: "b"}}, {{ItemID: "i2", VideoID: "b"}, {ItemID: "i3", VideoID: "a"}}} {
+		if err := st.InTx(ctx, func(tx *Tx) error { return tx.ReplaceBase(ctx, "PLA", items) }); err != nil {
+			t.Fatalf("replace the base with %v: %v", items, err)
+		}
 	}
-	if err := replaceItems(t, st, "PLA", PlaylistItem{ItemID: "i2", VideoID: "b"}, PlaylistItem{ItemID: "i3", VideoID: "missing"}); err == nil {
-		t.Fatal("stored an item naming a video the store does not hold")
-	}
-	rows, err := st.Queries.ListPlaylistItems(context.Background(), "PLA")
-	if err != nil || len(rows) != 1 || rows[0].ItemID != "i1" {
-		t.Fatalf("items after the failed replacement = %v, %v, want i1 alone", rows, err)
+	got, err := Base(ctx, st.Queries, "PLA")
+	if want := []BaseItem{{ItemID: "i2", VideoID: "b"}, {ItemID: "i3", VideoID: "a"}}; err != nil || !slices.Equal(got, want) {
+		t.Fatalf("base = %v, %v, want %v", got, err, want)
 	}
 }
 
-func TestDeletingAPlaylistDeletesItsItems(t *testing.T) {
+func TestDeletingAPlaylistDeletesItsEntriesAndBase(t *testing.T) {
 	st := withPlaylist(t)
-	if err := replaceItems(t, st, "PLA", PlaylistItem{ItemID: "i1", VideoID: "a"}); err != nil {
+	ctx := context.Background()
+	if err := replaceEntries(t, st, "PLA", Entry{VideoID: "a", ItemID: "i1"}); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
-	if err := st.Queries.DeletePlaylist(context.Background(), "PLA"); err != nil {
+	if err := st.InTx(ctx, func(tx *Tx) error { return tx.ReplaceBase(ctx, "PLA", []BaseItem{{ItemID: "i1", VideoID: "a"}}) }); err != nil {
+		t.Fatalf("replace the base: %v", err)
+	}
+	if err := st.Queries.DeletePlaylist(ctx, "PLA"); err != nil {
 		t.Fatalf("delete playlist: %v", err)
 	}
-	if n := count(t, st, "playlist_items"); n != 0 {
-		t.Fatalf("playlist_items holds %d rows after the playlist was deleted", n)
+	if n, m := count(t, st, "playlist_entries"), count(t, st, "base_items"); n != 0 || m != 0 {
+		t.Fatalf("%d entries and %d base items after the playlist was deleted, want none", n, m)
+	}
+}
+
+func TestARevisionCountsOnlyFromTheRevisionHeld(t *testing.T) {
+	st := withPlaylist(t)
+	ctx := context.Background()
+	state, err := st.Queries.GetPlaylistState(ctx, "PLA")
+	if err != nil || state.Revision != 1 || state.Sort != SortManual || state.BaseState != BaseCurrent {
+		t.Fatalf("a new playlist's state = %+v, %v, want revision 1, sorted manually, with a current base", state, err)
+	}
+	bump := generated.BumpRevisionParams{PlaylistID: "PLA", Revision: 1}
+	if n, err := st.Queries.BumpRevision(ctx, bump); err != nil || n != 1 {
+		t.Fatalf("BumpRevision from 1 = %d, %v, want 1 row", n, err)
+	}
+	if n, err := st.Queries.BumpRevision(ctx, bump); err != nil || n != 0 {
+		t.Fatalf("BumpRevision from 1 again = %d, %v, want no row, since the playlist is at 2", n, err)
+	}
+}
+
+// A database whose playlists were stored before the server kept its own order
+// takes each playlist's items as both its entries and its base.
+func TestMigratingKeepsEachPlaylistsItemsAsItsEntriesAndBase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "api.db")
+	db, err := sql.Open("sqlite", URI(path, "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	fsys, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(ctx, 4); err != nil {
+		t.Fatalf("migrate to version 4: %v", err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO playlist_privacies (privacy, label, description) VALUES ('private', 'Private', '')`,
+		`INSERT INTO playlists (playlist_id, title, description, privacy) VALUES ('PLA', 'A', '', 'private')`,
+		`INSERT INTO videos (video_id, title, channel_title, is_unavailable) VALUES ('a', 'A', 'C', 0), ('b', 'B', 'C', 0)`,
+		`INSERT INTO playlist_items (item_id, playlist_id, position, video_id) VALUES ('i2', 'PLA', 1, 'a'), ('i1', 'PLA', 0, 'b')`,
+	} {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	_ = db.Close()
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	held := entries(t, st, "PLA")
+	if len(held) != 2 || held[0].ItemID != "i1" || held[0].VideoID != "b" || held[1].ItemID != "i2" || held[1].VideoID != "a" {
+		t.Fatalf("entries = %+v, want i1 holding b, then i2 holding a", held)
+	}
+	base, err := Base(ctx, st.Queries, "PLA")
+	if want := []BaseItem{{ItemID: "i1", VideoID: "b"}, {ItemID: "i2", VideoID: "a"}}; err != nil || !slices.Equal(base, want) {
+		t.Fatalf("base = %v, %v, want %v", base, err, want)
+	}
+	if state, err := st.Queries.GetPlaylistState(ctx, "PLA"); err != nil || state.Revision != 1 || state.Sort != SortManual || state.BaseState != BaseCurrent {
+		t.Fatalf("state = %+v, %v, want revision 1, sorted manually, with a current base", state, err)
 	}
 }
 

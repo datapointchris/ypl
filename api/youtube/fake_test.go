@@ -38,6 +38,12 @@ import (
 //   - Listing the items of a deleted playlist is a 404 playlistNotFound.
 //   - A read of one playlist by id, naming snippet and status and 50 a page,
 //     returns it, or no playlists for an id the fake does not hold.
+//   - A read of playlist items by id, naming part id and 50 a page with the ids
+//     as one comma-separated value, returns the items that exist and leaves
+//     out the rest.
+//   - A read of videos by id, naming snippet and status and no maxResults with
+//     the ids as one comma-separated value, returns the public videos and
+//     leaves out a private video another channel owns and an unknown id.
 //
 // Writes:
 //
@@ -78,9 +84,11 @@ type fakeAPI struct {
 	// recorded is each refusal body in testdata/errors.json, by its name there.
 	recorded map[string]json.RawMessage
 	// playlistTemplate and itemTemplate are the recorded resources a write
-	// builds its resource from.
+	// builds its resource from, and videoTemplate the one a read of videos
+	// builds each video from.
 	playlistTemplate map[string]any
 	itemTemplate     map[string]any
+	videoTemplate    map[string]any
 
 	mu        sync.Mutex
 	playlists []map[string]any
@@ -155,6 +163,10 @@ var fakeResources = map[string]fakeResource{
 		listKind: "youtube#playlistItemListResponse",
 		parts:    []string{"contentDetails", "id", "snippet", "status"},
 	},
+	"/youtube/v3/videos": {
+		listKind: "youtube#videoListResponse",
+		parts:    []string{"contentDetails", "id", "snippet", "status"},
+	},
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -175,6 +187,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		recorded:         recorded,
 		playlistTemplate: recordedItems(t, "playlists.json")[0],
 		itemTemplate:     recordedItems(t, "playlistItems.json")[recordedPublic],
+		videoTemplate:    recordedItems(t, "videos.json")[0],
 		items:            map[string][]map[string]any{},
 		itemsTotal:       map[string]int{},
 		videos:           map[string]fakeVideo{},
@@ -230,6 +243,8 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method + " " + strings.TrimPrefix(r.URL.Path, "/youtube/v3/") {
 	case "GET playlists", "GET playlistItems":
 		f.list(w, r, resource, parts)
+	case "GET videos":
+		f.listVideos(w, r, resource, parts)
 	case "POST playlists":
 		f.insertPlaylist(w, r, parts)
 	case "PUT playlists":
@@ -274,6 +289,18 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request, resource fakeReso
 		}
 		if index := slices.IndexFunc(f.playlists, func(p map[string]any) bool { return p["id"] == query.Get("id") }); index >= 0 {
 			all = f.playlists[index : index+1]
+		}
+		total = len(all)
+	case r.URL.Path == "/youtube/v3/playlistItems" && query.Get("id") != "":
+		ids := strings.Split(query.Get("id"), ",")
+		if !slices.Equal(parts, []string{"id"}) || len(query["id"]) != 1 || query.Get("maxResults") != "50" || len(ids) > 50 {
+			f.unmodeled(w, "a read of playlist items by id %s", r.URL.RawQuery)
+			return
+		}
+		for _, id := range ids {
+			if playlistID, index := f.findItem(id); index >= 0 {
+				all = append(all, f.items[playlistID][index])
+			}
 		}
 		total = len(all)
 	case r.URL.Path == "/youtube/v3/playlistItems" && query.Get("playlistId") != "":
@@ -341,6 +368,43 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request, resource fakeReso
 		response["prevPageToken"] = fakeToken(max(start-size, 0))
 	}
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+// listVideos answers a read of videos by id in the one form measured: parts
+// snippet and status, the ids as one comma-separated value, and no maxResults.
+// A public video is returned, and a private video another channel owns, or an
+// id the fake has no video for, is left out.
+func (f *fakeAPI) listVideos(w http.ResponseWriter, r *http.Request, resource fakeResource, parts []string) {
+	query := r.URL.Query()
+	ids := strings.Split(query.Get("id"), ",")
+	if !slices.Equal(slices.Sorted(slices.Values(parts)), []string{"snippet", "status"}) || len(query["id"]) != 1 || query.Has("maxResults") || len(ids) > 50 {
+		f.unmodeled(w, "a read of videos %s", r.URL.RawQuery)
+		return
+	}
+	found := []map[string]any{}
+	for _, id := range ids {
+		video, known := f.videos[id]
+		switch {
+		case !known, video.privacy == "private" && video.owner != fakeChannelID:
+		case video.privacy == "public":
+			served := clone(f.videoTemplate)
+			served["id"] = id
+			snippet := served["snippet"].(map[string]any)
+			snippet["title"], snippet["channelTitle"], snippet["channelId"] = video.title, video.channel, video.owner
+			snippet["localized"].(map[string]any)["title"] = video.title
+			served["status"].(map[string]any)["privacyStatus"] = video.privacy
+			found = append(found, withParts(served, parts))
+		default:
+			f.unmodeled(w, "a read of video %s, whose privacy is %q", id, video.privacy)
+			return
+		}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"kind":     resource.listKind,
+		"etag":     "fakePageEtag",
+		"items":    found,
+		"pageInfo": map[string]any{"totalResults": len(found), "resultsPerPage": len(found)},
+	})
 }
 
 func (f *fakeAPI) insertPlaylist(w http.ResponseWriter, r *http.Request, parts []string) {

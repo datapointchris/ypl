@@ -32,9 +32,24 @@ The server edits playlists through the Data API as well. Creating, renaming or d
 and inserting, moving or deleting an item, costs 50 units a request. A rename reads the playlist
 first, for 1 unit more.
 
-The server syncs every `SYNC_INTERVAL`, an hour when unset. Each run reads every playlist and
-stores it as YouTube holds it, at a unit a page. A run whose interval would read more in a day than
-the quota allows is recorded as partly synced.
+The server syncs every `SYNC_INTERVAL`, an hour when unset. Each run reads every playlist at a unit
+a page and merges YouTube's order of it into the server's, then pushes the server's order back to
+YouTube, one write at a time. A run whose interval would read more in a day than the quota allows
+is recorded as partly synced.
+
+A merge compares each side with the base, what YouTube held after the server last read or wrote
+the playlist, item by item. An item YouTube removed, or one the server removed, stays removed, and
+an item either side added stays. When YouTube reordered the items the base and its read share,
+YouTube's order wins, and otherwise the server's does. An item missing from a read is read by id
+before it counts as removed, since a read spanning pages can miss one.
+
+The push deletes what the server removed, keeps in place the longest run of items already in order,
+and inserts or moves the rest. It stops for the day when a write would leave too little of the
+quota for the reads of the day's remaining runs, and it stops pushing a playlist at a write that
+YouTube refuses or does not answer, which the next run accounts for. A playlist YouTube orders
+itself, which refuses a write naming a position, is added to at its end and never reordered. A
+playlist whose items were written less than a minute before a run read them is left for the next
+run.
 
 The server answers `/api/v1` only to a request carrying an access token, which `api/auth`
 verifies. The token is an RFC 9068 JWT that the identity provider `OIDC_ISSUER` signed for a client
@@ -49,6 +64,7 @@ provider beside the sync, retrying while it is down, and `/ready` answers 200 on
 | `GET /api/v1/playlists/{id}` | One playlist and its items in order |
 | `PATCH /api/v1/playlists/{id}` | The playlist with the `title` or `description` it sets on YouTube |
 | `DELETE /api/v1/playlists/{id}` | Nothing, once it has deleted the playlist on YouTube and from the store |
+| `PUT /api/v1/playlists/{id}/items` | The playlist in the order it sets, from `{"video_ids"}` and the revision `If-Match` names |
 | `GET /api/v1/videos` | Every available video some playlist holds, with its artists and playlists |
 | `GET /api/v1/videos/{id}` | One video with its description and tracklist |
 | `POST /api/v1/plays` | The play it records, from `{"id", "video_id", "played_ts"}` |
@@ -86,6 +102,17 @@ until midnight Pacific.
 
 A read sent within a minute of a write YouTube answered can show the playlist as it was before, so
 a sync run keeps what the API wrote until its reads follow the write by that minute.
+
+`GET /api/v1/playlists/{id}` answers the playlist's `revision` in the body and as its `ETag`, and
+counts every change to the server's order, the sync's merges included. `PUT
+/api/v1/playlists/{id}/items` takes the whole new order as `{"video_ids": [...]}`, repeats allowed,
+and needs `If-Match` naming the revision it edits: 428 `revision_required` without it, and 412
+`revision_mismatch` once the order has moved on. Each video takes the earliest slot holding it
+that no earlier video took, keeping the YouTube item in it, and a video no slot is left for takes a
+new one, whose `id` is null until the sync adds it to YouTube on its next run. A video the server
+has never seen is read from YouTube, and one YouTube returns no public or unlisted video for is a
+422 `video_not_found`. A new slot for a video the server knows is private or deleted is a 422
+`video_unavailable`.
 
 On SIGTERM the server begins no new playlist write, answering 503 `shutting_down`, and gives
 requests in flight up to 30 seconds to finish. A container's stop timeout has to be longer.
