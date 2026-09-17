@@ -14,6 +14,19 @@ type EnrichFailure struct {
 	Reason      string
 }
 
+type QuotaMethod struct {
+	Method string
+	Units  int64
+}
+
+type QuotaSpend struct {
+	SpendID   int64
+	QuotaDate string
+	Method    string
+	Units     int64
+	SpentTs   string
+}
+
 type Track struct {
 	TrackID      int64
 	VideoID      string
