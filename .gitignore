@@ -22,6 +22,11 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# Go
+/bin/
+# `go build ./...` writes the executable when the pattern matches one main package.
+/api/api
+
 # Project
 TESTING.*
 client_secret*
@@ -31,3 +36,4 @@ service_account*
 
 # Runtime state
 *_progress.json
+coverage.xml

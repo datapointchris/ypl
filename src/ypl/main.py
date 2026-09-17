@@ -137,7 +137,10 @@ console = Console(highlight=False)
 # handle width themselves.
 messages = Console(stderr=True, highlight=False, soft_wrap=True)
 
-UPDATE_CONFIG = UpdateConfig(tool='ypl', owner='datapointchris')
+# This tool's releases are tagged v1.2.3 and the Go CLI's cli/v1.2.3, in one
+# repository. GitHub's latest release is repository-wide, so the prefix is what
+# keeps a CLI release from being read as a version of this tool.
+UPDATE_CONFIG = UpdateConfig(tool='ypl', owner='datapointchris', tag_prefix='v')
 
 _no_input = False
 

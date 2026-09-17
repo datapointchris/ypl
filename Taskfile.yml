@@ -1,0 +1,95 @@
+version: '3'
+
+vars:
+  # The CLI is tagged cli/v1.2.3, so only those tags describe its version.
+  CLI_VERSION:
+    sh: git describe --tags --match 'cli/v*' --always --dirty 2>/dev/null || echo dev
+
+tasks:
+  default:
+    desc: Show available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  # A worktree is a clean checkout, so everything gitignored is absent. The
+  # Python environment comes back from the lockfile. .planning is linked to the
+  # same target as the primary checkout's link, only where nothing is there yet.
+  # PRIMARY resolves from any worktree because they share one git directory.
+  setup:
+    desc: Make a fresh checkout runnable
+    vars:
+      PRIMARY:
+        sh: git rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||'
+    cmds:
+      - uv sync --all-extras --dev
+      - |
+        target=$(readlink "{{.PRIMARY}}/.planning") || exit 0
+        if [ ! -e .planning ] && [ ! -L .planning ]; then
+          ln -s "$target" .planning
+        elif [ "$(readlink .planning)" != "$target" ]; then
+          echo "warning: .planning already exists and does not link to $target; left as it is" >&2
+        fi
+
+  # The pre-commit hooks against every file, run exactly as a commit runs them
+  # against the files it stages. ruff comes from the revision the config pins.
+  # The Go hooks call the go, gofumpt and golangci-lint on PATH, where CI
+  # installs golangci-lint at a pinned version of its own.
+  lint:
+    desc: Run every pre-commit hook against every file
+    cmds:
+      - pre-commit run --all-files
+
+  test:
+    desc: Test every subsystem
+    cmds:
+      - task: py:test
+      - task: api:test
+      - task: cli:test
+
+  # ---------------------------------------------------------------------------
+  # Python tool, at the repository root
+  # ---------------------------------------------------------------------------
+
+  py:test:
+    desc: Run the Python test suite
+    cmds:
+      - uv run pytest
+
+  # ---------------------------------------------------------------------------
+  # API, module github.com/datapointchris/ypl/api
+  # ---------------------------------------------------------------------------
+
+  api:build:
+    desc: Build the API server to bin/ypl-api
+    dir: api
+    cmds:
+      - go build -o ../bin/ypl-api .
+
+  api:run:
+    desc: Run the API server
+    dir: api
+    cmds:
+      - go run .
+
+  api:test:
+    desc: Run the API test suite
+    dir: api
+    cmds:
+      - go test ./...
+
+  # ---------------------------------------------------------------------------
+  # CLI, module github.com/datapointchris/ypl/cli
+  # ---------------------------------------------------------------------------
+
+  cli:build:
+    desc: Build the CLI to bin/ypl
+    dir: cli
+    cmds:
+      - go build -ldflags "-s -w -X github.com/datapointchris/ypl/cli/internal/cli.version={{.CLI_VERSION}}" -o ../bin/ypl .
+
+  cli:test:
+    desc: Run the CLI test suite
+    dir: cli
+    cmds:
+      - go test ./...

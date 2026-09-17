@@ -1,0 +1,27 @@
+# forge-managed
+[sqlfluff]
+# Substance only. sqlfluff's default ruleset is dominated by layout and
+# capitalization opinions, which would have failed every .sql file in the
+# portfolio on the first run and taught everyone to skip the hook. These four
+# families catch things that are actually wrong: unparsable SQL, ambiguous
+# references, unused CTEs, missing statement terminators.
+rules = ambiguous, references, structure, convention.terminator
+
+# Two rules inside those families are the opinions this list exists to keep out,
+# and neither was measured before the families went in — every .sqlfluff in the
+# portfolio is newer than that decision.
+#
+# RF04 (keywords as identifiers) fails on `name`, `state`, `type` and `action`,
+# which appear in dozens of columns already shipped in migrations that have run.
+# It catches nothing unparsable or ambiguous,
+# and the only way to satisfy it is a new migration against a live database to
+# rename a column that was never a problem.
+#
+# AM04 (unknown result column count) fires on `SELECT *`, which under sqlc is
+# the type-safe form rather than the sloppy one: sqlc reads the schema and
+# generates a struct per query, so the column set is known at build time and
+# would have to be restated by hand on every schema change.
+exclude_rules = RF04, AM04
+
+# Line length is a layout opinion, and generated migrations routinely exceed it.
+max_line_length = 0

@@ -126,6 +126,26 @@ def test_bare_invocation_answers_rather_than_printing_a_catalog():
     assert main.sign_in_command() in result.output
 
 
+def test_the_update_check_reads_only_this_tools_releases(monkeypatch):
+    """A Go CLI release, tagged cli/v1.2.3, can be the repository's newest,
+    and it is not a version of this tool."""
+    releases = [
+        {'tag_name': 'cli/v0.1.0', 'html_url': ''},
+        {'tag_name': 'v2.3.0', 'html_url': ''},
+    ]
+
+    def github(self, path):
+        # GitHub's own answers: the latest endpoint names the newest release
+        # of any stream, and the list endpoint returns them newest first.
+        return releases[0] if path.endswith('/releases/latest') else releases
+
+    source = main.UPDATE_CONFIG.resolved().require_source()
+    monkeypatch.setattr(type(source), '_get', github)
+
+    release = source.latest_release()
+    assert (release.tag, release.install_ref()) == ('2.3.0', 'v2.3.0')
+
+
 def test_version_is_one_line_naming_the_tool_and_exits_clean():
     """The question every CLI here answers the same way, so a script can ask it."""
     result = runner.invoke(app, ['--version'])
