@@ -41,7 +41,7 @@ Organize YouTube playlists.
 
 Two commands are the whole setup:
 
-  ypl auth --browser safari
+  ypl auth --browser <browser>
   ypl sync
 
 `ypl sync` is everything — it mirrors your account, gives every playlist a file
@@ -195,6 +195,19 @@ def show_version(asked: bool) -> None:
     raise typer.Exit()
 
 
+def suggested_browser() -> str:
+    """The browser a suggested command names, where the platform guarantees one.
+
+    Every Mac has Safari, so there the line can be pasted as it stands. Linux
+    has no browser every machine is sure to have, so the name is left to fill in.
+    """
+    return 'safari' if sys.platform == 'darwin' else '<browser>'
+
+
+def sign_in_command() -> str:
+    return f'ypl auth --browser {suggested_browser()}'
+
+
 def next_command() -> str:
     """The one thing to run next, given where this machine has got to.
 
@@ -204,7 +217,7 @@ def next_command() -> str:
     nothing is here before the first sync.
     """
     if not session.browser():
-        return 'ypl auth --browser safari'
+        return sign_in_command()
     if not synclog.last():
         return 'ypl sync'
     if not schedule.installed():
@@ -443,7 +456,7 @@ def signed_in_backend(quiet: bool) -> youtubei.YouTubeiBackend | None:
     stored = session.stored_auth()
     if not stored.get('browser'):
         if not quiet:
-            messages.print('Not signed in — mirroring only. [bold]ypl auth --browser safari[/bold] syncs both ways.')
+            messages.print(f'Not signed in — mirroring only. [bold]{sign_in_command()}[/bold] syncs both ways.')
         return None
     try:
         return backend_for_browser(stored['browser'], stored.get('page_id') or '')
@@ -586,8 +599,8 @@ def sync(
         source = reading_browser(settings, browser)
         if not source:
             messages.print('[red]Nothing to sync from.[/red] Give a playlist URL, or name a browser to read your account:')
-            messages.print('  [bold]ypl sync --browser safari[/bold]  — remembered afterwards, so once is enough')
-            messages.print('  [bold]ypl auth --browser safari[/bold]  — signs in for writing too')
+            messages.print(f'  [bold]ypl sync --browser {suggested_browser()}[/bold]  — remembered afterwards, so once is enough')
+            messages.print(f'  [bold]{sign_in_command()}[/bold]  — signs in for writing too')
             raise typer.Exit(2)
 
         with runlock.held() as mine:
@@ -1335,16 +1348,26 @@ def backend_for_browser(browser: str, page_id: str) -> youtubei.YouTubeiBackend:
 @app.command('auth', rich_help_panel=SYNCING)
 def auth(
     browser: str = typer.Option(
-        None, '--browser', '-b', help='Read the session from this browser: safari, firefox, chrome, brave, edge...'
+        None,
+        '--browser',
+        '-b',
+        help='Read the session from this browser: safari, firefox, chrome, chromium, brave, edge, opera, vivaldi. '
+        'Name the keyring after a plus where yt-dlp cannot detect it: vivaldi+gnomekeyring.',
     ),
     as_json: bool = typer.Option(False, '--json', help='Output as JSON to stdout.'),
 ) -> None:
     """Sign in, by naming a browser you are already signed in to.
 
-    [bold]ypl auth --browser safari[/bold] and nothing else. There is
-    nothing to paste and nothing to find in DevTools: yt-dlp already decrypts
-    every browser's cookie store, so the session is read from the one you are
-    using.
+    [bold]ypl auth --browser firefox[/bold], or any other browser's name, and
+    nothing else. There is nothing to paste and nothing to find in DevTools:
+    yt-dlp already decrypts every browser's cookie store, so the session is
+    read from the one you are using.
+
+    A Chromium-based browser on Linux keeps its cookie key in the desktop
+    keyring, and yt-dlp only detects which one on the desktops it knows. On any
+    other, name it after a plus: [bold]vivaldi+gnomekeyring[/bold] or
+    [bold]chrome+kwallet6[/bold]. yt-dlp reads the GNOME keyring through the
+    python-secretstorage package, so that has to be installed beside it.
 
     Nothing about the session is stored — only which browser to read it from,
     and which channel to act as. YouTube is asked once which identities those
@@ -1355,7 +1378,7 @@ def auth(
     source = browser or reading_browser(load_config_or_exit()) or session.browser()
     if not source:
         messages.print('[red]Which browser are you signed in to YouTube with?[/red]')
-        messages.print('Run [bold]ypl auth --browser safari[/bold] — or firefox, chrome, brave, edge.')
+        messages.print(f'Run [bold]{sign_in_command()}[/bold] — safari, firefox, chrome, chromium, brave, edge, opera or vivaldi.')
         raise typer.Exit(2)
 
     try:
@@ -1393,7 +1416,7 @@ def backend_or_exit() -> youtubei.YouTubeiBackend:
     stored = session.stored_auth()
     if not stored.get('browser'):
         messages.print('[red]Not signed in.[/red]')
-        messages.print('Run [bold]ypl auth --browser safari[/bold] to sign in.')
+        messages.print(f'Run [bold]{sign_in_command()}[/bold] to sign in.')
         raise typer.Exit(1)
     try:
         return backend_for_browser(stored['browser'], stored.get('page_id') or '')

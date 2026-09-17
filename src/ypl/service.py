@@ -1109,7 +1109,7 @@ def run_sync(
             backend.account()
             run.signed_in = True
         except remote.RemoteAuthError as error:
-            run.failures.append(('signed in', f'{error} — run `ypl auth --browser safari`'))
+            run.failures.append(('signed in', f'{error} — run `ypl auth`'))
         except remote.RemoteError as error:
             run.failures.append(('signed in', brief(error)))
 

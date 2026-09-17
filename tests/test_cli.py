@@ -122,7 +122,7 @@ def test_bare_invocation_answers_rather_than_printing_a_catalog():
     result = runner.invoke(app, [])
     assert result.exit_code == 0
     assert 'Usage:' not in result.output
-    assert 'ypl auth --browser safari' in result.output
+    assert main.sign_in_command() in result.output
 
 
 def test_version_is_one_line_naming_the_tool_and_exits_clean():
@@ -1357,7 +1357,14 @@ def test_a_bare_ypl_says_where_things_stand_and_what_to_run():
     output = runner.invoke(app, []).output
     assert 'Signed in       no' in output
     assert 'Last sync       never' in output
-    assert 'ypl auth --browser safari' in output
+    assert main.sign_in_command() in output
+
+
+@pytest.mark.parametrize(('platform', 'browser'), [('darwin', 'safari'), ('linux', '<browser>')])
+def test_the_sign_in_hint_names_safari_only_where_every_machine_has_it(monkeypatch, platform, browser):
+    """A Linux machine told to run `--browser safari` has no Safari to read."""
+    monkeypatch.setattr(main.sys, 'platform', platform)
+    assert main.sign_in_command() == f'ypl auth --browser {browser}'
 
 
 def test_a_bare_ypl_stops_naming_a_next_command_once_there_is_none():

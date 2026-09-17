@@ -350,6 +350,19 @@ That is the whole flow: no DevTools, no paste, no OAuth. yt-dlp already decrypts
 cookie store — it is how private playlists are read — so the session comes from a browser you are
 already signed in to. With no `--browser`, `cookies_from_browser` from the config is used instead.
 
+A Chromium-based browser on Linux (Chrome, Chromium, Brave, Edge, Opera, Vivaldi) encrypts its
+cookies with a key kept in the desktop keyring. yt-dlp detects the keyring on GNOME, KDE and the
+other desktops it knows. On anything else, such as Hyprland or Sway, it falls back to a plain-text
+key, and every cookie fails to decrypt. Name the keyring after a plus:
+
+```bash
+ypl auth --browser vivaldi+gnomekeyring   # or chrome+kwallet6
+```
+
+yt-dlp reads the GNOME keyring through the `secretstorage` Python module, and Arch's yt-dlp package
+does not pull it in. On Arch that is `pacman -S python-secretstorage`; on Debian and Ubuntu,
+`apt install python3-secretstorage`.
+
 **Nothing about the session is stored.** The cookies are read from the browser on every run, so
 `auth.json` holds only a browser name and a page id, neither of which signs anyone in. This is not
 only about secrets: Google rotates the session cookies while you stay signed in, so a copy taken at
