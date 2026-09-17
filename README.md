@@ -33,6 +33,36 @@ The server syncs every `SYNC_INTERVAL`, an hour when unset. Each run reads every
 stores it as YouTube holds it, at a unit a page. A run whose interval would read more in a day than
 the quota allows is recorded as partly synced.
 
+The server answers `/api/v1` only to a request carrying an access token. The token is an RFC 9068
+JWT that the identity provider `OIDC_ISSUER` signed for a client whose id starts with
+`CLI_CLIENT_ID_PREFIX`, which is `ypl-cli-` when unset. `/health` and `/ready` answer without one.
+
+| Request | Answers with |
+| --- | --- |
+| `GET /api/v1/playlists` | Every playlist, with how many items it holds and how many of their videos are unavailable or enriched |
+| `GET /api/v1/playlists/{id}` | One playlist and its items in order |
+| `GET /api/v1/videos` | Every available video some playlist holds, with its artists and playlists |
+| `GET /api/v1/videos/{id}` | One video with its description and tracklist |
+| `POST /api/v1/plays` | The play it records, from `{"id", "video_id", "played_ts"}` |
+| `GET /api/v1/plays` | Plays newest first, a page at a time |
+| `GET /api/v1/plays/{id}` | One play |
+| `GET /api/v1/suggestions` | What to play next: never-played videos first, then the least recently played |
+| `GET /api/v1/sync/runs` | Sync runs newest first with their failures, a page at a time |
+| `GET /api/v1/status` | What the store holds, the latest run, and the latest run that ended ok |
+
+`GET /api/v1/videos` narrows by `playlist`, `min_seconds`, `max_seconds` and `artist`, which
+matches part of an artist's name ignoring case and accents. `sort` is `longest` when absent, or
+`shortest`, `newest`, `oldest`, `title` or `random`. `GET /api/v1/suggestions` takes `playlist` and a `limit`
+of up to 100, one when absent.
+
+A play's `id` is a UUIDv7 the client generates, so sending the same play again records it once.
+`played_ts` is an RFC 3339 timestamp, stored in UTC to the second, and the time the request arrives
+when it is absent.
+
+A paged list answers `{"data": [...], "has_more": true}`. The next page is the same request with
+`starting_after` set to the last id on this one. `limit` sets the page size, 20 when absent and at
+most 100.
+
 ## Install
 
 ```bash
