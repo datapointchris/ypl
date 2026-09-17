@@ -6,13 +6,11 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -34,12 +32,9 @@ func main() {
 // start opens the database, applying its migrations, before the port is bound,
 // so the service answers /ready only once its schema is current.
 func start(ctx context.Context) error {
-	path, err := databasePath()
+	path, err := store.Path()
 	if err != nil {
 		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create the database directory: %w", err)
 	}
 	st, err := store.Open(ctx, path)
 	if err != nil {
@@ -49,23 +44,6 @@ func start(ctx context.Context) error {
 	slog.Info("database ready", "path", path)
 
 	return run(ctx, ":"+envOr("PORT", "8080"))
-}
-
-// databasePath is DATABASE_PATH, or api.db in ypl's directory under
-// $XDG_STATE_HOME. The Python tool's mirror is ypl.db in that same directory.
-func databasePath() (string, error) {
-	if path := os.Getenv("DATABASE_PATH"); path != "" {
-		return path, nil
-	}
-	state := os.Getenv("XDG_STATE_HOME")
-	if state == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("find the state directory: %w", err)
-		}
-		state = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(state, "ypl", "api.db"), nil
 }
 
 // run binds addr and serves on it. A port that cannot be bound is returned

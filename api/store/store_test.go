@@ -29,6 +29,28 @@ func countSources(t *testing.T, st *Store) int {
 	return n
 }
 
+func TestPathPrefersTheEnvironmentThenStateHome(t *testing.T) {
+	t.Setenv("DATABASE_PATH", "/data/ypl.db")
+	if got, err := Path(); err != nil || got != "/data/ypl.db" {
+		t.Fatalf("Path with DATABASE_PATH set = %q, %v", got, err)
+	}
+
+	t.Setenv("DATABASE_PATH", "")
+	t.Setenv("XDG_STATE_HOME", "/state")
+	if got, err := Path(); err != nil || got != "/state/ypl/api.db" {
+		t.Fatalf("Path under XDG_STATE_HOME = %q, %v", got, err)
+	}
+}
+
+func TestOpenCreatesAMissingDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "ypl", "api.db")
+	st, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Open under a missing directory: %v", err)
+	}
+	_ = st.Close()
+}
+
 func TestOpenAppliesMigrationsAndSeedsTheSources(t *testing.T) {
 	st, _ := open(t)
 	if got, want := countSources(t, st), len(trackSources); got != want {

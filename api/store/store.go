@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io/fs"
 	"net/url"
+	"os"
+	"path/filepath"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
@@ -35,9 +37,29 @@ type Store struct {
 	Queries *generated.Queries
 }
 
-// Open opens the database at path, creating it if needed, then applies every
-// pending migration and seeds the lookup tables.
+// Path is DATABASE_PATH, or api.db in ypl's directory under $XDG_STATE_HOME.
+// The Python tool's mirror is ypl.db in that same directory.
+func Path() (string, error) {
+	if path := os.Getenv("DATABASE_PATH"); path != "" {
+		return path, nil
+	}
+	state := os.Getenv("XDG_STATE_HOME")
+	if state == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("find the state directory: %w", err)
+		}
+		state = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(state, "ypl", "api.db"), nil
+}
+
+// Open opens the database at path, creating it and its directory if needed,
+// then applies every pending migration and seeds the lookup tables.
 func Open(ctx context.Context, path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create the database directory: %w", err)
+	}
 	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)

@@ -76,19 +76,6 @@ func TestEmptyEnvironmentValueFallsBack(t *testing.T) {
 	}
 }
 
-func TestDatabasePathPrefersTheEnvironmentThenStateHome(t *testing.T) {
-	t.Setenv("DATABASE_PATH", "/data/ypl.db")
-	if got, err := databasePath(); err != nil || got != "/data/ypl.db" {
-		t.Fatalf("databasePath with DATABASE_PATH set = %q, %v", got, err)
-	}
-
-	t.Setenv("DATABASE_PATH", "")
-	t.Setenv("XDG_STATE_HOME", "/state")
-	if got, err := databasePath(); err != nil || got != "/state/ypl/api.db" {
-		t.Fatalf("databasePath under XDG_STATE_HOME = %q, %v", got, err)
-	}
-}
-
 func TestRunReturnsTheBindError(t *testing.T) {
 	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
