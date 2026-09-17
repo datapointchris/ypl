@@ -1,4 +1,4 @@
-// Command ypl is the client for a ypl server.
+// Command ypl is the ypl command-line client.
 package main
 
 import (
@@ -9,11 +9,11 @@ import (
 
 	"github.com/datapointchris/goclikit"
 
-	"github.com/datapointchris/ypl/cli/cmd"
+	"github.com/datapointchris/ypl/cli/internal/cli"
 )
 
 func main() {
-	err := goclikit.Execute(context.Background(), cmd.NewRootCommand(), cmd.AutoUpdateConfig())
+	err := goclikit.Execute(context.Background(), cli.NewRootCommand(), cli.AutoUpdateConfig())
 	if err == nil {
 		return
 	}

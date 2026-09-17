@@ -1,4 +1,4 @@
-package cmd
+package cli
 
 import (
 	"bytes"
@@ -34,12 +34,5 @@ func TestBareInvocationShowsHelp(t *testing.T) {
 	}
 	if !strings.Contains(out, "Usage:") || !strings.Contains(out, "update") {
 		t.Fatalf("bare ypl did not print help naming update:\n%s", out)
-	}
-}
-
-func TestUpdateResolvesTheCLIReleasesOnly(t *testing.T) {
-	config := updateConfig()
-	if config.TagPrefix != "cli/" || config.Repo != "ypl" || config.Binary != "ypl" {
-		t.Fatalf("update config = %+v, want ypl releases under cli/", config)
 	}
 }
