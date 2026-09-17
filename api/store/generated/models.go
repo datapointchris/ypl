@@ -97,3 +97,28 @@ type Video struct {
 	IsUnavailable   bool
 	EnrichedTs      sql.NullString
 }
+
+type YoutubeWrite struct {
+	WriteID    int64
+	Method     string
+	PlaylistID sql.NullString
+	SentTs     string
+	QuotaDate  string
+	Outcome    string
+	SettledTs  sql.NullString
+	Requests   sql.NullInt64
+	Units      sql.NullInt64
+	Error      sql.NullString
+}
+
+type YoutubeWriteMethod struct {
+	Method      string
+	Label       string
+	Description string
+}
+
+type YoutubeWriteOutcome struct {
+	Outcome     string
+	Label       string
+	Description string
+}

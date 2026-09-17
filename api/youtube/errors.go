@@ -10,6 +10,12 @@ var ErrMissingCredentials = errors.New("missing YouTube credentials")
 // token, or does not grant Scope.
 var ErrIncompleteGrant = errors.New("the grant does not give this service what it needs")
 
+// ErrRefused is YouTube answering a request with a 4xx status. YouTube did not
+// apply a request it refused: an abort and a refusal of a write were both
+// measured leaving nothing behind, and a 4xx says the request as sent is one
+// the server will not carry out. Every refusal below is ErrRefused as well.
+var ErrRefused = errors.New("YouTube refused the request")
+
 // ErrQuotaSpent is YouTube refusing a request because the Cloud project's daily
 // quota is spent. The quota resets at midnight Pacific.
 var ErrQuotaSpent = errors.New("YouTube reports the project's daily quota spent")

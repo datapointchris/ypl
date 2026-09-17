@@ -29,7 +29,8 @@ playlist costs one unit per page of playlists plus one per page of each playlist
 empty playlist still taking one.
 
 The server edits playlists through the Data API as well. Creating, renaming or deleting a playlist,
-and inserting, moving or deleting an item, costs 50 units a request.
+and inserting, moving or deleting an item, costs 50 units a request. A rename reads the playlist
+first, for 1 unit more.
 
 The server syncs every `SYNC_INTERVAL`, an hour when unset. Each run reads every playlist and
 stores it as YouTube holds it, at a unit a page. A run whose interval would read more in a day than
@@ -69,10 +70,25 @@ characters. `played_ts` is an RFC 3339 timestamp, stored in UTC to the second, a
 request arrives when it is absent. A time more than five minutes after the request arrives is
 refused.
 
-Creating, renaming and deleting a playlist write to YouTube in the request, and the store changes
-only once YouTube has answered. A write YouTube did not confirm answers 502 and may still have
-landed, and the next sync stores what YouTube holds. A write refused because the day's quota is
-spent answers 503 with a `Retry-After` of the seconds until midnight Pacific.
+Creating, renaming and deleting a playlist write to YouTube in the request, one request at a time.
+The server records each write before sending it and settles it with YouTube's answer, and the store
+changes only once YouTube has answered. The store keeps a title and description as YouTube's answer
+reports them, and YouTube trims the whitespace around both. A rename sets the field it leaves out
+as YouTube holds it, read just before the write.
+
+YouTube keeps a title of at most 150 characters and a description of at most 5,000, and a longer
+one is refused before it is sent. A write YouTube refuses answers 422 `youtube_refused` with
+YouTube's reason, and nothing changed. A write YouTube did not answer answers 502 and may still
+have landed, and the next sync stores what YouTube holds. A write YouTube made that the server
+could not record answers 500 `youtube_write_unrecorded`, and sending it again would make it twice.
+A write refused because the day's quota is spent answers 503 with a `Retry-After` of the seconds
+until midnight Pacific.
+
+A read sent within a minute of a write YouTube answered can show the playlist as it was before, so
+a sync run keeps what the API wrote until its reads follow the write by that minute.
+
+On SIGTERM the server begins no new playlist write, answering 503 `shutting_down`, and gives
+requests in flight up to 30 seconds to finish. A container's stop timeout has to be longer.
 
 A paged list answers `{"data": [...], "has_more": true}`. The next page is the same request with
 `starting_after` set to the last id on this one. `limit` sets the page size, 20 when absent and at

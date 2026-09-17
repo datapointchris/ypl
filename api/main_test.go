@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -125,7 +126,7 @@ func TestRunReturnsTheBindError(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
 	defer slog.SetDefault(previous)
 
-	err = run(context.Background(), taken.Addr().String(), routes(alwaysReady), func(context.Context) {})
+	err = run(context.Background(), taken.Addr().String(), routes(alwaysReady), func(context.Context) {}, func() {})
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("run on an occupied port = %v, want EADDRINUSE", err)
 	}
@@ -143,7 +144,7 @@ func TestServeAnswersUntilCanceledThenReturnsNil(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, ln, routes(alwaysReady), func(context.Context) {}) }()
+	go func() { done <- serve(ctx, ln, routes(alwaysReady), func(context.Context) {}, func() {}) }()
 
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	resp, err := client.Get("http://" + ln.Addr().String() + "/ready")
@@ -183,7 +184,7 @@ func TestServeStopsItsWorkBeforeReturning(t *testing.T) {
 			<-ctx.Done()
 			time.Sleep(50 * time.Millisecond)
 			finished = true
-		})
+		}, func() {})
 	}()
 	<-started
 	cancel()
@@ -194,6 +195,65 @@ func TestServeStopsItsWorkBeforeReturning(t *testing.T) {
 		}
 	case <-time.After(shutdownGrace):
 		t.Fatal("serve did not return after its context was canceled")
+	}
+}
+
+// The handler finishes its request only once drain has been called, as a
+// playlist write begun before the drain does, so the request is answered only
+// if serve drains the API before it waits on requests in flight.
+func TestServeDrainsTheAPIBeforeWaitingOnRequestsInFlight(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inFlight, drained := make(chan struct{}), make(chan struct{})
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(inFlight)
+		<-drained
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- serve(ctx, ln, h, func(context.Context) {}, func() { close(drained) }) }()
+	answered := make(chan int, 1)
+	go func() {
+		client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+		resp, err := client.Post("http://"+ln.Addr().String()+"/api/v1/playlists", "application/json", strings.NewReader(`{}`))
+		if err != nil {
+			answered <- 0
+			return
+		}
+		_ = resp.Body.Close()
+		answered <- resp.StatusCode
+	}()
+	<-inFlight
+	cancel()
+
+	select {
+	case status := <-answered:
+		if status != http.StatusNoContent {
+			t.Fatalf("the request in flight answered %d, want 204", status)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request in flight was not answered: serve did not drain the API")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("serve = %v, want nil", err)
+	}
+}
+
+func TestTheShutdownGraceOutlastsAPlaylistWrite(t *testing.T) {
+	if shutdownGrace <= handlers.WriteDuration {
+		t.Fatalf("shutdownGrace %v, want longer than a playlist write's %v", shutdownGrace, handlers.WriteDuration)
+	}
+	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
+	if err != nil {
+		t.Fatalf("read the README: %v", err)
+	}
+	if want := fmt.Sprintf("up to %d seconds to finish", int(shutdownGrace.Seconds())); !strings.Contains(string(readme), want) {
+		t.Fatalf("the README does not say %q, which a container's stop timeout is set from", want)
 	}
 }
 

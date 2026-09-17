@@ -74,6 +74,24 @@ func (c *Channel) Playlists(ctx context.Context) ([]Playlist, error) {
 	return playlists, nil
 }
 
+// Playlist is the playlist id, read by its id. It returns ErrPlaylistNotFound
+// when YouTube has no playlist with that id, which a read by id answers with no
+// playlists rather than a refusal.
+func (c *Channel) Playlist(ctx context.Context, id PlaylistID) (Playlist, error) {
+	call := c.service.Playlists.List([]string{"snippet", "status"}).Id(string(id)).MaxResults(pageSize)
+	response, err := send(ctx, c, playlistsList, call.Context(ctx).Do)
+	if err != nil {
+		return Playlist{}, fmt.Errorf("read playlist %s: %w", id, err)
+	}
+	switch {
+	case len(response.Items) == 0:
+		return Playlist{}, fmt.Errorf("read playlist %s: %w", id, ErrPlaylistNotFound)
+	case len(response.Items) > 1 || response.Items[0].Id != string(id):
+		return Playlist{}, fmt.Errorf("%w: a read of playlist %s returned %d playlists, the first %s", ErrUnexpectedResponse, id, len(response.Items), response.Items[0].Id)
+	}
+	return playlistFrom(response.Items[0])
+}
+
 // Items is every item in the playlist playlistID, ordered by position. Beyond
 // the checks every paged read gets, it returns ErrInconsistentRead when the
 // number of items differs from the total the pages report, or the positions are

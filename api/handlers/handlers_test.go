@@ -20,6 +20,7 @@ import (
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/wire"
+	"github.com/datapointchris/ypl/api/youtube"
 )
 
 // arrival is the time every request in these tests arrives: not UTC and not on
@@ -30,6 +31,7 @@ var arrival = time.Date(2026, 9, 17, 14, 0, 0, 500_000_000, time.FixedZone("CEST
 // fake YouTube. A request arrives at now, which starts at arrival.
 type fixture struct {
 	st      *store.Store
+	h       *Handlers
 	mux     *http.ServeMux
 	logs    *bytes.Buffer
 	now     time.Time
@@ -43,10 +45,10 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	f := &fixture{st: st, mux: http.NewServeMux(), logs: &bytes.Buffer{}, now: arrival, youtube: &fakeYouTube{}}
-	h := New(st, f.youtube, slog.New(slog.NewTextHandler(f.logs, nil)))
-	h.now = func() time.Time { return f.now }
-	h.Register(f.mux)
+	f := &fixture{st: st, mux: http.NewServeMux(), logs: &bytes.Buffer{}, now: arrival, youtube: newFakeYouTube()}
+	f.h = New(st, f.youtube, slog.New(slog.NewTextHandler(f.logs, nil)))
+	f.h.now = func() time.Time { return f.now }
+	f.h.Register(f.mux)
 	return f
 }
 
@@ -137,6 +139,9 @@ func (f *fixture) withLibrary(t *testing.T) {
 			if err := tx.UpsertPlaylist(ctx, p); err != nil {
 				return err
 			}
+			f.youtube.playlists[youtube.PlaylistID(p.PlaylistID)] = youtube.Playlist{
+				ID: youtube.PlaylistID(p.PlaylistID), Title: p.Title, Description: p.Description, Privacy: p.Privacy,
+			}
 			if err := tx.ReplacePlaylistItems(ctx, p.PlaylistID, items[p.PlaylistID]); err != nil {
 				return err
 			}
@@ -217,10 +222,11 @@ func TestARequestNoRouteAnswersIsRefusedInTheEnvelope(t *testing.T) {
 		"/api/v1/sync/runs":   "GET, HEAD",
 		"/api/v1/playlists/x": "DELETE, GET, HEAD, PATCH",
 	} {
-		rec := f.do(http.MethodPut, target, "")
+		method := http.MethodPut
+		rec := f.do(method, target, "")
 		refused(t, rec, http.StatusMethodNotAllowed, wire.CodeMethodNotAllowed)
 		if got := rec.Header().Get("Allow"); got != allow {
-			t.Errorf("DELETE %s Allow = %q, want %q", target, got, allow)
+			t.Errorf("%s %s Allow = %q, want %q", method, target, got, allow)
 		}
 	}
 }

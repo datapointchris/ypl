@@ -104,7 +104,7 @@ func (h *Handlers) createPlay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	playedTs := playedAt.UTC().Format(time.RFC3339)
+	playedTs := store.Timestamp(playedAt)
 
 	var stored generated.GetPlayRow
 	var created bool

@@ -8,38 +8,60 @@ import (
 )
 
 // PlaylistDetails is what a create or an update sets on a playlist.
+//
+// YouTube trims the whitespace around a title and a description before it
+// stores them. It refuses a title longer than MaxTitleLength, or a description
+// longer than MaxDescriptionLength, once trimmed, with invalidPlaylistSnippet.
+// It refused "a < b > c" as a title and as a description the same way, and
+// accepted "a < b" and "b > a" as titles.
 type PlaylistDetails struct {
 	Title       string
 	Description string
 }
 
-// CreatePlaylist creates a private playlist with details, and returns its id.
+// MaxTitleLength and MaxDescriptionLength are the most code points YouTube
+// stores in a playlist's title and description. A title of 150 characters
+// was accepted and one of 151 refused, as was a title of 76 letters each
+// carrying a combining accent. A description of 5,000 characters was accepted
+// and one of 5,001 refused.
+const (
+	MaxTitleLength       = 150
+	MaxDescriptionLength = 5000
+)
+
+// CreatePlaylist creates a private playlist with details, and returns it as
+// YouTube's answer reports it.
 //
-// Nothing but the id is read from YouTube's answer, so an answer that reports
-// the new playlist in a shape this package does not know still returns the id
-// of a playlist that exists.
-func (c *Channel) CreatePlaylist(ctx context.Context, details PlaylistDetails) (PlaylistID, error) {
+// An answer that lacks the new playlist's id, snippet or status is
+// ErrUnexpectedResponse, although YouTube created the playlist.
+func (c *Channel) CreatePlaylist(ctx context.Context, details PlaylistDetails) (Playlist, error) {
 	call := c.service.Playlists.Insert([]string{"snippet", "status"}, &ytapi.Playlist{
 		Snippet: &ytapi.PlaylistSnippet{Title: details.Title, Description: details.Description},
 		Status:  &ytapi.PlaylistStatus{PrivacyStatus: "private"},
 	})
 	resource, err := send(ctx, c, playlistsInsert, call.Context(ctx).Do)
 	if err != nil {
-		return "", fmt.Errorf("create playlist %q: %w", details.Title, err)
+		return Playlist{}, fmt.Errorf("create playlist %q: %w", details.Title, err)
 	}
 	if resource.Id == "" {
-		return "", fmt.Errorf("%w: the created playlist %q came back with no id", ErrUnexpectedResponse, details.Title)
+		return Playlist{}, fmt.Errorf("%w: the created playlist %q came back with no id", ErrUnexpectedResponse, details.Title)
 	}
-	return PlaylistID(resource.Id), nil
+	created, err := playlistFrom(resource)
+	if err != nil {
+		return Playlist{}, fmt.Errorf("create playlist %q: %w", details.Title, err)
+	}
+	return created, nil
 }
 
-// UpdatePlaylist sets the title and description of the playlist id, and leaves
-// its privacy as it is. YouTube replaces the whole snippet and clears a
-// description the request leaves out, so an empty description is sent as empty.
+// UpdatePlaylist sets the title and description of the playlist id, leaves its
+// privacy as it is, and returns the details as YouTube's answer reports them.
+// YouTube replaces the whole snippet and clears a description the request
+// leaves out, so an empty description is sent as empty.
 //
 // YouTube accepts an update to a playlist it has deleted, so success does not
-// show that the playlist exists.
-func (c *Channel) UpdatePlaylist(ctx context.Context, id PlaylistID, details PlaylistDetails) error {
+// show that the playlist exists. An answer that lacks the snippet is
+// ErrUnexpectedResponse, although YouTube made the update.
+func (c *Channel) UpdatePlaylist(ctx context.Context, id PlaylistID, details PlaylistDetails) (PlaylistDetails, error) {
 	call := c.service.Playlists.Update([]string{"snippet"}, &ytapi.Playlist{
 		Id: string(id),
 		Snippet: &ytapi.PlaylistSnippet{
@@ -48,10 +70,14 @@ func (c *Channel) UpdatePlaylist(ctx context.Context, id PlaylistID, details Pla
 			ForceSendFields: []string{"Description"},
 		},
 	})
-	if _, err := send(ctx, c, playlistsUpdate, call.Context(ctx).Do); err != nil {
-		return fmt.Errorf("update playlist %s: %w", id, err)
+	resource, err := send(ctx, c, playlistsUpdate, call.Context(ctx).Do)
+	if err != nil {
+		return PlaylistDetails{}, fmt.Errorf("update playlist %s: %w", id, err)
 	}
-	return nil
+	if resource.Snippet == nil {
+		return PlaylistDetails{}, fmt.Errorf("%w: the update to playlist %s came back with no snippet", ErrUnexpectedResponse, id)
+	}
+	return PlaylistDetails{Title: resource.Snippet.Title, Description: resource.Snippet.Description}, nil
 }
 
 // DeletePlaylist deletes the playlist id and every item in it. It returns

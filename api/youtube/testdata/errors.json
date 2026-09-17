@@ -180,6 +180,19 @@
       ]
     }
   },
+  "playlists.insert invalidPlaylistSnippet": {
+    "error": {
+      "code": 400,
+      "message": "Invalid playlist snippet.",
+      "errors": [
+        {
+          "message": "Invalid playlist snippet.",
+          "domain": "youtube.playlist",
+          "reason": "invalidPlaylistSnippet"
+        }
+      ]
+    }
+  },
   "playlists.update playlistTitleRequired": {
     "error": {
       "code": 400,
@@ -191,6 +204,32 @@
           "reason": "playlistTitleRequired"
         }
       ]
+    }
+  },
+  "playlists.update invalidPlaylistSnippet": {
+    "error": {
+      "code": 400,
+      "message": "Invalid playlist snippet.",
+      "errors": [
+        {
+          "message": "Invalid playlist snippet.",
+          "domain": "youtube.playlist",
+          "reason": "invalidPlaylistSnippet"
+        }
+      ]
+    }
+  },
+  "playlists.update SERVICE_UNAVAILABLE": {
+    "error": {
+      "code": 409,
+      "message": "The operation was aborted.",
+      "errors": [
+        {
+          "domain": "youtube.CoreErrorDomain",
+          "reason": "SERVICE_UNAVAILABLE"
+        }
+      ],
+      "status": "ABORTED"
     }
   },
   "playlists.delete playlistNotFound": {

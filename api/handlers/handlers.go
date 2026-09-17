@@ -1,7 +1,8 @@
 // Package handlers serves the API's resources as JSON over the store: the
 // playlists and videos the sync stores, plays, suggestions of what to play
 // next, and the sync's own runs. Creating, renaming and deleting a playlist
-// write to YouTube in the request.
+// write to YouTube in the request, one request at a time, and each write is
+// recorded in the store before it is sent and settled with YouTube's answer.
 //
 // A value the store does not hold is null, and a collection with no members is
 // []. A collection that grows without bound is paged: its body is {"data": [...],
@@ -21,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/text/collate"
@@ -37,12 +39,25 @@ type Handlers struct {
 	youtube PlaylistWriter
 	log     *slog.Logger
 	now     func() time.Time
+	// writing holds a token while a request has the turn to write playlists.
+	writing chan struct{}
+	// draining is closed once Drain is called.
+	draining  chan struct{}
+	drainOnce sync.Once
 }
 
-// New is Handlers over st, writing playlists through youtube and logging the
-// cause of every failure it answers with a 5xx to log.
+// New is Handlers over st, reading and writing playlists on YouTube through
+// youtube. Every answer with a 5xx is made by refuseAndLog, which logs its
+// cause to log.
 func New(st *store.Store, youtube PlaylistWriter, log *slog.Logger) *Handlers {
-	return &Handlers{store: st, youtube: youtube, log: log, now: time.Now}
+	return &Handlers{
+		store:    st,
+		youtube:  youtube,
+		log:      log,
+		now:      time.Now,
+		writing:  make(chan struct{}, 1),
+		draining: make(chan struct{}),
+	}
 }
 
 // route is one method on one path and the handler answering it.
@@ -196,8 +211,14 @@ func (h *Handlers) writeListError(w http.ResponseWriter, r *http.Request, err er
 
 // writeInternalError answers a 500, logging err rather than sending it.
 func (h *Handlers) writeInternalError(w http.ResponseWriter, r *http.Request, err error) {
-	h.log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "err", err)
-	wire.Refuse(w, http.StatusInternalServerError, wire.CodeInternal, "internal error")
+	h.refuseAndLog(w, r, slog.LevelError, http.StatusInternalServerError, wire.CodeInternal, err, "internal error")
+}
+
+// refuseAndLog answers a failure the caller did not cause with status, code and
+// the sentence format and args make, and logs cause at level with them.
+func (h *Handlers) refuseAndLog(w http.ResponseWriter, r *http.Request, level slog.Level, status int, code wire.Code, cause error, format string, args ...any) {
+	h.log.Log(r.Context(), level, "request failed", "method", r.Method, "path", r.URL.Path, "status", status, "code", code, "err", cause)
+	wire.Refuse(w, status, code, format, args...)
 }
 
 // pageSize is how many rows a list answers: fallback when limit is absent, and

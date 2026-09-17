@@ -507,3 +507,64 @@ SELECT
     ) AS INTEGER) AS enriched_videos,
     CAST((SELECT count(*) FROM tracks) AS INTEGER) AS tracks,
     CAST((SELECT count(*) FROM plays) AS INTEGER) AS plays;
+
+-- name: UpsertYouTubeWriteMethod :exec
+INSERT INTO youtube_write_methods (method, label, description)
+VALUES (?, ?, ?)
+ON CONFLICT (method) DO UPDATE SET
+    label = excluded.label,
+    description = excluded.description;
+
+-- name: UpsertYouTubeWriteOutcome :exec
+INSERT INTO youtube_write_outcomes (outcome, label, description)
+VALUES (?, ?, ?)
+ON CONFLICT (outcome) DO UPDATE SET
+    label = excluded.label,
+    description = excluded.description;
+
+-- name: InsertYouTubeWrite :one
+-- Records a write as pending, before it is sent.
+INSERT INTO youtube_writes (method, playlist_id, sent_ts, quota_date, outcome)
+VALUES (sqlc.arg(method), sqlc.narg(playlist_id), sqlc.arg(sent_ts), sqlc.arg(quota_date), 'pending')
+RETURNING write_id;
+
+-- name: SettleYouTubeWrite :execrows
+-- Records how a pending write ended, and changes nothing for a write already
+-- settled.
+UPDATE youtube_writes SET
+    playlist_id = sqlc.narg(playlist_id),
+    outcome = sqlc.arg(outcome),
+    settled_ts = sqlc.arg(settled_ts),
+    requests = sqlc.arg(requests),
+    units = sqlc.arg(units),
+    error = sqlc.narg(error)
+WHERE write_id = sqlc.arg(write_id) AND outcome = 'pending';
+
+-- name: GetYouTubeWrite :one
+SELECT
+    write_id,
+    method,
+    playlist_id,
+    sent_ts,
+    quota_date,
+    outcome,
+    settled_ts,
+    requests,
+    units,
+    error
+FROM youtube_writes
+WHERE write_id = ?;
+
+-- name: LatestPlaylistWriteSettledAfter :one
+-- The latest write to the playlist that settled after settled_after with
+-- YouTube's answer that it made the write, or that the playlist does not exist.
+SELECT
+    method,
+    outcome
+FROM youtube_writes
+WHERE
+    playlist_id = sqlc.arg(playlist_id)
+    AND outcome IN ('applied', 'absent')
+    AND settled_ts > sqlc.arg(settled_after)
+ORDER BY settled_ts DESC, write_id DESC
+LIMIT 1;

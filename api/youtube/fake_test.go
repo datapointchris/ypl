@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/api/option"
 )
@@ -35,12 +36,19 @@ import (
 //   - A playlists page reports a total larger than the playlists it lists, by
 //     as many as the recorded page does.
 //   - Listing the items of a deleted playlist is a 404 playlistNotFound.
+//   - A read of one playlist by id, naming snippet and status and 50 a page,
+//     returns it, or no playlists for an id the fake does not hold.
 //
 // Writes:
 //
 //   - A playlist insert makes a playlist with the title, description and privacy
 //     it names. The first item insert into that playlist is a 409
-//     SERVICE_UNAVAILABLE and changes nothing.
+//     SERVICE_UNAVAILABLE and changes nothing, as is the first update of it.
+//   - A playlist insert or update stores its title and description with the
+//     spaces and newlines around them trimmed, and answers with them trimmed.
+//     A trimmed title longer than 150 code points, a trimmed description longer
+//     than 5,000, or either holding a "<" before a ">" is a 400
+//     invalidPlaylistSnippet.
 //   - An item insert with no position appends, and a position from 0 to the item
 //     count inserts there. A larger position is a 400 badRequest. A video already
 //     in the playlist gets a second item.
@@ -87,9 +95,11 @@ type fakeAPI struct {
 	deletedPlaylists map[string]bool
 	deletedItems     map[string]bool
 	orphanedItems    map[string]bool
-	// fresh holds each playlist the fake created that no item insert has named.
-	fresh   map[string]bool
-	created int
+	// fresh holds each playlist the fake created that no item insert has named,
+	// and freshToUpdate each one no update has named.
+	fresh         map[string]bool
+	freshToUpdate map[string]bool
+	created       int
 	// answer, when set, is the status and body of every response.
 	answer *fakeAnswer
 	// lastBody is the decoded body of the last write the fake answered.
@@ -172,6 +182,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		deletedItems:     map[string]bool{},
 		orphanedItems:    map[string]bool{},
 		fresh:            map[string]bool{},
+		freshToUpdate:    map[string]bool{},
 	}
 }
 
@@ -256,6 +267,15 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request, resource fakeReso
 	case r.URL.Path == "/youtube/v3/playlists" && query.Get("mine") == "true":
 		all = f.playlists
 		total = len(all) + f.unlisted
+	case r.URL.Path == "/youtube/v3/playlists" && query.Get("id") != "":
+		if !slices.Equal(slices.Sorted(slices.Values(parts)), []string{"snippet", "status"}) || len(query["id"]) != 1 || strings.Contains(query.Get("id"), ",") || query.Get("maxResults") != "50" {
+			f.unmodeled(w, "a read of playlists by id %s", r.URL.RawQuery)
+			return
+		}
+		if index := slices.IndexFunc(f.playlists, func(p map[string]any) bool { return p["id"] == query.Get("id") }); index >= 0 {
+			all = f.playlists[index : index+1]
+		}
+		total = len(all)
 	case r.URL.Path == "/youtube/v3/playlistItems" && query.Get("playlistId") != "":
 		id := query.Get("playlistId")
 		if f.deletedPlaylists[id] {
@@ -328,11 +348,17 @@ func (f *fakeAPI) insertPlaylist(w http.ResponseWriter, r *http.Request, parts [
 	if !ok {
 		return
 	}
-	title, _ := field(body, "snippet", "title").(string)
-	description, _ := field(body, "snippet", "description").(string)
+	title, description, ok := f.snippetDetails(w, body)
+	if !ok {
+		return
+	}
 	privacy, _ := field(body, "status", "privacyStatus").(string)
-	if title == "" || privacy == "" {
+	switch {
+	case title == "" || privacy == "":
 		f.unmodeled(w, "a playlist insert without a title or privacy")
+		return
+	case !snippetAccepted(title, description):
+		f.refuse(w, "playlists.insert invalidPlaylistSnippet")
 		return
 	}
 	f.created++
@@ -346,6 +372,7 @@ func (f *fakeAPI) insertPlaylist(w http.ResponseWriter, r *http.Request, parts [
 	f.playlists = append(f.playlists, playlist)
 	f.items[id] = []map[string]any{}
 	f.fresh[id] = true
+	f.freshToUpdate[id] = true
 	_ = json.NewEncoder(w).Encode(withParts(playlist, parts))
 }
 
@@ -355,12 +382,22 @@ func (f *fakeAPI) updatePlaylist(w http.ResponseWriter, r *http.Request, parts [
 		return
 	}
 	id, _ := body["id"].(string)
-	title, _ := field(body, "snippet", "title").(string)
-	description, _ := field(body, "snippet", "description").(string)
+	_, titled := field(body, "snippet", "title").(string)
+	title, description, ok := f.snippetDetails(w, body)
+	if !ok {
+		return
+	}
 	index := slices.IndexFunc(f.playlists, func(p map[string]any) bool { return p["id"] == id })
 	switch {
+	case index >= 0 && titled && title == "":
+		f.unmodeled(w, "an update to playlist %s with a title that trims to nothing", id)
 	case index >= 0 && title == "":
 		f.refuse(w, "playlists.update playlistTitleRequired")
+	case index >= 0 && f.freshToUpdate[id]:
+		delete(f.freshToUpdate, id)
+		f.refuse(w, "playlists.update SERVICE_UNAVAILABLE")
+	case index >= 0 && !snippetAccepted(title, description):
+		f.refuse(w, "playlists.update invalidPlaylistSnippet")
 	case index >= 0:
 		setSnippet(f.playlists[index], title, description)
 		_ = json.NewEncoder(w).Encode(withParts(f.playlists[index], parts))
@@ -573,6 +610,33 @@ func field(object map[string]any, path ...string) any {
 		value = next[key]
 	}
 	return value
+}
+
+// snippetDetails is the title and description a playlist write names, trimmed
+// of the spaces and newlines around them. ok is false once it has answered a
+// write whose text trims some other whitespace, which no measurement covers.
+func (f *fakeAPI) snippetDetails(w http.ResponseWriter, body map[string]any) (title, description string, ok bool) {
+	title, _ = field(body, "snippet", "title").(string)
+	description, _ = field(body, "snippet", "description").(string)
+	for _, text := range []string{title, description} {
+		if strings.Trim(text, " \n") != strings.TrimSpace(text) {
+			f.unmodeled(w, "a playlist write whose text %q ends in whitespace other than spaces and newlines", text)
+			return "", "", false
+		}
+	}
+	return strings.Trim(title, " \n"), strings.Trim(description, " \n"), true
+}
+
+// snippetAccepted is whether YouTube stores a trimmed title and description:
+// neither too long, and neither holding a "<" before a ">".
+func snippetAccepted(title, description string) bool {
+	tagged := func(text string) bool {
+		opening := strings.Index(text, "<")
+		return opening >= 0 && strings.Contains(text[opening:], ">")
+	}
+	return utf8.RuneCountInString(title) <= MaxTitleLength &&
+		utf8.RuneCountInString(description) <= MaxDescriptionLength &&
+		!tagged(title) && !tagged(description)
 }
 
 // setSnippet sets a playlist's title and description, and the localized copies
