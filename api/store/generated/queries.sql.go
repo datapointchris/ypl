@@ -220,85 +220,6 @@ func (q *Queries) ListTracks(ctx context.Context, videoID string) ([]Track, erro
 	return items, nil
 }
 
-const quotaMethodUnits = `-- name: QuotaMethodUnits :one
-SELECT units
-FROM quota_methods
-WHERE method = ?
-`
-
-func (q *Queries) QuotaMethodUnits(ctx context.Context, method string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, quotaMethodUnits, method)
-	var units int64
-	err := row.Scan(&units)
-	return units, err
-}
-
-const quotaSpent = `-- name: QuotaSpent :one
-SELECT cast(coalesce(sum(units), 0) AS INTEGER) AS units
-FROM quota_spends
-WHERE quota_date = ?
-`
-
-func (q *Queries) QuotaSpent(ctx context.Context, quotaDate string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, quotaSpent, quotaDate)
-	var units int64
-	err := row.Scan(&units)
-	return units, err
-}
-
-const quotaSpentSince = `-- name: QuotaSpentSince :one
-SELECT cast(coalesce(sum(units), 0) AS INTEGER) AS units
-FROM quota_spends
-WHERE spent_ts >= ?
-`
-
-func (q *Queries) QuotaSpentSince(ctx context.Context, spentTs string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, quotaSpentSince, spentTs)
-	var units int64
-	err := row.Scan(&units)
-	return units, err
-}
-
-const spendQuota = `-- name: SpendQuota :execrows
-INSERT INTO quota_spends (quota_date, method, units, spent_ts)
-SELECT
-    ?1,
-    quota_methods.method,
-    quota_methods.units,
-    ?2
-FROM quota_methods
-WHERE
-    quota_methods.method = ?3
-    AND (
-        SELECT coalesce(sum(quota_spends.units), 0)
-        FROM quota_spends
-        WHERE quota_spends.quota_date = ?1
-    ) + quota_methods.units <= ?4
-`
-
-type SpendQuotaParams struct {
-	QuotaDate  string
-	SpentTs    string
-	Method     string
-	DailyLimit int64
-}
-
-// Charges one call of a method against quota_date, only while the day's total
-// plus the method's cost stays within the daily limit. It writes no row, and
-// reports 0, when the charge would exceed the limit or the method is unknown.
-func (q *Queries) SpendQuota(ctx context.Context, arg SpendQuotaParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, spendQuota,
-		arg.QuotaDate,
-		arg.SpentTs,
-		arg.Method,
-		arg.DailyLimit,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const upsertEnrichFailure = `-- name: UpsertEnrichFailure :exec
 INSERT INTO enrich_failures (video_id, attempted_ts, reason)
 VALUES (?, ?, ?)
@@ -315,22 +236,6 @@ type UpsertEnrichFailureParams struct {
 
 func (q *Queries) UpsertEnrichFailure(ctx context.Context, arg UpsertEnrichFailureParams) error {
 	_, err := q.db.ExecContext(ctx, upsertEnrichFailure, arg.VideoID, arg.AttemptedTs, arg.Reason)
-	return err
-}
-
-const upsertQuotaMethod = `-- name: UpsertQuotaMethod :exec
-INSERT INTO quota_methods (method, units)
-VALUES (?, ?)
-ON CONFLICT (method) DO UPDATE SET units = excluded.units
-`
-
-type UpsertQuotaMethodParams struct {
-	Method string
-	Units  int64
-}
-
-func (q *Queries) UpsertQuotaMethod(ctx context.Context, arg UpsertQuotaMethodParams) error {
-	_, err := q.db.ExecContext(ctx, upsertQuotaMethod, arg.Method, arg.Units)
 	return err
 }
 

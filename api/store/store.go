@@ -31,14 +31,6 @@ var trackSources = []generated.UpsertTrackSourceParams{
 	{Source: "manual", Label: "Manual", Description: "Entered by hand"},
 }
 
-// quotaMethods is every YouTube Data API method this service calls, with its
-// quota cost from developers.google.com/youtube/v3/determine_quota_cost,
-// upserted on every open.
-var quotaMethods = []generated.UpsertQuotaMethodParams{
-	{Method: "playlists.list", Units: 1},
-	{Method: "playlistItems.list", Units: 1},
-}
-
 // Store is a database with its migrations applied and its lookups seeded.
 type Store struct {
 	db *sql.DB
@@ -160,11 +152,6 @@ func (s *Store) seed(ctx context.Context) error {
 	for _, source := range trackSources {
 		if err := s.Queries.UpsertTrackSource(ctx, source); err != nil {
 			return fmt.Errorf("seed track source %s: %w", source.Source, err)
-		}
-	}
-	for _, method := range quotaMethods {
-		if err := s.Queries.UpsertQuotaMethod(ctx, method); err != nil {
-			return fmt.Errorf("seed quota method %s: %w", method.Method, err)
 		}
 	}
 	return nil

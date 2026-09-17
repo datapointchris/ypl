@@ -1,0 +1,59 @@
+{
+  "kind": "youtube#playlistListResponse",
+  "etag": "x0recordedPlaylistsPageEtag",
+  "pageInfo": {
+    "totalResults": 3,
+    "resultsPerPage": 50
+  },
+  "items": [
+    {
+      "kind": "youtube#playlist",
+      "etag": "x0recordedPrivateListEtag00",
+      "id": "PLx0recordedplaylistx000000000000a",
+      "snippet": {
+        "publishedAt": "2026-02-19T16:23:40.983032Z",
+        "channelId": "UCx0recordedChannel00000",
+        "title": "Make Music",
+        "description": "",
+        "thumbnails": {
+          "default": {
+            "url": "https://i.ytimg.com/vi/x0public001/default.jpg",
+            "width": 120,
+            "height": 90
+          },
+          "medium": {
+            "url": "https://i.ytimg.com/vi/x0public001/mqdefault.jpg",
+            "width": 320,
+            "height": 180
+          },
+          "high": {
+            "url": "https://i.ytimg.com/vi/x0public001/hqdefault.jpg",
+            "width": 480,
+            "height": 360
+          },
+          "standard": {
+            "url": "https://i.ytimg.com/vi/x0public001/sddefault.jpg",
+            "width": 640,
+            "height": 480
+          },
+          "maxres": {
+            "url": "https://i.ytimg.com/vi/x0public001/maxresdefault.jpg",
+            "width": 1280,
+            "height": 720
+          }
+        },
+        "channelTitle": "A Channel",
+        "localized": {
+          "title": "Make Music",
+          "description": ""
+        }
+      },
+      "status": {
+        "privacyStatus": "private"
+      },
+      "contentDetails": {
+        "itemCount": 11
+      }
+    }
+  ]
+}
