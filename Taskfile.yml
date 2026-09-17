@@ -31,8 +31,10 @@ tasks:
           echo "warning: .planning already exists and does not link to $target; left as it is" >&2
         fi
 
-  # The pre-commit hooks against every file: the same hooks, at the same pinned
-  # versions, that a commit runs against the files it stages.
+  # The pre-commit hooks against every file, run exactly as a commit runs them
+  # against the files it stages. ruff comes from the revision the config pins.
+  # The Go hooks call the go, gofumpt and golangci-lint on PATH, where CI
+  # installs golangci-lint at a pinned version of its own.
   lint:
     desc: Run every pre-commit hook against every file
     cmds:
