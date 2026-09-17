@@ -218,6 +218,14 @@ WHERE playlist_id = ?;
 SELECT playlist_id FROM playlists
 ORDER BY playlist_id;
 
+-- name: ListPlaylistReferences :many
+-- Every stored playlist by the two things a request can name it with.
+SELECT
+    playlist_id,
+    title
+FROM playlists
+ORDER BY playlist_id;
+
 -- name: DeletePlaylist :exec
 DELETE FROM playlists
 WHERE playlist_id = ?;

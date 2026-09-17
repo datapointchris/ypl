@@ -1,10 +1,16 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 
+	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/wire"
+	"github.com/datapointchris/ypl/api/youtube"
 )
 
 type wirePlaylistSummary struct {
@@ -116,4 +122,124 @@ func TestAPlaylistWithNoItemsShowsAnEmptyList(t *testing.T) {
 func TestAPlaylistTheStoreDoesNotHoldIsNotFound(t *testing.T) {
 	f := newFixture(t)
 	refused(t, f.get("/api/v1/playlists/PLZ"), http.StatusNotFound, wire.CodeNotFound)
+}
+
+// withPlaylist stores one more playlist, for a title the library's three do not
+// have between them.
+func (f *fixture) withPlaylist(t *testing.T, id, title string) {
+	t.Helper()
+	ctx := context.Background()
+	err := f.st.InTx(ctx, func(tx *store.Tx) error {
+		return tx.UpsertPlaylist(ctx, generated.UpsertPlaylistParams{PlaylistID: id, Title: title, Privacy: "private"})
+	})
+	if err != nil {
+		t.Fatalf("store playlist %s: %v", id, err)
+	}
+	f.youtube.playlists[youtube.PlaylistID(id)] = youtube.Playlist{ID: youtube.PlaylistID(id), Title: title, Privacy: "private"}
+}
+
+func TestAPlaylistIsFoundByItsTitleHoweverItWasTyped(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+
+	for _, ref := range []string{"PLA", "Alpha", "alpha", "ALPHA", "  alpha  ", "(alpha)"} {
+		got := decode[wirePlaylist](t, f.get("/api/v1/playlists/"+url.PathEscape(ref)), http.StatusOK)
+		if got.ID != "PLA" {
+			t.Errorf("%q found %s, want PLA", ref, got.ID)
+		}
+	}
+}
+
+// Accented letters are kept rather than folded to ASCII, so the name reaches
+// the playlist and a spelling without the accent does not.
+func TestAnAccentedTitleIsFoundBySpellingTheAccent(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+
+	if got := decode[wirePlaylist](t, f.get("/api/v1/playlists/"+url.PathEscape("écoute")), http.StatusOK); got.ID != "PLC" {
+		t.Errorf("écoute found %s, want PLC", got.ID)
+	}
+	refused(t, f.get("/api/v1/playlists/ecoute"), http.StatusNotFound, wire.CodeNotFound)
+}
+
+func TestPartOfATitleFindsThePlaylistItNamesAlone(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+
+	if got := decode[wirePlaylist](t, f.get("/api/v1/playlists/ul"), http.StatusOK); got.ID != "PLB" {
+		t.Errorf("ul found %s, want PLB", got.ID)
+	}
+}
+
+// Without this a playlist stops being reachable by its own name the day a
+// longer name holding it is made.
+func TestAWholeTitleBeatsALongerOneHoldingIt(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	f.withPlaylist(t, "PLD", "Deep")
+	f.withPlaylist(t, "PLE", "Deep Night")
+
+	for ref, want := range map[string]string{"deep": "PLD", "deep night": "PLE", "night": "PLE"} {
+		got := decode[wirePlaylist](t, f.get("/api/v1/playlists/"+url.PathEscape(ref)), http.StatusOK)
+		if got.ID != want {
+			t.Errorf("%q found %s, want %s", ref, got.ID, want)
+		}
+	}
+}
+
+func TestATitleMatchingTwoPlaylistsIsRefusedNamingBoth(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	f.withPlaylist(t, "PLD", "Deep House")
+	f.withPlaylist(t, "PLE", "Deep Night")
+
+	rec := f.get("/api/v1/playlists/deep")
+	refused(t, rec, http.StatusBadRequest, wire.CodeAmbiguousReference)
+	for _, want := range []string{"Deep House", "PLD", "Deep Night", "PLE"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("the refusal does not name %s: %s", want, rec.Body)
+		}
+	}
+}
+
+// A reference resolves the same way at every verb, so which one was reached for
+// never decides whether a title works.
+func TestEveryReadOfAPlaylistTakesItsTitle(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+
+	for _, target := range []string{
+		"/api/v1/playlists/alpha",
+		"/api/v1/playlists/alpha/items",
+		"/api/v1/videos?playlist=alpha",
+		"/api/v1/suggestions?playlist=alpha",
+	} {
+		if rec := f.get(target); rec.Code != http.StatusOK {
+			t.Errorf("%s answered %d, want 200: %s", target, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestAPlaylistIsRenamedAndDeletedByItsTitle(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+
+	renamed := decode[wirePlaylistSummary](t, f.do(http.MethodPatch, "/api/v1/playlists/alpha", `{"title": "Alpha Two"}`), http.StatusOK)
+	if renamed.ID != "PLA" || renamed.Title != "Alpha Two" {
+		t.Errorf("rename answered %+v, want PLA titled Alpha Two", renamed)
+	}
+	if rec := f.do(http.MethodDelete, "/api/v1/playlists/alpha-two", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete answered %d, want 204: %s", rec.Code, rec.Body)
+	}
+	refused(t, f.get("/api/v1/playlists/PLA"), http.StatusNotFound, wire.CodeNotFound)
+}
+
+// A query parameter naming nothing is the caller's mistake rather than a
+// resource that is not there, so it is a 400 where the path segment is a 404.
+func TestAPlaylistFilterNamingNothingIsRefused(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+
+	refused(t, f.get("/api/v1/videos?playlist=nothing"), http.StatusBadRequest, wire.CodeUnknownReference)
+	refused(t, f.get("/api/v1/suggestions?playlist=nothing"), http.StatusBadRequest, wire.CodeUnknownReference)
 }

@@ -3,8 +3,11 @@ package handlers
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"net/http"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/wire"
@@ -75,18 +78,88 @@ func (h *Handlers) listPlaylists(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	id := r.PathValue("id")
+	ref := r.PathValue("id")
 	var shown playlist
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
-		var err error
+		id, err := resolvePlaylist(ctx, q, "playlist", ref)
+		if err != nil {
+			return err
+		}
 		shown, err = readPlaylist(ctx, q, id)
 		return err
 	})
 	if err != nil {
-		h.writeItemError(w, r, err, "playlist "+id)
+		h.writeItemError(w, r, err, "playlist "+ref)
 		return
 	}
 	wire.JSON(w, http.StatusOK, shown)
+}
+
+// resolvePlaylist is the id of the playlist ref names: its own id, or a title
+// matching it. Titles are matched as slugs, so the case, spacing and
+// punctuation of a title do not have to be retyped, and an exactly matching
+// slug beats a slug merely containing it, which keeps a playlist called Deep
+// reachable once Deep Night exists. A ref matching more than one title is a
+// referenceError naming each. name is what the error calls ref.
+func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string) (string, error) {
+	rows, err := q.ListPlaylistReferences(ctx)
+	if err != nil {
+		return "", err
+	}
+	if slices.ContainsFunc(rows, func(row generated.ListPlaylistReferencesRow) bool { return row.PlaylistID == ref }) {
+		return ref, nil
+	}
+	needle := slug(ref)
+	if needle == "" {
+		return "", referenceError{name: name, value: ref}
+	}
+	found := playlistsTitled(rows, func(title string) bool { return title == needle })
+	if len(found) == 0 {
+		found = playlistsTitled(rows, func(title string) bool { return strings.Contains(title, needle) })
+	}
+	switch len(found) {
+	case 0:
+		return "", referenceError{name: name, value: ref}
+	case 1:
+		return found[0].PlaylistID, nil
+	}
+	candidates := make([]string, len(found))
+	for i, row := range found {
+		candidates[i] = fmt.Sprintf("%q (%s)", row.Title, row.PlaylistID)
+	}
+	return "", referenceError{name: name, value: ref, candidates: candidates}
+}
+
+// playlistsTitled is every row of rows whose title matches, as a slug.
+func playlistsTitled(rows []generated.ListPlaylistReferencesRow, matches func(slug string) bool) []generated.ListPlaylistReferencesRow {
+	var found []generated.ListPlaylistReferencesRow
+	for _, row := range rows {
+		if matches(slug(row.Title)) {
+			found = append(found, row)
+		}
+	}
+	return found
+}
+
+// slug is title lowercased, with every run of anything that is not a letter or
+// a digit standing as one hyphen, and none at either end. Letters outside ASCII
+// are kept rather than dropped, since dropping them leaves a playlist named in
+// one unreachable by its own name.
+func slug(title string) string {
+	var slugged strings.Builder
+	var pending bool
+	for _, r := range title {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			pending = true
+			continue
+		}
+		if pending && slugged.Len() > 0 {
+			slugged.WriteByte('-')
+		}
+		pending = false
+		slugged.WriteRune(unicode.ToLower(r))
+	}
+	return slugged.String()
 }
 
 // readPlaylist is the stored playlist id with its items in the server's order.

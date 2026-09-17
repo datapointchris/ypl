@@ -9,6 +9,10 @@
 // "has_more": ...}, and the next page is the same request with starting_after
 // set to the last id on this one. Every refusal, a request no route answers
 // included, is the envelope package wire writes.
+//
+// A playlist or a play is named by its key or by something shorter a person can
+// retype, at every verb that names one, and a name reaching more than one row is
+// refused naming each rather than answered with one of them.
 package handlers
 
 import (
@@ -159,15 +163,16 @@ func newCollator() *collate.Collator {
 }
 
 // referenceError is a query parameter or path segment naming no row the store
-// holds, or naming more than one.
+// holds, or naming more than one. candidates names each of those rows by what a
+// request can name it with, so the answer says what to send instead.
 type referenceError struct {
 	name, value string
-	candidates  []int64
+	candidates  []string
 }
 
 func (e referenceError) Error() string {
 	if len(e.candidates) > 0 {
-		return fmt.Sprintf("%s %q names more than one: %v", e.name, e.value, e.candidates)
+		return fmt.Sprintf("%s %q names more than one: %s", e.name, e.value, strings.Join(e.candidates, ", "))
 	}
 	return fmt.Sprintf("%s %q names nothing the store holds", e.name, e.value)
 }

@@ -1383,6 +1383,43 @@ func (q *Queries) ListPlaylistIDs(ctx context.Context) ([]string, error) {
 	return items, nil
 }
 
+const listPlaylistReferences = `-- name: ListPlaylistReferences :many
+SELECT
+    playlist_id,
+    title
+FROM playlists
+ORDER BY playlist_id
+`
+
+type ListPlaylistReferencesRow struct {
+	PlaylistID string
+	Title      string
+}
+
+// Every stored playlist by the two things a request can name it with.
+func (q *Queries) ListPlaylistReferences(ctx context.Context) ([]ListPlaylistReferencesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaylistReferences)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlaylistReferencesRow
+	for rows.Next() {
+		var i ListPlaylistReferencesRow
+		if err := rows.Scan(&i.PlaylistID, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPlaylistSummaries = `-- name: ListPlaylistSummaries :many
 SELECT
     p.playlist_id,

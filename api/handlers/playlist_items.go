@@ -41,10 +41,14 @@ func (videos unavailableVideos) Error() string {
 // order's revision as the ETag an edit names in If-Match.
 func (h *Handlers) showPlaylistItems(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	id := r.PathValue("id")
+	ref := r.PathValue("id")
 	var order playlistOrder
 	var revision int64
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
+		id, err := resolvePlaylist(ctx, q, "playlist", ref)
+		if err != nil {
+			return err
+		}
 		state, err := q.GetPlaylistState(ctx, id)
 		if err != nil {
 			return err
@@ -54,7 +58,7 @@ func (h *Handlers) showPlaylistItems(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
-		h.writeItemError(w, r, err, "playlist "+id)
+		h.writeItemError(w, r, err, "playlist "+ref)
 		return
 	}
 	writeOrder(w, revision, order)
@@ -67,11 +71,11 @@ func (h *Handlers) showPlaylistItems(w http.ResponseWriter, r *http.Request) {
 // entry is held in, and a video no entry is left for takes a new entry. A video
 // the store has never seen is read from YouTube.
 func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	ref := r.PathValue("id")
 	values := r.Header.Values("If-Match")
 	if len(values) == 0 {
 		wire.Refuse(w, http.StatusPreconditionRequired, wire.CodePreconditionRequired,
-			"an edit of a playlist's order names the order it edits in If-Match, as the ETag of GET /api/v1/playlists/%s/items gives it", id)
+			"an edit of a playlist's order names the order it edits in If-Match, as the ETag of GET /api/v1/playlists/%s/items gives it", ref)
 		return
 	}
 	condition, ok := parseIfMatch(values)
@@ -80,13 +84,18 @@ func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ctx := r.Context()
+	id, err := resolvePlaylist(ctx, h.store.Queries, "playlist", ref)
+	if err != nil {
+		h.writeItemError(w, r, err, "playlist "+ref)
+		return
+	}
 	current, err := h.store.Queries.GetPlaylistState(ctx, id)
 	switch {
 	case err != nil:
-		h.writeItemError(w, r, err, "playlist "+id)
+		h.writeItemError(w, r, err, "playlist "+ref)
 		return
 	case !condition.matches(revisionTag(current.Revision)):
-		refusePrecondition(w, id)
+		refusePrecondition(w, ref)
 		return
 	}
 
@@ -167,12 +176,12 @@ func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) 
 	var refused unavailableVideos
 	switch {
 	case errors.Is(err, store.ErrRevisionMoved):
-		refusePrecondition(w, id)
+		refusePrecondition(w, ref)
 	case errors.As(err, &refused):
 		wire.RefuseVideos(w, http.StatusUnprocessableEntity, wire.CodeVideoUnavailable, refused,
 			"YouTube has no public or unlisted video this channel can add for %s", strings.Join(refused, ", "))
 	case err != nil:
-		h.writeItemError(w, r, err, "playlist "+id)
+		h.writeItemError(w, r, err, "playlist "+ref)
 	default:
 		writeOrder(w, revision, playlistOrder{VideoIDs: body.VideoIDs})
 	}
