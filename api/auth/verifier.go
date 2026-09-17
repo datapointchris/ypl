@@ -4,15 +4,16 @@ package auth
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
+	jose "github.com/go-jose/go-jose/v4"
+	"golang.org/x/sync/singleflight"
 )
 
 // ErrUnauthorized is returned for every rejected token. The reason is logged
@@ -20,19 +21,23 @@ import (
 // which check it failed.
 var ErrUnauthorized = errors.New("unauthorized")
 
-// ErrProviderUnavailable is the identity provider not answering, as distinct
-// from a token that is bad. A caller holding a good token cannot fix a network
-// failure by logging in again.
+// ErrProviderUnavailable is the identity provider not answering, or answering
+// with no usable keys, as distinct from a token that is bad. A caller holding a
+// good token cannot fix it by logging in again.
 var ErrProviderUnavailable = errors.New("identity provider unavailable")
 
-// discoveryTimeout bounds each request to the provider. Without it a provider
-// that accepts the connection and never replies wedges the process before it
-// binds a port.
-const discoveryTimeout = 10 * time.Second
+// providerTimeout bounds each request to the provider. Without it a provider
+// that accepts the connection and never replies holds every caller waiting on
+// it.
+const providerTimeout = 10 * time.Second
 
 // userAgent names this API to the provider. A proxy in front of a provider can
 // refuse a client that names none.
 const userAgent = "ypl-api"
+
+// signingAlgorithm is the one algorithm the provider signs CLI access tokens
+// with. A token naming another is refused before any key is tried.
+const signingAlgorithm = jose.RS256
 
 // Identity is what a verified token establishes about the caller.
 type Identity struct {
@@ -40,17 +45,16 @@ type Identity struct {
 	ClientID string
 }
 
-// Verifier checks token signatures against the issuer's JWKS and the claims
-// against this API's expectations.
+// Verifier checks token signatures against the issuer's published keys and the
+// claims against this API's expectations.
 type Verifier struct {
 	issuer         string
 	clientIDPrefix string
-	keySet         *oidc.RemoteKeySet
+	keys           *keySet
 	now            func() time.Time
 }
 
-// namedAgent sets the User-Agent on every request the OIDC client makes,
-// including the JWKS refreshes go-oidc makes long after startup.
+// namedAgent sets the User-Agent on every request to the provider.
 type namedAgent struct{ base http.RoundTripper }
 
 func (n namedAgent) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -60,7 +64,7 @@ func (n namedAgent) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func identifiedClient() *http.Client {
-	return &http.Client{Timeout: discoveryTimeout, Transport: namedAgent{base: http.DefaultTransport}}
+	return &http.Client{Timeout: providerTimeout, Transport: namedAgent{base: http.DefaultTransport}}
 }
 
 type discoveryDocument struct {
@@ -68,16 +72,17 @@ type discoveryDocument struct {
 	JWKSURI string `json:"jwks_uri"`
 }
 
-// NewVerifier resolves the issuer's JWKS endpoint from its discovery document.
-// clientIDPrefix is the per-product half of a CLI client's id, `ypl-cli-` for
-// `ypl-cli-<host>`, and is what keeps a token issued to another product's CLI
-// from being accepted: the device authorization grant leaves the audience claim
-// empty, so it cannot carry that isolation.
+// NewVerifier reads the issuer's discovery document and then the keys it
+// publishes, so a Verifier that exists can verify a token. clientIDPrefix is the
+// per-product half of a CLI client's id, `ypl-cli-` for `ypl-cli-<host>`, and is
+// what keeps a token issued to another product's CLI from being accepted: the
+// device authorization grant leaves the audience claim empty, so it cannot carry
+// that isolation. A provider that cannot be read is ErrProviderUnavailable.
 func NewVerifier(ctx context.Context, issuer, clientIDPrefix string) (*Verifier, error) {
 	if issuer == "" || clientIDPrefix == "" {
 		return nil, errors.New("auth: issuer and clientIDPrefix are both required")
 	}
-	doc, err := fetchDiscovery(ctx, issuer)
+	doc, err := readDiscovery(ctx, issuer)
 	if err != nil {
 		return nil, err
 	}
@@ -87,34 +92,33 @@ func NewVerifier(ctx context.Context, issuer, clientIDPrefix string) (*Verifier,
 	if doc.JWKSURI == "" {
 		return nil, fmt.Errorf("auth: issuer %q advertises no jwks_uri", issuer)
 	}
-	return &Verifier{
-		issuer:         issuer,
-		clientIDPrefix: clientIDPrefix,
-		keySet:         oidc.NewRemoteKeySet(oidc.ClientContext(ctx, identifiedClient()), doc.JWKSURI),
-		now:            time.Now,
-	}, nil
+	keys := &keySet{uri: doc.JWKSURI, client: identifiedClient()}
+	if _, err := keys.fetch(); err != nil {
+		return nil, err
+	}
+	return &Verifier{issuer: issuer, clientIDPrefix: clientIDPrefix, keys: keys, now: time.Now}, nil
 }
 
-func fetchDiscovery(ctx context.Context, issuer string) (discoveryDocument, error) {
-	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+func readDiscovery(ctx context.Context, issuer string) (discoveryDocument, error) {
+	ctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 
 	url := strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
-		return discoveryDocument{}, err
+		return discoveryDocument{}, fmt.Errorf("auth: %w", err)
 	}
 	resp, err := identifiedClient().Do(req)
 	if err != nil {
-		return discoveryDocument{}, fmt.Errorf("auth: reach %s: %w", url, err)
+		return discoveryDocument{}, fmt.Errorf("%w: reach %s: %w", ErrProviderUnavailable, url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return discoveryDocument{}, fmt.Errorf("auth: %s returned %s", url, resp.Status)
+		return discoveryDocument{}, fmt.Errorf("%w: %s answered %s", ErrProviderUnavailable, url, resp.Status)
 	}
 	var doc discoveryDocument
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
-		return discoveryDocument{}, fmt.Errorf("auth: decode %s: %w", url, err)
+		return discoveryDocument{}, fmt.Errorf("%w: decode %s: %w", ErrProviderUnavailable, url, err)
 	}
 	return doc, nil
 }
@@ -127,20 +131,17 @@ type accessTokenClaims struct {
 }
 
 // Verify checks the header type, the signature, and then every claim this API
-// relies on. It returns ErrUnauthorized for a bad token and
-// ErrProviderUnavailable when the keys cannot be fetched, with the reason
-// wrapped for logging.
+// relies on. A bad token is ErrUnauthorized and a provider whose keys cannot be
+// read is ErrProviderUnavailable, each with the reason wrapped for logging. ctx
+// ending while the keys are read returns ctx's own error.
 func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
-	if err := requireAccessTokenType(raw); err != nil {
+	signed, err := parseAccessToken(raw)
+	if err != nil {
 		return Identity{}, err
 	}
-
-	payload, err := v.keySet.VerifySignature(ctx, raw)
+	payload, err := v.keys.verify(ctx, signed)
 	if err != nil {
-		if isRetrievalFailure(err) {
-			return Identity{}, fmt.Errorf("%w: %w", ErrProviderUnavailable, err)
-		}
-		return Identity{}, fmt.Errorf("%w: signature: %w", ErrUnauthorized, err)
+		return Identity{}, err
 	}
 
 	var claims accessTokenClaims
@@ -160,34 +161,111 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	return Identity{Subject: claims.Subject, ClientID: claims.ClientID}, nil
 }
 
-// requireAccessTokenType refuses anything not typed as an RFC 9068 access
-// token. An id_token from the same issuer carries a valid signature and issuer,
-// and it is handed to the client, so without this check it would authenticate.
-func requireAccessTokenType(raw string) error {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return fmt.Errorf("%w: not a JWT", ErrUnauthorized)
+// parseAccessToken reads raw as a compact JWS signed with signingAlgorithm and
+// typed as an RFC 9068 access token. An id_token from the same issuer carries a
+// valid signature and issuer, and it is handed to the client, so without the
+// type check it would authenticate.
+func parseAccessToken(raw string) (*jose.JSONWebSignature, error) {
+	if strings.Count(raw, ".") != 2 {
+		return nil, fmt.Errorf("%w: not a compact JWT", ErrUnauthorized)
 	}
-	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	signed, err := jose.ParseSigned(raw, []jose.SignatureAlgorithm{signingAlgorithm})
 	if err != nil {
-		return fmt.Errorf("%w: header is not base64url", ErrUnauthorized)
+		return nil, fmt.Errorf("%w: %w", ErrUnauthorized, err)
 	}
-	var header struct {
-		Type string `json:"typ"`
+	typ, _ := signed.Signatures[0].Protected.ExtraHeaders[jose.HeaderType].(string)
+	if !strings.EqualFold(typ, "at+jwt") {
+		return nil, fmt.Errorf("%w: token type %q is not at+jwt", ErrUnauthorized, typ)
 	}
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		return fmt.Errorf("%w: header is not JSON", ErrUnauthorized)
-	}
-	if !strings.EqualFold(header.Type, "at+jwt") {
-		return fmt.Errorf("%w: token type %q is not at+jwt", ErrUnauthorized, header.Type)
-	}
-	return nil
+	return signed, nil
 }
 
-// isRetrievalFailure is whether the key set could not be fetched, as opposed to
-// the token failing against keys that were. go-oidc does not type the two
-// apart, so its message is all there is to tell them by.
-func isRetrievalFailure(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "fetching keys") || strings.Contains(msg, "oidc: get keys failed")
+// keySet holds the signing keys the provider publishes at uri. A token no held
+// key verifies makes it read them again, which covers a key the provider has
+// rotated in. Callers waiting at the same moment share one read.
+type keySet struct {
+	uri     string
+	client  *http.Client
+	fetches singleflight.Group
+
+	mu   sync.RWMutex
+	keys []jose.JSONWebKey
+}
+
+func (s *keySet) held() []jose.JSONWebKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.keys
+}
+
+func (s *keySet) verify(ctx context.Context, signed *jose.JSONWebSignature) ([]byte, error) {
+	if payload, ok := verifyWith(s.held(), signed); ok {
+		return payload, nil
+	}
+	read := s.fetches.DoChan("keys", func() (any, error) {
+		keys, err := s.fetch()
+		return keys, err
+	})
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("auth: read the provider's keys: %w", ctx.Err())
+	case result := <-read:
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		if payload, ok := verifyWith(result.Val.([]jose.JSONWebKey), signed); ok {
+			return payload, nil
+		}
+		return nil, fmt.Errorf("%w: no key the provider publishes verifies the signature", ErrUnauthorized)
+	}
+}
+
+// fetch reads the keys the provider publishes and holds them. It runs on a
+// deadline of its own rather than a caller's, since every caller waiting shares
+// it and any of them can stop waiting.
+func (s *keySet) fetch() ([]jose.JSONWebKey, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.uri, http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("auth: %w", err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reach %s: %w", ErrProviderUnavailable, s.uri, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: %s answered %s", ErrProviderUnavailable, s.uri, resp.Status)
+	}
+	var published jose.JSONWebKeySet
+	if err := json.NewDecoder(resp.Body).Decode(&published); err != nil {
+		return nil, fmt.Errorf("%w: decode %s: %w", ErrProviderUnavailable, s.uri, err)
+	}
+	var signing []jose.JSONWebKey
+	for _, key := range published.Keys {
+		if key.Use == "" || key.Use == "sig" {
+			signing = append(signing, key)
+		}
+	}
+	if len(signing) == 0 {
+		return nil, fmt.Errorf("%w: %s publishes no signing key", ErrProviderUnavailable, s.uri)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys = signing
+	return signing, nil
+}
+
+// verifyWith is the payload of signed as one of keys verifies it. Every key is
+// the provider's, so the key id the token names decides nothing a signature
+// does not.
+func verifyWith(keys []jose.JSONWebKey, signed *jose.JSONWebSignature) ([]byte, bool) {
+	for i := range keys {
+		if payload, err := signed.Verify(&keys[i]); err == nil {
+			return payload, true
+		}
+	}
+	return nil, false
 }

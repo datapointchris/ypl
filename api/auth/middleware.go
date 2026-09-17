@@ -2,15 +2,17 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/datapointchris/ypl/api/wire"
 )
 
-// TokenVerifier is what RequireBearer checks a token with, as *Verifier does.
+// TokenVerifier is what RequireBearer checks a token with, as *Verifier and
+// *Connecting do.
 type TokenVerifier interface {
 	Verify(ctx context.Context, raw string) (Identity, error)
 }
@@ -22,9 +24,12 @@ var exempt = []string{"/health", "/ready"}
 type contextKey struct{}
 
 // RequireBearer passes a request to next only when it carries a bearer token
-// verifier accepts, or asks for an exempt path. A rejected token is a 401, and a
-// provider that cannot be reached is a 503, each with the reason logged and a
-// JSON body that does not carry it.
+// verifier accepts, or asks for an exempt path.
+//
+// A missing or rejected token is a 401 carrying the RFC 6750 Bearer challenge,
+// and a provider that cannot be read is a 503. Each is logged with its reason,
+// which the body does not carry. A request whose caller went away before its
+// token was verified gets no answer.
 func RequireBearer(verifier TokenVerifier, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,23 +37,27 @@ func RequireBearer(verifier TokenVerifier, log *slog.Logger) func(http.Handler) 
 				next.ServeHTTP(w, r)
 				return
 			}
+			ctx := r.Context()
 			raw := BearerToken(r.Header.Get("Authorization"))
 			if raw == "" {
-				refuse(w, http.StatusUnauthorized, "unauthorized")
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				wire.Refuse(w, http.StatusUnauthorized, wire.CodeMissingToken, "a bearer token is required")
 				return
 			}
-			identity, err := verifier.Verify(r.Context(), raw)
+			identity, err := verifier.Verify(ctx, raw)
 			switch {
+			case err == nil:
+				next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, contextKey{}, identity)))
+			case ctx.Err() != nil:
+				log.InfoContext(ctx, "request ended before its token was verified", "err", err, "path", r.URL.Path)
 			case errors.Is(err, ErrProviderUnavailable):
-				log.ErrorContext(r.Context(), "identity provider unreachable", "err", err, "path", r.URL.Path)
-				refuse(w, http.StatusServiceUnavailable, "identity provider unavailable")
-				return
-			case err != nil:
-				log.WarnContext(r.Context(), "bearer token rejected", "err", err, "path", r.URL.Path)
-				refuse(w, http.StatusUnauthorized, "unauthorized")
-				return
+				log.ErrorContext(ctx, "identity provider unavailable", "err", err, "path", r.URL.Path)
+				wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeIdentityProviderUnavailable, "the identity provider is unavailable")
+			default:
+				log.WarnContext(ctx, "bearer token rejected", "err", err, "path", r.URL.Path)
+				w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+				wire.Refuse(w, http.StatusUnauthorized, wire.CodeInvalidToken, "the bearer token is not valid")
 			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextKey{}, identity)))
 		})
 	}
 }
@@ -67,10 +76,4 @@ func BearerToken(header string) string {
 		return ""
 	}
 	return strings.TrimSpace(header[len(prefix):])
-}
-
-func refuse(w http.ResponseWriter, status int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
