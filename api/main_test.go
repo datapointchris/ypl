@@ -415,10 +415,13 @@ func startChild(t *testing.T, issuer string) *child {
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	// The credentials are placeholders, and every request the sync makes goes to
 	// a proxy port nothing listens on, so no request leaves the machine. The
-	// identity provider is on the loopback address, which Go never proxies.
+	// identity provider is on the loopback address, which Go never proxies. The
+	// service refuses to start without a yt-dlp to read videos with, and this
+	// test binary stands in for one: the store holds no video, so enrichment
+	// reads none and never runs it.
 	cmd.Env = append(os.Environ(), serveChild+"=1", "PORT=0", "DATABASE_PATH="+database,
 		"YOUTUBE_CLIENT_ID=id", "YOUTUBE_CLIENT_SECRET=secret", "YOUTUBE_REFRESH_TOKEN=token",
-		"OIDC_ISSUER="+issuer,
+		"OIDC_ISSUER="+issuer, "YTDLP_PATH="+os.Args[0],
 		"HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1", "NO_PROXY=")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
