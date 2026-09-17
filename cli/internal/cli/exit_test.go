@@ -2,6 +2,7 @@ package cli
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -125,6 +126,92 @@ func TestAnAnswerThatIsNotTheServersStillCarriesItsStatus(t *testing.T) {
 	}
 	if !strings.Contains(got.err, "Bad Gateway") {
 		t.Fatalf("stderr = %q, want the status named", got.err)
+	}
+}
+
+// A read with nothing in it is the moment someone is least able to tell an
+// empty answer from a broken command, so it says which it was and what to run.
+func TestAReadWithNothingInItSaysSoAndNamesWhatToRunNext(t *testing.T) {
+	for _, args := range [][]string{
+		{"playlists", "list"},
+		{"videos", "list", "--artist", "nobody"},
+		{"plays", "list"},
+		{"sync", "runs", "list"},
+	} {
+		f := newFixture(t, serves(map[string]string{
+			"/api/v1/playlists": `[]`,
+			"/api/v1/videos":    `[]`,
+			"/api/v1/plays":     `{"data": [], "has_more": false}`,
+			"/api/v1/sync/runs": `{"data": [], "has_more": false}`,
+		}))
+		got := f.run(args...)
+		switch {
+		case got.code != 0:
+			t.Errorf("%v exited %d, want 0 — an empty answer is data", args, got.code)
+		case got.out != "":
+			t.Errorf("%v wrote %q to stdout, want the sentence on stderr", args, got.out)
+		case strings.TrimSpace(got.err) == "":
+			t.Errorf("%v printed nothing at all, which reads as a broken command", args)
+		}
+	}
+}
+
+// hinted is every `ypl ...` a command wrote, which is what it told the reader to
+// run next.
+var hinted = regexp.MustCompile("`ypl ([a-z][a-z ]*[a-z])`")
+
+// A hint naming a command the tool does not have is worse than no hint, because
+// it reads as authoritative and spends the attention the reader had left. The
+// walk is against the assembled tree rather than one built here, since a gate
+// reading a tree the binary never assembles passes while the binary is broken.
+func TestEverySuggestedCommandExists(t *testing.T) {
+	said := map[string]bool{}
+	for _, args := range [][]string{
+		{"playlists", "list"},
+		{"videos", "list", "--artist", "nobody"},
+		{"plays", "list"},
+		{"sync", "runs", "list"},
+		{"next"},
+		{"config", "show"},
+		{"auth", "status"},
+		{"auth", "token"},
+	} {
+		f := newFixture(t, serves(map[string]string{
+			"/api/v1/playlists":   `[]`,
+			"/api/v1/videos":      `[]`,
+			"/api/v1/suggestions": `[]`,
+			"/api/v1/plays":       `{"data": [], "has_more": false}`,
+			"/api/v1/sync/runs":   `{"data": [], "has_more": false}`,
+		}))
+		got := f.run(args...)
+		for _, found := range hinted.FindAllStringSubmatch(got.out+got.err, -1) {
+			said[found[1]] = true
+		}
+	}
+	if len(said) == 0 {
+		t.Fatal("no command named a next command, so this gate is measuring nothing")
+	}
+
+	// Find returns the deepest command it matched plus the words left over, and
+	// no error for a word that named nothing. The leftovers are the whole
+	// finding: `ypl playlists refresh` resolves to playlists with "refresh"
+	// unconsumed, which is exactly the hint this gate exists to catch.
+	root := newRootCommand(&app{})
+	for hint := range said {
+		found, rest, err := root.Find(strings.Fields(hint))
+		if err != nil || len(rest) > 0 || found == root {
+			t.Errorf("a command told the reader to run `ypl %s`, which the tree does not have", hint)
+		}
+	}
+}
+
+// A 401 is answered by logging in again, and the sentence saying so is one the
+// gate above has to be able to see.
+func TestTheRejectedTokenHintIsAmongTheCheckedOnes(t *testing.T) {
+	f := newFixture(t, refuses(http.StatusUnauthorized, "invalid_token", "no"))
+
+	if got := f.run("playlists", "list"); !hinted.MatchString(got.err) {
+		t.Fatalf("stderr = %q, want a `ypl ...` the gate can check", got.err)
 	}
 }
 

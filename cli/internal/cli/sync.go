@@ -59,6 +59,10 @@ func (a *app) syncRunsListCommand() *cobra.Command {
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), runs)
 			}
+			if len(runs) == 0 {
+				nothing(cmd, "The server has not synced yet. `ypl status` says what it holds meanwhile.")
+				return nil
+			}
 			printSyncRuns(cmd.OutOrStdout(), runs)
 			return nil
 		},

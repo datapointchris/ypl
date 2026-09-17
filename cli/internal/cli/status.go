@@ -42,9 +42,10 @@ func (a *app) statusCommand() *cobra.Command {
 
 func printStatus(out io.Writer, status api.Status) {
 	library := status.Library
-	_, _ = fmt.Fprintf(out, "%d playlists, %d videos, %d tracks, %d plays\n",
-		library.Playlists, library.Videos, library.Tracks, library.Plays)
-	_, _ = fmt.Fprintf(out, "%d videos have a tracklist, %d are unavailable\n\n",
+	_, _ = fmt.Fprintf(out, "%s, %s, %s, %s\n",
+		count(library.Playlists, "playlist"), count(library.Videos, "video"),
+		count(library.Tracks, "track"), count(library.Plays, "play"))
+	_, _ = fmt.Fprintf(out, "%d with a tracklist, %d unavailable\n\n",
 		library.EnrichedVideos, library.UnavailableVideos)
 
 	if status.LastRun == nil {

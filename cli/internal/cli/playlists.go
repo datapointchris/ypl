@@ -42,6 +42,10 @@ func (a *app) playlistsListCommand() *cobra.Command {
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), playlists)
 			}
+			if len(playlists) == 0 {
+				nothing(cmd, "The server holds no playlists. `ypl status` says when it last synced.")
+				return nil
+			}
 			printPlaylists(cmd.OutOrStdout(), playlists)
 			return nil
 		},
@@ -99,8 +103,8 @@ func printPlaylist(out io.Writer, playlist api.Playlist) {
 	if playlist.Description != "" {
 		_, _ = fmt.Fprintln(out, playlist.Description)
 	}
-	_, _ = fmt.Fprintf(out, "%d videos, %d with a tracklist, %d unavailable, %s\n\n",
-		playlist.ItemCount, playlist.EnrichedCount, playlist.UnavailableCount, playlist.Privacy)
+	_, _ = fmt.Fprintf(out, "%s, %d with a tracklist, %d unavailable, %s\n\n",
+		count(playlist.ItemCount, "video"), playlist.EnrichedCount, playlist.UnavailableCount, playlist.Privacy)
 
 	rows := make([][]string, len(playlist.Items))
 	for i, item := range playlist.Items {
@@ -115,7 +119,7 @@ func printPlaylist(out io.Writer, playlist api.Playlist) {
 			state(video),
 		}
 	}
-	table(out, []string{"#", "VIDEO", "TITLE", "CHANNEL", "LENGTH", "TRACKS", ""}, rows)
+	table(out, []string{"#", "VIDEO", "TITLE", "CHANNEL", "LENGTH", "TRACKS", "STATE"}, rows)
 }
 
 // state is what is worth saying about a video beyond its own fields: that

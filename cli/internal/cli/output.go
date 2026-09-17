@@ -7,6 +7,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // emitJSON writes v to out as the machine rendering. It is the only thing any
@@ -32,6 +34,22 @@ func table(out io.Writer, headings []string, rows [][]string) {
 		_, _ = fmt.Fprintln(w, strings.Join(row, "\t"))
 	}
 	_ = w.Flush()
+}
+
+// nothing says a read found no rows, and names the command that widens it. It
+// writes to stderr, so a --json caller's stdout stays one parsable document and
+// a person is not left unable to tell an empty answer from a broken command.
+func nothing(cmd *cobra.Command, sentence string) {
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), sentence)
+}
+
+// count is n things, named singly or plurally. "1 videos" reads as a rendering
+// fault, and a reader who notices one stops trusting the rest of the line.
+func count(n int64, thing string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, thing)
+	}
+	return fmt.Sprintf("%d %ss", n, thing)
 }
 
 // clock is a number of seconds as h:mm:ss, or m:ss under an hour. A duration

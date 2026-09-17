@@ -59,6 +59,10 @@ func (a *app) videosListCommand() *cobra.Command {
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), videos)
 			}
+			if len(videos) == 0 {
+				nothing(cmd, "No video matches. `ypl videos list` with no flags is the whole library.")
+				return nil
+			}
 			printVideos(cmd.OutOrStdout(), videos)
 			return nil
 		},

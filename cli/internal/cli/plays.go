@@ -50,6 +50,10 @@ func (a *app) playsListCommand() *cobra.Command {
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), plays)
 			}
+			if len(plays) == 0 {
+				nothing(cmd, "Nothing has been listened to yet. `ypl next` picks something to put on.")
+				return nil
+			}
 			printPlays(cmd.OutOrStdout(), plays)
 			return nil
 		},
