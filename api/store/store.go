@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -46,8 +47,8 @@ const (
 
 // syncOutcomes is the sync_outcomes vocabulary, upserted on every open.
 var syncOutcomes = []generated.UpsertSyncOutcomeParams{
-	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was read and stored"},
-	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and at least one playlist was not stored or the interval's runs read more than a day's quota"},
+	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was merged, or left for the next run because its items were written within the read lag, and no push write was refused, unanswered or held back"},
+	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and a playlist was skipped, a push write was refused, unanswered or held back, the day's quota had no room for a write beside the reads of the day's remaining runs, or the interval's runs read more than a day's quota"},
 	{Outcome: OutcomeQuotaSpent, Label: "Quota spent", Description: "YouTube refused a request for the day's quota, in this run or an earlier one on the same Pacific date"},
 	{Outcome: OutcomeFailed, Label: "Failed", Description: "An error ended the run before it finished"},
 	{Outcome: OutcomeCanceled, Label: "Canceled", Description: "The run was canceled before it finished"},
@@ -102,21 +103,26 @@ const (
 
 // playlistSorts is the playlist_sorts vocabulary, upserted on every open.
 var playlistSorts = []generated.UpsertPlaylistSortParams{
-	{Sort: SortManual, Label: "Manual", Description: "YouTube keeps the order writes put the playlist in, so a write names a position"},
-	{Sort: SortAutomatic, Label: "Automatic", Description: "YouTube orders the playlist itself and refused a write naming a position, so a video is added at the end and nothing is moved"},
+	{Sort: SortManual, Label: "Manual", Description: "YouTube keeps the order writes put the playlist in, so the push writes positions"},
+	{Sort: SortAutomatic, Label: "Automatic", Description: "YouTube refused a write naming a position, so a merge takes YouTube's order and the push adds a video at the end, until an edit of the order tries positions again"},
 }
 
-// Whether a playlist's base is what YouTube holds, the vocabulary
-// playlists.base_state draws from.
-const (
-	BaseCurrent     = "current"
-	BaseUnconfirmed = "unconfirmed"
-)
+// PlaylistSorts is every member of the playlist_sorts vocabulary.
+func PlaylistSorts() []string {
+	sorts := make([]string, len(playlistSorts))
+	for i, sort := range playlistSorts {
+		sorts[i] = sort.Sort
+	}
+	return sorts
+}
 
-// baseStates is the base_states vocabulary, upserted on every open.
-var baseStates = []generated.UpsertBaseStateParams{
-	{BaseState: BaseCurrent, Label: "Current", Description: "The base is what YouTube held after the server's last read of the playlist or its last write to it"},
-	{BaseState: BaseUnconfirmed, Label: "Unconfirmed", Description: "A write to the playlist was sent and its answer not recorded, so YouTube may hold more than the base, and the next read becomes the base"},
+// WriteOutcomes is every member of the youtube_write_outcomes vocabulary.
+func WriteOutcomes() []string {
+	outcomes := make([]string, len(youtubeWriteOutcomes))
+	for i, outcome := range youtubeWriteOutcomes {
+		outcomes[i] = outcome.Outcome
+	}
+	return outcomes
 }
 
 // Entry is one entry of the server's order of a playlist: its id, the video in
@@ -129,11 +135,13 @@ type Entry struct {
 	ItemID  string
 }
 
-// BaseItem is one item of a playlist as YouTube held it: its playlistItem id and
-// the video in it.
+// BaseItem is one item of a playlist's base: its playlistItem id, the video in
+// it, and whether its position is where a push write put it, which no read has
+// shown.
 type BaseItem struct {
 	ItemID  string
 	VideoID string
+	Placed  bool
 }
 
 // Store is a database with its migrations applied and its lookups seeded.
@@ -294,7 +302,7 @@ func Entries(ctx context.Context, q *generated.Queries, playlistID string) ([]En
 }
 
 // Base is what YouTube held of the playlist playlistID after the server last
-// read or wrote it.
+// read it, with each push write YouTube answered since.
 func Base(ctx context.Context, q *generated.Queries, playlistID string) ([]BaseItem, error) {
 	rows, err := q.ListBaseItems(ctx, playlistID)
 	if err != nil {
@@ -302,17 +310,39 @@ func Base(ctx context.Context, q *generated.Queries, playlistID string) ([]BaseI
 	}
 	items := make([]BaseItem, len(rows))
 	for i, row := range rows {
-		items[i] = BaseItem{ItemID: row.ItemID, VideoID: row.VideoID}
+		items[i] = BaseItem{ItemID: row.ItemID, VideoID: row.VideoID, Placed: row.IsPlaced}
 	}
 	return items, nil
 }
 
-// ReplaceEntries sets the server's order of the playlist playlistID to entries,
-// removing every entry it held before. An entry keeps its id, and a new one
-// takes the next.
-func (tx *Tx) ReplaceEntries(ctx context.Context, playlistID string, entries []Entry) error {
+// ErrRevisionMoved is the refusal of a change to a playlist's order made at a
+// revision the order has moved past.
+var ErrRevisionMoved = errors.New("the playlist's order is no longer at the revision the change was made at")
+
+// ReplaceOrder sets the server's order of the playlist playlistID to entries, if
+// the order is at revision, and returns the revision it leaves. An entry keeps
+// its id, and a new one takes the next.
+//
+// The revision counts each change to the order of the videos, which is what a
+// client edits, and not an entry taking the YouTube item a push made. A change
+// releases the push write YouTube refused, since the push plans again from it.
+func (tx *Tx) ReplaceOrder(ctx context.Context, playlistID string, revision int64, entries []Entry) (int64, error) {
+	state, err := tx.GetPlaylistState(ctx, playlistID)
+	switch {
+	case err != nil:
+		return 0, fmt.Errorf("read the state of %s: %w", playlistID, err)
+	case state.Revision != revision:
+		return 0, fmt.Errorf("%w: %s is at %d, not %d", ErrRevisionMoved, playlistID, state.Revision, revision)
+	}
+	stored, err := Entries(ctx, tx.Queries, playlistID)
+	if err != nil {
+		return 0, err
+	}
+	if slices.Equal(stored, entries) {
+		return revision, nil
+	}
 	if err := tx.DeleteEntries(ctx, playlistID); err != nil {
-		return fmt.Errorf("delete the entries of %s: %w", playlistID, err)
+		return 0, fmt.Errorf("delete the entries of %s: %w", playlistID, err)
 	}
 	for position, entry := range entries {
 		row := generated.InsertEntryParams{
@@ -323,23 +353,52 @@ func (tx *Tx) ReplaceEntries(ctx context.Context, playlistID string, entries []E
 			ItemID:     sql.NullString{String: entry.ItemID, Valid: entry.ItemID != ""},
 		}
 		if err := tx.InsertEntry(ctx, row); err != nil {
-			return fmt.Errorf("insert entry %d of video %s at %d in %s: %w", entry.ID, entry.VideoID, position, playlistID, err)
+			return 0, fmt.Errorf("insert entry %d of video %s at %d in %s: %w", entry.ID, entry.VideoID, position, playlistID, err)
 		}
 	}
-	return nil
+	if err := tx.SetRefusedWrite(ctx, generated.SetRefusedWriteParams{PlaylistID: playlistID}); err != nil {
+		return 0, fmt.Errorf("release the refused write of %s: %w", playlistID, err)
+	}
+	sameVideo := func(a, b Entry) bool { return a.VideoID == b.VideoID }
+	if slices.EqualFunc(stored, entries, sameVideo) {
+		return revision, nil
+	}
+	bumped, err := tx.BumpRevision(ctx, generated.BumpRevisionParams{PlaylistID: playlistID, Revision: revision})
+	switch {
+	case err != nil:
+		return 0, fmt.Errorf("count the change to the order of %s: %w", playlistID, err)
+	case bumped != 1:
+		return 0, fmt.Errorf("%w: %s moved past %d", ErrRevisionMoved, playlistID, revision)
+	}
+	return revision + 1, nil
 }
 
-// ReplaceBase sets the base of the playlist playlistID to items, in order,
-// removing every item it held before.
+// ReplaceBase sets the base of the playlist playlistID to items, in order. A
+// change to the items or their order releases the push write YouTube refused,
+// since the push plans again from it.
 func (tx *Tx) ReplaceBase(ctx context.Context, playlistID string, items []BaseItem) error {
+	stored, err := Base(ctx, tx.Queries, playlistID)
+	if err != nil {
+		return err
+	}
+	if slices.Equal(stored, items) {
+		return nil
+	}
 	if err := tx.DeleteBaseItems(ctx, playlistID); err != nil {
 		return fmt.Errorf("delete the base of %s: %w", playlistID, err)
 	}
 	for position, item := range items {
-		row := generated.InsertBaseItemParams{ItemID: item.ItemID, PlaylistID: playlistID, Position: int64(position), VideoID: item.VideoID}
+		row := generated.InsertBaseItemParams{ItemID: item.ItemID, PlaylistID: playlistID, Position: int64(position), VideoID: item.VideoID, IsPlaced: item.Placed}
 		if err := tx.InsertBaseItem(ctx, row); err != nil {
 			return fmt.Errorf("insert base item %s at %d in %s: %w", item.ItemID, position, playlistID, err)
 		}
+	}
+	sameItem := func(a, b BaseItem) bool { return a.ItemID == b.ItemID && a.VideoID == b.VideoID }
+	if slices.EqualFunc(stored, items, sameItem) {
+		return nil
+	}
+	if err := tx.SetRefusedWrite(ctx, generated.SetRefusedWriteParams{PlaylistID: playlistID}); err != nil {
+		return fmt.Errorf("release the refused write of %s: %w", playlistID, err)
 	}
 	return nil
 }
@@ -390,11 +449,6 @@ func (s *Store) seed(ctx context.Context) error {
 			return fmt.Errorf("seed playlist sort %s: %w", sort.Sort, err)
 		}
 	}
-	for _, state := range baseStates {
-		if err := s.Queries.UpsertBaseState(ctx, state); err != nil {
-			return fmt.Errorf("seed base state %s: %w", state.BaseState, err)
-		}
-	}
 	return nil
 }
 
@@ -420,13 +474,15 @@ func Timestamp(t time.Time) string {
 
 // Write is a write about to be sent: its method, what it names, and when it is
 // sent. PlaylistID is empty for a create, ItemID for a write naming no item, and
-// VideoID for a write adding no video. Position is not valid for a write naming
-// no position.
+// VideoID for a write adding no video. EntryID is the entry of the server's
+// order a write adds its video for, and 0 for a write adding none. Position is
+// not valid for a write naming no position.
 type Write struct {
 	Method     string
 	PlaylistID string
 	ItemID     string
 	VideoID    string
+	EntryID    int64
 	Position   sql.NullInt64
 	SentAt     time.Time
 }
@@ -438,6 +494,7 @@ func (tx *Tx) BeginWrite(ctx context.Context, w Write) (int64, error) {
 		PlaylistID: sql.NullString{String: w.PlaylistID, Valid: w.PlaylistID != ""},
 		ItemID:     sql.NullString{String: w.ItemID, Valid: w.ItemID != ""},
 		VideoID:    sql.NullString{String: w.VideoID, Valid: w.VideoID != ""},
+		EntryID:    sql.NullInt64{Int64: w.EntryID, Valid: w.EntryID != 0},
 		Position:   w.Position,
 		SentTs:     Timestamp(w.SentAt),
 		QuotaDate:  youtube.QuotaDate(w.SentAt),

@@ -21,12 +21,10 @@ type playlistSummary struct {
 	EnrichedCount    int64  `json:"enriched_count"`
 }
 
-// playlist is one playlist with its items in the server's order, and the
-// revision of that order, which an edit of the order names in If-Match.
+// playlist is one playlist with its items in the server's order.
 type playlist struct {
 	playlistSummary
-	Revision int64          `json:"revision"`
-	Items    []playlistItem `json:"items"`
+	Items []playlistItem `json:"items"`
 }
 
 // playlistItem is one slot of the server's order of a playlist: the id of the
@@ -88,12 +86,6 @@ func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 		h.writeItemError(w, r, err, "playlist "+id)
 		return
 	}
-	writePlaylist(w, shown)
-}
-
-// writePlaylist answers 200 with shown, and its revision as the ETag.
-func writePlaylist(w http.ResponseWriter, shown playlist) {
-	w.Header().Set("ETag", entityTag(shown.Revision))
 	wire.JSON(w, http.StatusOK, shown)
 }
 
@@ -115,8 +107,7 @@ func readPlaylist(ctx context.Context, q *generated.Queries, id string) (playlis
 			Privacy:     stored.Privacy,
 			ItemCount:   int64(len(rows)),
 		},
-		Revision: stored.Revision,
-		Items:    make([]playlistItem, len(rows)),
+		Items: make([]playlistItem, len(rows)),
 	}
 	for i, row := range rows {
 		if row.IsUnavailable {

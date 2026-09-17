@@ -648,6 +648,7 @@ func TestTheREADMEStatesTheWriteLimitsAndTheReadLag(t *testing.T) {
 	for _, want := range []string{
 		fmt.Sprintf("a title of at most %d characters", youtube.MaxTitleLength),
 		fmt.Sprintf("a description of at most %d,%03d", youtube.MaxDescriptionLength/1000, youtube.MaxDescriptionLength%1000),
+		fmt.Sprintf("up to the %d,%03d videos a YouTube playlist holds", youtube.MaxPlaylistItems/1000, youtube.MaxPlaylistItems%1000),
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the README does not say %q", want)
@@ -655,6 +656,35 @@ func TestTheREADMEStatesTheWriteLimitsAndTheReadLag(t *testing.T) {
 	}
 	if youtube.ReadLag != time.Minute || !strings.Contains(text, "within a minute of a write") {
 		t.Errorf("the README says a read lags a write by a minute, and youtube.ReadLag is %v", youtube.ReadLag)
+	}
+}
+
+// Every outcome a write can end as has its own answer. Applied and pending make
+// nothing to refuse, so each is an internal error, as an outcome the API does
+// not know is.
+func TestEveryWriteOutcomeHasItsOwnAnswer(t *testing.T) {
+	const unknown = "someFutureOutcome"
+	f := newFixture(t)
+	want := map[string]int{
+		store.WriteQuotaSpent: http.StatusServiceUnavailable,
+		store.WriteRefused:    http.StatusUnprocessableEntity,
+		store.WriteAbsent:     http.StatusUnprocessableEntity,
+		store.WriteUnanswered: http.StatusBadGateway,
+		store.WriteApplied:    http.StatusInternalServerError,
+		store.WritePending:    http.StatusInternalServerError,
+		unknown:               http.StatusInternalServerError,
+	}
+	for _, outcome := range append(store.WriteOutcomes(), unknown) {
+		status, ok := want[outcome]
+		if !ok {
+			t.Errorf("the outcome %q has no answer this test knows", outcome)
+			continue
+		}
+		rec := httptest.NewRecorder()
+		f.h.refuseUnmade(rec, httptest.NewRequest(http.MethodPatch, "/api/v1/playlists/PLA", nil), outcome, errInvalidSnippet)
+		if rec.Code != status {
+			t.Errorf("a write that ended %q answered %d, want %d: %s", outcome, rec.Code, status, rec.Body)
+		}
 	}
 }
 

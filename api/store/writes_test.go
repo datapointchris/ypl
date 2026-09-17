@@ -19,7 +19,6 @@ func TestOpenSeedsTheYouTubeWriteAndPlaylistVocabularies(t *testing.T) {
 		"youtube_write_outcomes": len(youtubeWriteOutcomes),
 		"youtube_write_methods":  len(youtubeWriteMethods),
 		"playlist_sorts":         len(playlistSorts),
-		"base_states":            len(baseStates),
 	} {
 		if n := count(t, st, table); n != want {
 			t.Errorf("%s = %d rows, want %d", table, n, want)
@@ -87,12 +86,12 @@ func TestAWriteIsRecordedPendingAndSettlesOnce(t *testing.T) {
 	}
 }
 
-// An insert names its video and position and learns its item when it settles.
-// A move names its item as it begins, and settling keeps it.
+// An insert names its video, its entry and its position, and learns its item
+// when it settles. A move names its item as it begins, and settling keeps it.
 func TestAnItemWriteRecordsWhatItNamed(t *testing.T) {
 	st, _ := open(t)
 	ctx := context.Background()
-	insert, err := begin(st, Write{Method: youtube.MethodPlaylistItemsInsert, PlaylistID: "PLA", VideoID: "a", Position: sql.NullInt64{Int64: 2, Valid: true}, SentAt: sent})
+	insert, err := begin(st, Write{Method: youtube.MethodPlaylistItemsInsert, PlaylistID: "PLA", VideoID: "a", EntryID: 7, Position: sql.NullInt64{Int64: 2, Valid: true}, SentAt: sent})
 	if err != nil {
 		t.Fatalf("BeginWrite: %v", err)
 	}
@@ -109,11 +108,11 @@ func TestAnItemWriteRecordsWhatItNamed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SettleWrite: %v", err)
 	}
-	if row, err := st.Queries.GetYouTubeWrite(ctx, insert); err != nil || row.VideoID.String != "a" || row.Position.Int64 != 2 || row.ItemID.String != "i9" {
-		t.Errorf("insert = %+v, %v, want video a at 2 made as item i9", row, err)
+	if row, err := st.Queries.GetYouTubeWrite(ctx, insert); err != nil || row.VideoID.String != "a" || row.EntryID.Int64 != 7 || row.Position.Int64 != 2 || row.ItemID.String != "i9" {
+		t.Errorf("insert = %+v, %v, want video a for entry 7 at 2 made as item i9", row, err)
 	}
-	if row, err := st.Queries.GetYouTubeWrite(ctx, move); err != nil || row.ItemID.String != "i1" || !row.Position.Valid || row.Position.Int64 != 0 || row.VideoID.Valid {
-		t.Errorf("move = %+v, %v, want item i1 to 0 and no video", row, err)
+	if row, err := st.Queries.GetYouTubeWrite(ctx, move); err != nil || row.ItemID.String != "i1" || !row.Position.Valid || row.Position.Int64 != 0 || row.VideoID.Valid || row.EntryID.Valid {
+		t.Errorf("move = %+v, %v, want item i1 to 0 and no video or entry", row, err)
 	}
 }
 
@@ -155,6 +154,7 @@ func TestWriteNewerThanReadFindsOnlyAnAnsweredWriteWithinTheLag(t *testing.T) {
 	}
 	settle(t, st, youtube.MethodPlaylistsUpdate, "PLF", WriteApplied, answered)
 	settle(t, st, youtube.MethodPlaylistsDelete, "PLF", WriteApplied, answered.Add(time.Second))
+	settle(t, st, youtube.MethodPlaylistItemsInsert, "PLG", WriteApplied, answered)
 
 	cases := []struct {
 		playlist string
@@ -169,6 +169,7 @@ func TestWriteNewerThanReadFindsOnlyAnAnsweredWriteWithinTheLag(t *testing.T) {
 		{"PLD", answered, ""},
 		{"PLE", answered, ""},
 		{"PLF", answered, youtube.MethodPlaylistsDelete},
+		{"PLG", answered, ""},
 		{"PLZ", answered, ""},
 	}
 	for _, c := range cases {

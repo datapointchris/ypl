@@ -46,7 +46,10 @@ type fakeChannel struct {
 	// spanning pages with an edit between them can, while a read by id finds it.
 	hidden map[youtube.ItemID]bool
 	// automatic holds each playlist YouTube orders itself, which refuses a write
-	// naming a position, and refusedVideos each video YouTube will not add.
+	// naming a position and puts an appended video first, as a playlist sorted
+	// newest first does. Where YouTube's own sorts put one was not measured, so
+	// the fake puts it where the push's own record of the append does not.
+	// refusedVideos holds each video YouTube will not add.
 	automatic     map[youtube.PlaylistID]bool
 	refusedVideos map[youtube.VideoID]bool
 	// videoTitles is each public video a read of videos by id returns, and its
@@ -274,11 +277,15 @@ func (f *fakeChannel) AppendItem(ctx context.Context, playlist youtube.PlaylistI
 	case f.refusedVideos[video]:
 		return "", refusedAs(youtube.ErrVideoRefused)
 	}
-	f.add(playlist, video, len(held))
+	at := len(held)
+	if f.automatic[playlist] {
+		at = 0
+	}
+	f.add(playlist, video, at)
 	if failure.err != nil {
 		return "", failure.err
 	}
-	return f.items[playlist][len(held)].ID, nil
+	return f.items[playlist][at].ID, nil
 }
 
 func (f *fakeChannel) MoveItem(ctx context.Context, item youtube.Item, position int64) error {

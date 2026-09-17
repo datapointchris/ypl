@@ -39,7 +39,7 @@ dev = [
 
 [tool.codespell]
 skip = '*.css.map,*.ipynb'
-ignore-words-list = "astroid,aNULL,ANULL,anull,abd"
+ignore-words-list = "astroid,aNULL,ANULL,anull"
 check-filenames = true
 # count = ""
 # quiet-level = 3

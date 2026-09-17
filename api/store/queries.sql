@@ -138,7 +138,8 @@ SELECT
     privacy,
     revision,
     sort,
-    base_state
+    unanswered_write_id,
+    refused_write_id
 FROM playlists
 WHERE playlist_id = ?;
 
@@ -151,12 +152,13 @@ DELETE FROM playlists
 WHERE playlist_id = ?;
 
 -- name: GetPlaylistState :one
--- The revision of the server's order of a playlist, how YouTube orders it, and
--- whether its base is what YouTube holds.
+-- The revision of the server's order of a playlist, how YouTube orders it, the
+-- push write whose answer was lost, and the push write YouTube refused.
 SELECT
     revision,
     sort,
-    base_state
+    unanswered_write_id,
+    refused_write_id
 FROM playlists
 WHERE playlist_id = ?;
 
@@ -170,21 +172,18 @@ WHERE playlist_id = sqlc.arg(playlist_id) AND revision = sqlc.arg(revision);
 UPDATE playlists SET sort = sqlc.arg(sort)
 WHERE playlist_id = sqlc.arg(playlist_id);
 
--- name: SetBaseState :exec
-UPDATE playlists SET base_state = sqlc.arg(base_state)
+-- name: SetUnansweredWrite :exec
+UPDATE playlists SET unanswered_write_id = sqlc.narg(unanswered_write_id)
+WHERE playlist_id = sqlc.arg(playlist_id);
+
+-- name: SetRefusedWrite :exec
+UPDATE playlists SET refused_write_id = sqlc.narg(refused_write_id)
 WHERE playlist_id = sqlc.arg(playlist_id);
 
 -- name: UpsertPlaylistSort :exec
 INSERT INTO playlist_sorts (sort, label, description)
 VALUES (?, ?, ?)
 ON CONFLICT (sort) DO UPDATE SET
-    label = excluded.label,
-    description = excluded.description;
-
--- name: UpsertBaseState :exec
-INSERT INTO base_states (base_state, label, description)
-VALUES (?, ?, ?)
-ON CONFLICT (base_state) DO UPDATE SET
     label = excluded.label,
     description = excluded.description;
 
@@ -214,10 +213,12 @@ UPDATE playlist_entries SET item_id = sqlc.arg(item_id)
 WHERE entry_id = sqlc.arg(entry_id);
 
 -- name: ListBaseItems :many
--- What YouTube held of a playlist after the server last read or wrote it.
+-- What YouTube held of a playlist after the server last read it, with each push
+-- write YouTube answered since.
 SELECT
     item_id,
-    video_id
+    video_id,
+    is_placed
 FROM base_items
 WHERE playlist_id = ?
 ORDER BY position;
@@ -227,8 +228,8 @@ DELETE FROM base_items
 WHERE playlist_id = ?;
 
 -- name: InsertBaseItem :exec
-INSERT INTO base_items (item_id, playlist_id, position, video_id)
-VALUES (?, ?, ?, ?);
+INSERT INTO base_items (item_id, playlist_id, position, video_id, is_placed)
+VALUES (?, ?, ?, ?, ?);
 
 -- name: UpsertSyncOutcome :exec
 INSERT INTO sync_outcomes (outcome, label, description)
@@ -613,12 +614,13 @@ ON CONFLICT (outcome) DO UPDATE SET
 
 -- name: InsertYouTubeWrite :one
 -- Records a write as pending, before it is sent.
-INSERT INTO youtube_writes (method, playlist_id, item_id, video_id, position, sent_ts, quota_date, outcome)
+INSERT INTO youtube_writes (method, playlist_id, item_id, video_id, entry_id, position, sent_ts, quota_date, outcome)
 VALUES (
     sqlc.arg(method),
     sqlc.narg(playlist_id),
     sqlc.narg(item_id),
     sqlc.narg(video_id),
+    sqlc.narg(entry_id),
     sqlc.narg(position),
     sqlc.arg(sent_ts),
     sqlc.arg(quota_date),
@@ -646,6 +648,7 @@ SELECT
     playlist_id,
     item_id,
     video_id,
+    entry_id,
     position,
     sent_ts,
     quota_date,
@@ -681,14 +684,16 @@ SELECT CAST(coalesce(sum(units - write_units), 0) AS INTEGER) FROM sync_runs
 WHERE quota_date = ?;
 
 -- name: LatestPlaylistWriteSettledAfter :one
--- The latest write to the playlist that settled after settled_after with
--- YouTube's answer that it made the write, or that the playlist does not exist.
+-- The latest write creating, updating or deleting the playlist that settled
+-- after settled_after with YouTube's answer that it made the write, or that the
+-- playlist does not exist.
 SELECT
     method,
     outcome
 FROM youtube_writes
 WHERE
     playlist_id = sqlc.arg(playlist_id)
+    AND method IN ('playlists.insert', 'playlists.update', 'playlists.delete')
     AND outcome IN ('applied', 'absent')
     AND settled_ts > sqlc.arg(settled_after)
 ORDER BY settled_ts DESC, write_id DESC

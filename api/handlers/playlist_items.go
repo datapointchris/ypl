@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/datapointchris/ypl/api/store"
@@ -16,12 +15,12 @@ import (
 	"github.com/datapointchris/ypl/api/youtube"
 )
 
-// maxOrderBody bounds the body of an edit of a playlist's order, far above the
-// ids of the largest playlist the channel holds.
+// maxOrderBody bounds the body of an edit of a playlist's order, above the ids
+// of the most videos a playlist holds.
 const maxOrderBody = 1 << 20
 
-// playlistOrder is the body of PUT /api/v1/playlists/{id}/items: the whole new
-// order of the playlist, one video id a slot, repeats allowed.
+// playlistOrder is the server's order of a playlist as GET and PUT
+// /api/v1/playlists/{id}/items carry it: one video id a slot, repeats allowed.
 type playlistOrder struct {
 	VideoIDs []string `json:"video_ids"`
 }
@@ -30,55 +29,86 @@ type playlistOrder struct {
 // joins ids with commas, so an id holding anything else could name two.
 var videoID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-// entityTag is revision as a strong entity tag.
-func entityTag(revision int64) string {
-	return `"` + strconv.FormatInt(revision, 10) + `"`
+// unavailableVideos is the refusal of an edit whose order adds videos YouTube
+// will not add, found inside the transaction that would store it.
+type unavailableVideos []string
+
+func (videos unavailableVideos) Error() string {
+	return "the order adds videos YouTube will not add: " + strings.Join(videos, ", ")
 }
 
-// errRevisionMoved and errVideoUnavailable are the refusals of an edit found
-// inside the transaction that would store it.
-var (
-	errRevisionMoved    = errors.New("the playlist's order changed since the revision the edit names")
-	errVideoUnavailable = errors.New("a video the edit adds is unavailable")
-)
+// showPlaylistItems answers the server's order of a stored playlist, with the
+// order's revision as the ETag an edit names in If-Match.
+func (h *Handlers) showPlaylistItems(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := r.PathValue("id")
+	var order playlistOrder
+	var revision int64
+	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
+		state, err := q.GetPlaylistState(ctx, id)
+		if err != nil {
+			return err
+		}
+		revision = state.Revision
+		order, err = readOrder(ctx, q, id)
+		return err
+	})
+	if err != nil {
+		h.writeItemError(w, r, err, "playlist "+id)
+		return
+	}
+	writeOrder(w, revision, order)
+}
 
 // replacePlaylistItems sets the server's order of a stored playlist to the
-// order the body names, if the order is still at the revision If-Match names.
-// The sync pushes the new order to YouTube on its next run. Each video takes the
-// earliest entry holding it that no earlier video took, keeping the YouTube item
-// that entry is held in, and a video no entry is left for takes a new entry. A
-// video the store has never seen is read from YouTube.
+// order the body names, if If-Match matches the order's current ETag. The sync
+// pushes the new order to YouTube on its next run. Each video takes the earliest
+// entry holding it that no earlier video took, keeping the YouTube item that
+// entry is held in, and a video no entry is left for takes a new entry. A video
+// the store has never seen is read from YouTube.
 func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	revision, ok := revisionPrecondition(w, r)
+	values := r.Header.Values("If-Match")
+	if len(values) == 0 {
+		wire.Refuse(w, http.StatusPreconditionRequired, wire.CodePreconditionRequired,
+			"an edit of a playlist's order names the order it edits in If-Match, as the ETag of GET /api/v1/playlists/%s/items gives it", id)
+		return
+	}
+	condition, ok := parseIfMatch(values)
 	if !ok {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidPrecondition, "If-Match %q is not a list of entity tags, such as \"3\"", strings.Join(values, ", "))
 		return
 	}
-	body, ok := decodeJSON[playlistOrder](w, r, maxOrderBody, "a playlist's order")
-	if !ok {
-		return
-	}
-	if body.VideoIDs == nil {
-		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeVideoIDsRequired, "the body names no video_ids; an empty playlist is []")
-		return
-	}
-	for _, video := range body.VideoIDs {
-		if !videoID.MatchString(video) {
-			wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeInvalidVideoID, "%q is not a YouTube video id", video)
-			return
-		}
-	}
-
 	ctx := r.Context()
 	current, err := h.store.Queries.GetPlaylistState(ctx, id)
 	switch {
 	case err != nil:
 		h.writeItemError(w, r, err, "playlist "+id)
 		return
-	case current.Revision != revision:
-		refuseRevision(w, id, revision)
+	case !condition.matches(revisionTag(current.Revision)):
+		refusePrecondition(w, id)
 		return
 	}
+
+	body, ok := decodeJSON[playlistOrder](w, r, maxOrderBody, "a playlist's order")
+	if !ok {
+		return
+	}
+	switch {
+	case body.VideoIDs == nil:
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeVideoIDsRequired, "the body names no video_ids; an empty playlist is []")
+		return
+	case len(body.VideoIDs) > youtube.MaxPlaylistItems:
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeTooManyVideos, "the order names %d videos, and a YouTube playlist holds at most %d", len(body.VideoIDs), youtube.MaxPlaylistItems)
+		return
+	}
+	invalid := slices.DeleteFunc(slices.Clone(body.VideoIDs), videoID.MatchString)
+	if len(invalid) > 0 {
+		invalid = slices.Compact(slices.Sorted(slices.Values(invalid)))
+		wire.RefuseVideos(w, http.StatusUnprocessableEntity, wire.CodeInvalidVideoID, invalid, "these are not YouTube video ids: %q", invalid)
+		return
+	}
+
 	distinct := slices.Compact(slices.Sorted(slices.Values(body.VideoIDs)))
 	known, err := h.store.Queries.ListVideoAvailability(ctx, distinct)
 	if err != nil {
@@ -93,20 +123,19 @@ func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) 
 		_, ok := unavailable[video]
 		return ok
 	})
-	found, ok := h.readVideos(w, r, unknown)
+	found, missing, ok := h.readVideos(w, r, unknown)
 	if !ok {
 		return
 	}
 
-	var shown playlist
-	var added []string
+	var revision int64
 	err = h.store.InTx(ctx, func(tx *store.Tx) error {
 		state, err := tx.GetPlaylistState(ctx, id)
-		if err != nil {
+		switch {
+		case err != nil:
 			return err
-		}
-		if state.Revision != revision {
-			return errRevisionMoved
+		case !condition.matches(revisionTag(state.Revision)):
+			return store.ErrRevisionMoved
 		}
 		for _, video := range found {
 			params := generated.UpsertAvailableVideoParams{VideoID: string(video.ID), Title: video.Title, ChannelTitle: video.ChannelTitle}
@@ -119,76 +148,76 @@ func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) 
 			return err
 		}
 		ordered := orderedEntries(entries, body.VideoIDs)
+		refused := slices.Clone(missing)
 		for _, entry := range ordered {
 			if entry.ID == 0 && unavailable[entry.VideoID] {
-				added = append(added, entry.VideoID)
+				refused = append(refused, entry.VideoID)
 			}
 		}
-		if len(added) > 0 {
-			return errVideoUnavailable
+		if len(refused) > 0 {
+			return unavailableVideos(slices.Compact(slices.Sorted(slices.Values(refused))))
 		}
-		if !slices.Equal(ordered, entries) {
-			if err := tx.ReplaceEntries(ctx, id, ordered); err != nil {
-				return err
-			}
-			if n, err := tx.BumpRevision(ctx, generated.BumpRevisionParams{PlaylistID: id, Revision: revision}); err != nil || n != 1 {
-				return errors.Join(err, errRevisionMoved)
-			}
+		if revision, err = tx.ReplaceOrder(ctx, id, state.Revision, ordered); err != nil || revision == state.Revision {
+			return err
 		}
-		shown, err = readPlaylist(ctx, tx.Queries, id)
-		return err
+		// The edit tries positions again on a playlist YouTube refused one in,
+		// which YouTube may since have let the channel order by hand.
+		return tx.SetPlaylistSort(ctx, generated.SetPlaylistSortParams{PlaylistID: id, Sort: store.SortManual})
 	})
+	var refused unavailableVideos
 	switch {
-	case errors.Is(err, errRevisionMoved):
-		refuseRevision(w, id, revision)
-	case errors.Is(err, errVideoUnavailable):
-		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeVideoUnavailable, "YouTube will not add a private or deleted video: %s", strings.Join(slices.Compact(slices.Sorted(slices.Values(added))), ", "))
+	case errors.Is(err, store.ErrRevisionMoved):
+		refusePrecondition(w, id)
+	case errors.As(err, &refused):
+		wire.RefuseVideos(w, http.StatusUnprocessableEntity, wire.CodeVideoUnavailable, refused,
+			"YouTube has no public or unlisted video this channel can add for %s", strings.Join(refused, ", "))
 	case err != nil:
 		h.writeItemError(w, r, err, "playlist "+id)
 	default:
-		writePlaylist(w, shown)
+		writeOrder(w, revision, playlistOrder{VideoIDs: body.VideoIDs})
 	}
 }
 
-// refuseRevision answers an edit naming a revision the playlist has moved past.
-func refuseRevision(w http.ResponseWriter, id string, revision int64) {
-	wire.Refuse(w, http.StatusPreconditionFailed, wire.CodeRevisionMismatch, "playlist %s is no longer at revision %d; read it again and edit that", id, revision)
+// readOrder is the server's order of the stored playlist id.
+func readOrder(ctx context.Context, q *generated.Queries, id string) (playlistOrder, error) {
+	entries, err := store.Entries(ctx, q, id)
+	if err != nil {
+		return playlistOrder{}, err
+	}
+	order := playlistOrder{VideoIDs: make([]string, len(entries))}
+	for i, entry := range entries {
+		order.VideoIDs[i] = entry.VideoID
+	}
+	return order, nil
 }
 
-// revisionPrecondition is the revision the request's If-Match names. ok is false
-// once it has answered: a 428 when If-Match is absent, and a 400 when it is not
-// one strong entity tag holding a revision.
-func revisionPrecondition(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	values := r.Header.Values("If-Match")
-	if len(values) == 0 {
-		wire.Refuse(w, http.StatusPreconditionRequired, wire.CodeRevisionRequired, "an edit of a playlist's order names the revision it edits in If-Match, as the playlist's ETag gives it")
-		return 0, false
-	}
-	tag := strings.TrimSpace(values[0])
-	unquoted, quoted := strings.CutPrefix(tag, `"`)
-	unquoted, closed := strings.CutSuffix(unquoted, `"`)
-	revision, err := strconv.ParseInt(unquoted, 10, 64)
-	if len(values) > 1 || !quoted || !closed || err != nil || revision < 1 {
-		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidRevision, "If-Match %q is not one playlist revision, such as \"3\"", strings.Join(values, ", "))
-		return 0, false
-	}
-	return revision, true
+// writeOrder answers 200 with order, and revision as its ETag.
+func writeOrder(w http.ResponseWriter, revision int64, order playlistOrder) {
+	w.Header().Set("ETag", revisionTag(revision))
+	wire.JSON(w, http.StatusOK, order)
 }
 
-// readVideos reads from YouTube each of ids the store has never seen, and
-// returns the videos a playlist can hold. A private video is not one: the store
-// holds a private video a playlist read reports as unavailable. ok is false once
-// it has answered: a 422 naming each id YouTube returns no public or unlisted
-// video for, or YouTube's failure to answer.
-func (h *Handlers) readVideos(w http.ResponseWriter, r *http.Request, ids []string) ([]youtube.Video, bool) {
+// refusePrecondition answers an edit whose If-Match the playlist's order no
+// longer matches.
+func refusePrecondition(w http.ResponseWriter, id string) {
+	wire.Refuse(w, http.StatusPreconditionFailed, wire.CodePreconditionFailed,
+		"the order of playlist %s no longer has the ETag If-Match names; read it again and edit that", id)
+}
+
+// readVideos reads from YouTube each of ids the store has never seen. It returns
+// the videos a playlist can hold, and each id YouTube returns none for. A
+// private video is not one: the store holds a private video a playlist read
+// reports as unavailable. ok is false once it has answered YouTube's failure to
+// answer.
+func (h *Handlers) readVideos(w http.ResponseWriter, r *http.Request, ids []string) ([]youtube.Video, []string, bool) {
 	if len(ids) == 0 {
-		return nil, true
+		return nil, nil, true
 	}
 	// The read takes the write turn, so a playlist write's count of the
 	// channel's requests holds only its own.
 	release, ok := h.takeWriteTurn(r)
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
 	defer release()
 	videoIDs := make([]youtube.VideoID, len(ids))
@@ -201,21 +230,17 @@ func (h *Handlers) readVideos(w http.ResponseWriter, r *http.Request, ids []stri
 	switch {
 	case errors.Is(err, youtube.ErrQuotaSpent):
 		h.refuseSpentQuota(w, r, err)
-		return nil, false
+		return nil, nil, false
 	case err != nil:
 		h.refuseAndLog(w, r, slog.LevelError, http.StatusBadGateway, wire.CodeYouTubeReadFailed, err,
 			"YouTube did not answer the read of the videos the edit adds, so nothing changed")
-		return nil, false
+		return nil, nil, false
 	}
 	videos = slices.DeleteFunc(videos, func(v youtube.Video) bool { return v.Privacy == "private" })
 	missing := slices.DeleteFunc(slices.Clone(ids), func(id string) bool {
 		return slices.ContainsFunc(videos, func(v youtube.Video) bool { return string(v.ID) == id })
 	})
-	if len(missing) > 0 {
-		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeVideoNotFound, "YouTube has no video this channel can add for %s", strings.Join(missing, ", "))
-		return nil, false
-	}
-	return videos, true
+	return videos, missing, true
 }
 
 // orderedEntries maps videoIDs onto entries: each video takes the earliest entry

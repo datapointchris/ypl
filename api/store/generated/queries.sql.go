@@ -332,7 +332,8 @@ SELECT
     privacy,
     revision,
     sort,
-    base_state
+    unanswered_write_id,
+    refused_write_id
 FROM playlists
 WHERE playlist_id = ?
 `
@@ -347,7 +348,8 @@ func (q *Queries) GetPlaylist(ctx context.Context, playlistID string) (Playlist,
 		&i.Privacy,
 		&i.Revision,
 		&i.Sort,
-		&i.BaseState,
+		&i.UnansweredWriteID,
+		&i.RefusedWriteID,
 	)
 	return i, err
 }
@@ -356,23 +358,30 @@ const getPlaylistState = `-- name: GetPlaylistState :one
 SELECT
     revision,
     sort,
-    base_state
+    unanswered_write_id,
+    refused_write_id
 FROM playlists
 WHERE playlist_id = ?
 `
 
 type GetPlaylistStateRow struct {
-	Revision  int64
-	Sort      string
-	BaseState string
+	Revision          int64
+	Sort              string
+	UnansweredWriteID sql.NullInt64
+	RefusedWriteID    sql.NullInt64
 }
 
-// The revision of the server's order of a playlist, how YouTube orders it, and
-// whether its base is what YouTube holds.
+// The revision of the server's order of a playlist, how YouTube orders it, the
+// push write whose answer was lost, and the push write YouTube refused.
 func (q *Queries) GetPlaylistState(ctx context.Context, playlistID string) (GetPlaylistStateRow, error) {
 	row := q.db.QueryRowContext(ctx, getPlaylistState, playlistID)
 	var i GetPlaylistStateRow
-	err := row.Scan(&i.Revision, &i.Sort, &i.BaseState)
+	err := row.Scan(
+		&i.Revision,
+		&i.Sort,
+		&i.UnansweredWriteID,
+		&i.RefusedWriteID,
+	)
 	return i, err
 }
 
@@ -499,6 +508,7 @@ SELECT
     playlist_id,
     item_id,
     video_id,
+    entry_id,
     position,
     sent_ts,
     quota_date,
@@ -517,6 +527,7 @@ type GetYouTubeWriteRow struct {
 	PlaylistID sql.NullString
 	ItemID     sql.NullString
 	VideoID    sql.NullString
+	EntryID    sql.NullInt64
 	Position   sql.NullInt64
 	SentTs     string
 	QuotaDate  string
@@ -536,6 +547,7 @@ func (q *Queries) GetYouTubeWrite(ctx context.Context, writeID int64) (GetYouTub
 		&i.PlaylistID,
 		&i.ItemID,
 		&i.VideoID,
+		&i.EntryID,
 		&i.Position,
 		&i.SentTs,
 		&i.QuotaDate,
@@ -591,8 +603,8 @@ func (q *Queries) ImportVideo(ctx context.Context, arg ImportVideoParams) error 
 }
 
 const insertBaseItem = `-- name: InsertBaseItem :exec
-INSERT INTO base_items (item_id, playlist_id, position, video_id)
-VALUES (?, ?, ?, ?)
+INSERT INTO base_items (item_id, playlist_id, position, video_id, is_placed)
+VALUES (?, ?, ?, ?, ?)
 `
 
 type InsertBaseItemParams struct {
@@ -600,6 +612,7 @@ type InsertBaseItemParams struct {
 	PlaylistID string
 	Position   int64
 	VideoID    string
+	IsPlaced   bool
 }
 
 func (q *Queries) InsertBaseItem(ctx context.Context, arg InsertBaseItemParams) error {
@@ -608,6 +621,7 @@ func (q *Queries) InsertBaseItem(ctx context.Context, arg InsertBaseItemParams) 
 		arg.PlaylistID,
 		arg.Position,
 		arg.VideoID,
+		arg.IsPlaced,
 	)
 	return err
 }
@@ -759,7 +773,7 @@ func (q *Queries) InsertTrack(ctx context.Context, arg InsertTrackParams) error 
 }
 
 const insertYouTubeWrite = `-- name: InsertYouTubeWrite :one
-INSERT INTO youtube_writes (method, playlist_id, item_id, video_id, position, sent_ts, quota_date, outcome)
+INSERT INTO youtube_writes (method, playlist_id, item_id, video_id, entry_id, position, sent_ts, quota_date, outcome)
 VALUES (
     ?1,
     ?2,
@@ -768,6 +782,7 @@ VALUES (
     ?5,
     ?6,
     ?7,
+    ?8,
     'pending'
 )
 RETURNING write_id
@@ -778,6 +793,7 @@ type InsertYouTubeWriteParams struct {
 	PlaylistID sql.NullString
 	ItemID     sql.NullString
 	VideoID    sql.NullString
+	EntryID    sql.NullInt64
 	Position   sql.NullInt64
 	SentTs     string
 	QuotaDate  string
@@ -790,6 +806,7 @@ func (q *Queries) InsertYouTubeWrite(ctx context.Context, arg InsertYouTubeWrite
 		arg.PlaylistID,
 		arg.ItemID,
 		arg.VideoID,
+		arg.EntryID,
 		arg.Position,
 		arg.SentTs,
 		arg.QuotaDate,
@@ -806,6 +823,7 @@ SELECT
 FROM youtube_writes
 WHERE
     playlist_id = ?1
+    AND method IN ('playlists.insert', 'playlists.update', 'playlists.delete')
     AND outcome IN ('applied', 'absent')
     AND settled_ts > ?2
 ORDER BY settled_ts DESC, write_id DESC
@@ -822,8 +840,9 @@ type LatestPlaylistWriteSettledAfterRow struct {
 	Outcome string
 }
 
-// The latest write to the playlist that settled after settled_after with
-// YouTube's answer that it made the write, or that the playlist does not exist.
+// The latest write creating, updating or deleting the playlist that settled
+// after settled_after with YouTube's answer that it made the write, or that the
+// playlist does not exist.
 func (q *Queries) LatestPlaylistWriteSettledAfter(ctx context.Context, arg LatestPlaylistWriteSettledAfterParams) (LatestPlaylistWriteSettledAfterRow, error) {
 	row := q.db.QueryRowContext(ctx, latestPlaylistWriteSettledAfter, arg.PlaylistID, arg.SettledAfter)
 	var i LatestPlaylistWriteSettledAfterRow
@@ -834,18 +853,21 @@ func (q *Queries) LatestPlaylistWriteSettledAfter(ctx context.Context, arg Lates
 const listBaseItems = `-- name: ListBaseItems :many
 SELECT
     item_id,
-    video_id
+    video_id,
+    is_placed
 FROM base_items
 WHERE playlist_id = ?
 ORDER BY position
 `
 
 type ListBaseItemsRow struct {
-	ItemID  string
-	VideoID string
+	ItemID   string
+	VideoID  string
+	IsPlaced bool
 }
 
-// What YouTube held of a playlist after the server last read or wrote it.
+// What YouTube held of a playlist after the server last read it, with each push
+// write YouTube answered since.
 func (q *Queries) ListBaseItems(ctx context.Context, playlistID string) ([]ListBaseItemsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listBaseItems, playlistID)
 	if err != nil {
@@ -855,7 +877,7 @@ func (q *Queries) ListBaseItems(ctx context.Context, playlistID string) ([]ListB
 	var items []ListBaseItemsRow
 	for rows.Next() {
 		var i ListBaseItemsRow
-		if err := rows.Scan(&i.ItemID, &i.VideoID); err != nil {
+		if err := rows.Scan(&i.ItemID, &i.VideoID, &i.IsPlaced); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1774,21 +1796,6 @@ func (q *Queries) ListVideoPlaylists(ctx context.Context, videoID sql.NullString
 	return items, nil
 }
 
-const setBaseState = `-- name: SetBaseState :exec
-UPDATE playlists SET base_state = ?1
-WHERE playlist_id = ?2
-`
-
-type SetBaseStateParams struct {
-	BaseState  string
-	PlaylistID string
-}
-
-func (q *Queries) SetBaseState(ctx context.Context, arg SetBaseStateParams) error {
-	_, err := q.db.ExecContext(ctx, setBaseState, arg.BaseState, arg.PlaylistID)
-	return err
-}
-
 const setEntryItem = `-- name: SetEntryItem :execrows
 UPDATE playlist_entries SET item_id = ?1
 WHERE entry_id = ?2
@@ -1821,6 +1828,36 @@ type SetPlaylistSortParams struct {
 
 func (q *Queries) SetPlaylistSort(ctx context.Context, arg SetPlaylistSortParams) error {
 	_, err := q.db.ExecContext(ctx, setPlaylistSort, arg.Sort, arg.PlaylistID)
+	return err
+}
+
+const setRefusedWrite = `-- name: SetRefusedWrite :exec
+UPDATE playlists SET refused_write_id = ?1
+WHERE playlist_id = ?2
+`
+
+type SetRefusedWriteParams struct {
+	RefusedWriteID sql.NullInt64
+	PlaylistID     string
+}
+
+func (q *Queries) SetRefusedWrite(ctx context.Context, arg SetRefusedWriteParams) error {
+	_, err := q.db.ExecContext(ctx, setRefusedWrite, arg.RefusedWriteID, arg.PlaylistID)
+	return err
+}
+
+const setUnansweredWrite = `-- name: SetUnansweredWrite :exec
+UPDATE playlists SET unanswered_write_id = ?1
+WHERE playlist_id = ?2
+`
+
+type SetUnansweredWriteParams struct {
+	UnansweredWriteID sql.NullInt64
+	PlaylistID        string
+}
+
+func (q *Queries) SetUnansweredWrite(ctx context.Context, arg SetUnansweredWriteParams) error {
+	_, err := q.db.ExecContext(ctx, setUnansweredWrite, arg.UnansweredWriteID, arg.PlaylistID)
 	return err
 }
 
@@ -1943,25 +1980,6 @@ type UpsertAvailableVideoParams struct {
 // column enrichment writes as it is.
 func (q *Queries) UpsertAvailableVideo(ctx context.Context, arg UpsertAvailableVideoParams) error {
 	_, err := q.db.ExecContext(ctx, upsertAvailableVideo, arg.VideoID, arg.Title, arg.ChannelTitle)
-	return err
-}
-
-const upsertBaseState = `-- name: UpsertBaseState :exec
-INSERT INTO base_states (base_state, label, description)
-VALUES (?, ?, ?)
-ON CONFLICT (base_state) DO UPDATE SET
-    label = excluded.label,
-    description = excluded.description
-`
-
-type UpsertBaseStateParams struct {
-	BaseState   string
-	Label       string
-	Description string
-}
-
-func (q *Queries) UpsertBaseState(ctx context.Context, arg UpsertBaseStateParams) error {
-	_, err := q.db.ExecContext(ctx, upsertBaseState, arg.BaseState, arg.Label, arg.Description)
 	return err
 }
 

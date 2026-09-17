@@ -2,7 +2,8 @@
 // refusal it can make.
 //
 // A refusal is {"error": "<sentence>", "code": "<code>"}. The sentence is for a
-// person and may change. The code is for a client to branch on and does not.
+// person and may change. The code is for a client to branch on and does not. A
+// refusal about particular videos names them in "video_ids" too.
 package wire
 
 import (
@@ -17,12 +18,12 @@ type Code string
 // Every refusal the API makes, by the status it answers with.
 const (
 	// 400
-	CodeInvalidLimit       Code = "invalid_limit"
-	CodeInvalidParameter   Code = "invalid_parameter"
-	CodeUnknownReference   Code = "unknown_reference"
-	CodeAmbiguousReference Code = "ambiguous_reference"
-	CodeInvalidBody        Code = "invalid_body"
-	CodeInvalidRevision    Code = "invalid_revision"
+	CodeInvalidLimit        Code = "invalid_limit"
+	CodeInvalidParameter    Code = "invalid_parameter"
+	CodeUnknownReference    Code = "unknown_reference"
+	CodeAmbiguousReference  Code = "ambiguous_reference"
+	CodeInvalidBody         Code = "invalid_body"
+	CodeInvalidPrecondition Code = "invalid_precondition"
 
 	// 401
 	CodeMissingToken Code = "missing_token"
@@ -39,7 +40,7 @@ const (
 	CodePlayConflict Code = "play_conflict"
 
 	// 412
-	CodeRevisionMismatch Code = "revision_mismatch"
+	CodePreconditionFailed Code = "precondition_failed"
 
 	// 422
 	CodeTitleRequired       Code = "title_required"
@@ -54,12 +55,12 @@ const (
 	CodePlayedTsOutOfRange  Code = "played_ts_out_of_range"
 	CodePlayedTsInTheFuture Code = "played_ts_in_the_future"
 	CodeVideoIDsRequired    Code = "video_ids_required"
+	CodeTooManyVideos       Code = "too_many_videos"
 	CodeInvalidVideoID      Code = "invalid_video_id"
-	CodeVideoNotFound       Code = "video_not_found"
 	CodeVideoUnavailable    Code = "video_unavailable"
 
 	// 428
-	CodeRevisionRequired Code = "revision_required"
+	CodePreconditionRequired Code = "precondition_required"
 
 	// 500
 	CodeInternal               Code = "internal"
@@ -92,4 +93,16 @@ func JSON(w http.ResponseWriter, status int, body any) {
 // and args make.
 func Refuse(w http.ResponseWriter, status int, code Code, format string, args ...any) {
 	JSON(w, status, Refusal{Error: fmt.Sprintf(format, args...), Code: code})
+}
+
+// VideoRefusal is the body of a refusal about particular videos, naming each.
+type VideoRefusal struct {
+	Refusal
+	VideoIDs []string `json:"video_ids"`
+}
+
+// RefuseVideos answers status with a VideoRefusal carrying code, the sentence
+// format and args make, and videoIDs.
+func RefuseVideos(w http.ResponseWriter, status int, code Code, videoIDs []string, format string, args ...any) {
+	JSON(w, status, VideoRefusal{Refusal: Refusal{Error: fmt.Sprintf(format, args...), Code: code}, VideoIDs: videoIDs})
 }

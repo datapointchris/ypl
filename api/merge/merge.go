@@ -3,10 +3,10 @@
 // result. It reads no store and makes no request.
 //
 // A merge has three inputs. The base is what YouTube held after the server last
-// read or wrote the playlist, the read is what YouTube holds now, and the
-// entries are the server's order. Every one of them is keyed by YouTube's
-// playlistItem id, which a copy of a video keeps wherever it moves. The base is
-// what gives the other two meaning:
+// read the playlist, with each write the server made since, the read is what
+// YouTube holds now, and the entries are the server's order. Every one of them
+// is keyed by YouTube's playlistItem id, which a copy of a video keeps wherever
+// it moves. The base is what gives the other two meaning:
 //
 //   - an item of the base the read lacks was removed on YouTube
 //   - an item of the base no entry holds was removed here
@@ -17,13 +17,25 @@
 // by one side and half by the other is worse than either order.
 package merge
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+)
 
 // Item is one item of a playlist on YouTube: its playlistItem id and the video
 // in it.
 type Item struct {
 	ID      string
 	VideoID string
+}
+
+// BaseItem is one item of a playlist's base, and whether its position is where
+// a write the server made put it, which no read has shown. YouTube holds such an
+// item where the write landed, and an edit on YouTube while the write was sent
+// shifts where that is.
+type BaseItem struct {
+	Item
+	Placed bool
 }
 
 // Entry is one entry of the server's order of a playlist: its id, the video in
@@ -45,17 +57,34 @@ const (
 	YouTube Side = "youtube"
 )
 
-// BaseState is whether a playlist's base is known to be what YouTube held after
-// the server's last read or write, as the store records it.
-type BaseState int
+// Sort is how YouTube orders a playlist.
+type Sort string
 
 const (
-	// Confirmed is a base the server recorded every write's answer against.
-	Confirmed BaseState = iota
-	// Unconfirmed is a base a write was sent against whose answer was never
-	// recorded, so YouTube may hold that write too.
-	Unconfirmed
+	// Manual is a playlist YouTube keeps in the order writes put it in.
+	Manual Sort = "manual"
+	// Automatic is a playlist YouTube orders itself, which refuses a write
+	// naming a position.
+	Automatic Sort = "automatic"
 )
+
+// Playlist is what a merge of one playlist reads.
+type Playlist struct {
+	// Base is what YouTube held after the server last read the playlist, with
+	// each write the server made since.
+	Base []BaseItem
+	// Read is what YouTube holds now. Every item of Base the read lacks has to
+	// have been confirmed gone before the merge, since a read that spans pages
+	// can miss an item that is there.
+	Read []Item
+	// Entries is the server's order.
+	Entries []Entry
+	// Unanswered is the write sent against Base whose answer was never
+	// recorded, so YouTube may hold it too, and nil when there is none.
+	Unanswered *Write
+	// Sort is how YouTube orders the playlist.
+	Sort Sort
+}
 
 // Result is what a merge decided.
 type Result struct {
@@ -71,26 +100,35 @@ type Result struct {
 	Changed bool
 }
 
-// Merge merges the read of a playlist into its entries against its base. Every
-// item of the base the read lacks has to have been confirmed gone before it is
-// passed, since a read that spans pages can miss an item that is there.
+// Merge merges the read of a playlist into its entries against its base.
 //
-// An Unconfirmed base can miss the effect of the writes whose answers were
-// lost. So each entry added here adopts an item of the read that holds its video
-// and that the base and every other entry lack, as the insert that was sent
-// would have made; and the server's order wins, since a move that landed would
-// otherwise read as YouTube reordering the playlist. An item YouTube added in the
-// same window with the same video as an entry added here is taken for that
-// entry's insert, which is the one edit this loses.
+// YouTube's order wins when YouTube orders the playlist itself, and when it
+// moved an item it placed itself among those the base and the read share. The
+// server's order wins otherwise.
+//
+// An insert whose answer was lost may have made an item. The first item of the
+// read holding its video that the base lacks and no entry holds is taken for
+// it: the entry the insert was sent for holds it, or, when an edit here removed
+// that entry, the item is removed here. So an item YouTube added with the same
+// video before the read is taken for the insert, which is one edit a merge
+// loses. A move on YouTube of an item the server placed, before a read shows
+// the placement, is the other.
 //
 // An entry holding an item neither the base nor the read has becomes an entry
 // added here again, so its video is pushed rather than lost.
-func Merge(base, read []Item, entries []Entry, state BaseState) Result {
-	merging := slices.Clone(entries)
-	if state == Unconfirmed {
-		merging = adopt(base, read, merging)
+func Merge(p Playlist) (Result, error) {
+	if p.Sort != Manual && p.Sort != Automatic {
+		return Result{}, fmt.Errorf("merge a playlist sorted %q, which is not a sort a merge knows", p.Sort)
 	}
-	inBase, inRead := itemSet(base), itemSet(read)
+	merging := slices.Clone(p.Entries)
+	inBase, inRead := map[string]bool{}, itemSet(p.Read)
+	for _, item := range p.Base {
+		inBase[item.ID] = true
+	}
+	madeHere, err := landedInsert(p, merging)
+	if err != nil {
+		return Result{}, err
+	}
 	held := map[string]bool{}
 	for i, entry := range merging {
 		if entry.ItemID != "" && !inBase[entry.ItemID] && !inRead[entry.ItemID] {
@@ -125,22 +163,22 @@ func Merge(base, read []Item, entries []Entry, state BaseState) Result {
 		wanted[k] = true
 	}
 	videoOf := map[string]string{}
-	for _, item := range read {
+	for _, item := range p.Read {
 		k := key{item: item.ID}
 		readKeys = append(readKeys, k)
 		videoOf[item.ID] = item.VideoID
 		switch {
-		case inBase[item.ID] && !held[item.ID]:
-		case !inBase[item.ID] && !held[item.ID]:
-			result.Added++
+		case held[item.ID]:
 			wanted[k] = true
+		case inBase[item.ID], item.ID == madeHere:
 		default:
+			result.Added++
 			wanted[k] = true
 		}
 	}
 
 	primary, secondary := serverKeys, readKeys
-	if state == Confirmed && reordered(base, read) {
+	if p.Sort == Automatic || reordered(p) {
 		result.Order = YouTube
 		primary, secondary = readKeys, serverKeys
 	}
@@ -160,51 +198,75 @@ func Merge(base, read []Item, entries []Entry, state BaseState) Result {
 			result.Entries = append(result.Entries, Entry{VideoID: videoOf[k.item], ItemID: k.item})
 		}
 	}
-	result.Changed = !slices.Equal(result.Entries, entries)
-	return result
+	result.Changed = !slices.Equal(result.Entries, p.Entries)
+	return result, nil
 }
 
-// adopt gives each entry added here the first item of read that holds its
-// video, that base lacks, and that no entry holds or has adopted.
-func adopt(base, read []Item, entries []Entry) []Entry {
-	inBase := itemSet(base)
+// landedInsert settles in entries the item an unanswered insert made, if the
+// read shows one: the entry the insert was sent for takes it while that entry
+// is still waiting for an item. It returns the item when no entry takes it,
+// since an edit here removed the entry, and empty otherwise.
+func landedInsert(p Playlist, entries []Entry) (string, error) {
+	w := p.Unanswered
+	if w == nil {
+		return "", nil
+	}
+	switch w.Kind {
+	case Insert, Append:
+	case Delete, Move:
+		return "", nil
+	default:
+		return "", fmt.Errorf("merge after an unanswered write of kind %q, which is not a kind a merge knows", w.Kind)
+	}
 	taken := map[string]bool{}
+	for _, item := range p.Base {
+		taken[item.ID] = true
+	}
 	for _, entry := range entries {
 		if entry.ItemID != "" {
 			taken[entry.ItemID] = true
 		}
 	}
+	index := slices.IndexFunc(p.Read, func(item Item) bool { return item.VideoID == w.VideoID && !taken[item.ID] })
+	if index < 0 {
+		return "", nil
+	}
+	made := p.Read[index].ID
 	for i, entry := range entries {
-		if entry.ItemID != "" {
-			continue
-		}
-		for _, item := range read {
-			if item.VideoID == entry.VideoID && !inBase[item.ID] && !taken[item.ID] {
-				entries[i].ItemID = item.ID
-				taken[item.ID] = true
-				break
-			}
+		if entry.ID == w.EntryID && entry.ItemID == "" {
+			entries[i].ItemID = made
+			return "", nil
 		}
 	}
-	return entries
+	return made, nil
 }
 
-// reordered is whether read moved any item it shares with base. Only the items
-// both hold can answer that: comparing whole lists would call every addition and
-// removal a reorder, and hand YouTube the order of a playlist whenever a video
-// was added to it there.
-func reordered(base, read []Item) bool {
-	inBase, inRead := itemSet(base), itemSet(read)
-	shared := func(items []Item, in map[string]bool) []string {
-		var ids []string
-		for _, item := range items {
-			if in[item.ID] {
-				ids = append(ids, item.ID)
-			}
-		}
-		return ids
+// reordered is whether YouTube moved an item it placed itself among those the
+// base and the read share. Only those can answer it. Comparing whole lists would
+// call every addition and removal a reorder. An item a write here placed sits
+// where the write landed, which an edit on YouTube while it was sent shifts, and
+// so does the item an unanswered move names.
+func reordered(p Playlist) bool {
+	unplaced := map[string]bool{}
+	for _, item := range p.Base {
+		unplaced[item.ID] = !item.Placed
 	}
-	return !slices.Equal(shared(base, inRead), shared(read, inBase))
+	if w := p.Unanswered; w != nil && w.Kind == Move {
+		unplaced[w.ItemID] = false
+	}
+	inRead := itemSet(p.Read)
+	var base, read []string
+	for _, item := range p.Base {
+		if unplaced[item.ID] && inRead[item.ID] {
+			base = append(base, item.ID)
+		}
+	}
+	for _, item := range p.Read {
+		if unplaced[item.ID] {
+			read = append(read, item.ID)
+		}
+	}
+	return !slices.Equal(base, read)
 }
 
 // weave is the wanted keys of primary in its order, with each wanted key only

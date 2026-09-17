@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -403,17 +404,27 @@ func (h *Handlers) writeToYouTube(w http.ResponseWriter, r *http.Request, yw you
 	case settleErr != nil:
 		h.log.ErrorContext(r.Context(), "YouTube write not recorded", "method", r.Method, "path", r.URL.Path, "outcome", outcome, "err", settleErr)
 	}
+	h.refuseUnmade(w, r, outcome, sendErr)
+	return false
+}
+
+// refuseUnmade answers a YouTube write that did not make what the request asked
+// for, which ended as outcome with sendErr.
+func (h *Handlers) refuseUnmade(w http.ResponseWriter, r *http.Request, outcome string, sendErr error) {
 	switch outcome {
 	case store.WriteQuotaSpent:
 		h.refuseSpentQuota(w, r, sendErr)
 	case store.WriteRefused, store.WriteAbsent:
 		message, _ := youtube.RefusalMessage(sendErr)
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeYouTubeRefused, "YouTube refused the write, and nothing changed: %s", message)
-	default:
+	case store.WriteUnanswered:
 		h.refuseAndLog(w, r, slog.LevelError, http.StatusBadGateway, wire.CodeYouTubeWriteFailed, sendErr,
 			"YouTube did not confirm the write, which may still have landed; the next sync shows what YouTube holds")
+	case store.WriteApplied, store.WritePending:
+		h.writeInternalError(w, r, fmt.Errorf("a YouTube write that ended %q made nothing", outcome))
+	default:
+		h.writeInternalError(w, r, fmt.Errorf("a YouTube write ended %q, which is not an outcome the API knows: %w", outcome, sendErr))
 	}
-	return false
 }
 
 // refuseSpentQuota answers YouTube's refusal of a request for a spent quota

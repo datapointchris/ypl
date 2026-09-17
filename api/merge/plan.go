@@ -31,6 +31,7 @@ type Write struct {
 	Position int64
 }
 
+// String is w as a test reads it, such as "move i3 to 0".
 func (w Write) String() string {
 	switch w.Kind {
 	case Delete:
@@ -39,21 +40,23 @@ func (w Write) String() string {
 		return fmt.Sprintf("insert entry %d (%s) at %d", w.EntryID, w.VideoID, w.Position)
 	case Append:
 		return fmt.Sprintf("append entry %d (%s)", w.EntryID, w.VideoID)
-	default:
+	case Move:
 		return fmt.Sprintf("move %s to %d", w.ItemID, w.Position)
+	default:
+		return fmt.Sprintf("write of unknown kind %q", w.Kind)
 	}
 }
 
-// Plan is the writes, in the order to make them, that turn base, what YouTube
+// Plan is the writes, in the order to make them, that turn read, what YouTube
 // holds, into entries, a playlist sorted manually. Every item an entry holds
-// has to be in base, as a merge leaves it.
+// has to be in read, as a merge leaves it.
 //
 // It deletes each item of base no entry holds, keeps in place the longest run of
 // held items already in entries' order, then walks entries inserting each entry
 // added here and moving each other held item to just after the entry before it.
 // That is the fewest writes for single-item moves.
-func Plan(base []Item, entries []Entry) []Write {
-	writes, playlist := deletes(base, entries)
+func Plan(read []Item, entries []Entry) []Write {
+	writes, playlist := deletes(read, entries)
 	position := map[string]int{}
 	for i, id := range playlist {
 		position[id] = i
@@ -97,11 +100,11 @@ func Plan(base []Item, entries []Entry) []Write {
 	return writes
 }
 
-// PlanAppends is the writes that bring base toward entries in a playlist YouTube
+// PlanAppends is the writes that bring read toward entries in a playlist YouTube
 // orders itself, which refuses a write naming a position: it deletes each item
-// of base no entry holds and appends each entry added here, and moves nothing.
-func PlanAppends(base []Item, entries []Entry) []Write {
-	writes, _ := deletes(base, entries)
+// of read no entry holds and appends each entry added here, and moves nothing.
+func PlanAppends(read []Item, entries []Entry) []Write {
+	writes, _ := deletes(read, entries)
 	for _, entry := range entries {
 		if entry.ItemID == "" {
 			writes = append(writes, Write{Kind: Append, EntryID: entry.ID, VideoID: entry.VideoID})
@@ -110,9 +113,9 @@ func PlanAppends(base []Item, entries []Entry) []Write {
 	return writes
 }
 
-// deletes is a delete of each item of base no entry holds, in base's order, and
+// deletes is a delete of each item of read no entry holds, in read's order, and
 // the ids of the items left.
-func deletes(base []Item, entries []Entry) ([]Write, []string) {
+func deletes(read []Item, entries []Entry) ([]Write, []string) {
 	held := map[string]bool{}
 	for _, entry := range entries {
 		if entry.ItemID != "" {
@@ -121,7 +124,7 @@ func deletes(base []Item, entries []Entry) ([]Write, []string) {
 	}
 	var writes []Write
 	var left []string
-	for _, item := range base {
+	for _, item := range read {
 		if held[item.ID] {
 			left = append(left, item.ID)
 			continue

@@ -19,8 +19,7 @@ type wirePlaylistSummary struct {
 
 type wirePlaylist struct {
 	wirePlaylistSummary
-	Revision int64              `json:"revision"`
-	Items    []wirePlaylistItem `json:"items"`
+	Items []wirePlaylistItem `json:"items"`
 }
 
 type wirePlaylistItem struct {
@@ -84,8 +83,8 @@ func TestAPlaylistShowsItsItemsInOrder(t *testing.T) {
 	rec := f.get("/api/v1/playlists/PLA")
 	got := decode[wirePlaylist](t, rec, http.StatusOK)
 	summary := wirePlaylistSummary{ID: "PLA", Title: "Alpha", Description: "First", Privacy: "private", ItemCount: 3, UnavailableCount: 1, EnrichedCount: 1}
-	if got.wirePlaylistSummary != summary || got.Revision != 1 || rec.Header().Get("ETag") != `"1"` {
-		t.Errorf("summary = %+v at revision %d with ETag %q, want %+v at revision 1 with ETag \"1\"", got.wirePlaylistSummary, got.Revision, rec.Header().Get("ETag"), summary)
+	if got.wirePlaylistSummary != summary {
+		t.Errorf("summary = %+v, want %+v", got.wirePlaylistSummary, summary)
 	}
 	if len(got.Items) != 3 {
 		t.Fatalf("items = %+v, want 3", got.Items)

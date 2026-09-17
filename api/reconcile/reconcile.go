@@ -14,8 +14,22 @@
 //
 // A push write is recorded before it is sent, and settled with YouTube's answer
 // in the transaction that applies the answer to the playlist's base and entries.
-// A write that gets no answer leaves the playlist's base unconfirmed, which the
-// next merge of the playlist accounts for.
+// What a push learns about YouTube is stored apart from what a read showed,
+// beside what retires it:
+//
+//   - a write whose answer was lost is the playlist's unanswered write, until
+//     the next merge reads what YouTube holds
+//   - an item a write inserted or moved is placed in the base, where no read has
+//     shown it, until the next merge's read replaces the base
+//   - a playlist YouTube refused a position in is sorted automatically, until
+//     an edit of its order tries positions again
+//   - a write YouTube refused for any other reason holds the playlist's push for
+//     the Pacific day, until its base or its order changes
+//
+// A push plans from its merge's read, so an edit on YouTube after the read and
+// before a write lands moves where the write lands. The item the write placed
+// is no evidence of a reorder on YouTube, so the next merge keeps the server's
+// order unless YouTube also moved an item it placed itself.
 package reconcile
 
 import (
@@ -46,6 +60,12 @@ var ErrAbsenceNotConfirmed = errors.New("an item missing from the playlist's rea
 // day's quota has no room for another write beside the reads of the day's
 // remaining runs.
 var ErrAllowanceSpent = errors.New("the day's quota has no room for another write beside the reads of the day's remaining runs")
+
+// ErrPushHeld is the failure of a playlist whose push waits, because YouTube
+// refused a write of it this Pacific day for a reason that is not the video or
+// the playlist's sort, and neither the playlist's base nor its order has
+// changed since, so the same write would be refused again.
+var ErrPushHeld = errors.New("the push waits on a write YouTube refused today")
 
 // DailyQuota is the units YouTube allows the Cloud project each Pacific day.
 const DailyQuota = 10_000
@@ -254,14 +274,15 @@ func (run *run) skip(playlist youtube.PlaylistID, err error) {
 }
 
 // merged is a playlist a run merged, as the push starts from it: the revision
-// the merge left, how YouTube orders it, what YouTube holds, and the server's
-// order with every entry's id.
+// the merge left, how YouTube orders it, what YouTube holds, the server's order
+// with every entry's id, and the push write YouTube refused.
 type merged struct {
-	id       string
-	revision int64
-	sort     string
-	base     []merge.Item
-	entries  []merge.Entry
+	id             string
+	revision       int64
+	sort           merge.Sort
+	read           []merge.Item
+	entries        []merge.Entry
+	refusedWriteID sql.NullInt64
 }
 
 // mergePlaylist reads one listed playlist's items and merges them into the
@@ -410,9 +431,8 @@ func (run *run) confirmAbsences(playlist youtube.PlaylistID, base []store.BaseIt
 }
 
 // mergeInto merges read into the playlist id inside tx, against the base whose
-// absences were confirmed, and stores the result: the server's order, a revision
-// counting the change when the order changed, and read as the base, now
-// confirmed.
+// absences were confirmed, and stores the result: the server's order, and read
+// as the base, with no write left unanswered against it.
 func mergeInto(ctx context.Context, tx *store.Tx, id string, confirmedBase []store.BaseItem, read []merge.Item) (merged, merge.Result, error) {
 	state, err := tx.GetPlaylistState(ctx, id)
 	if err != nil {
@@ -429,59 +449,100 @@ func mergeInto(ctx context.Context, tx *store.Tx, id string, confirmedBase []sto
 	if err != nil {
 		return merged{}, merge.Result{}, err
 	}
-	baseState := merge.Confirmed
-	if state.BaseState == store.BaseUnconfirmed {
-		baseState = merge.Unconfirmed
-	}
-	result := merge.Merge(mergeItems(base), read, mergeEntries(entries), baseState)
-	revision := state.Revision
-	if result.Changed {
-		if err := tx.ReplaceEntries(ctx, id, storeEntries(result.Entries)); err != nil {
-			return merged{}, merge.Result{}, err
-		}
-		if err := bumpRevision(ctx, tx, id, revision); err != nil {
-			return merged{}, merge.Result{}, err
-		}
-		revision++
-	}
-	if err := tx.ReplaceBase(ctx, id, storeBase(read)); err != nil {
+	sort, err := mergeSort(state.Sort)
+	if err != nil {
 		return merged{}, merge.Result{}, err
 	}
-	if err := tx.SetBaseState(ctx, generated.SetBaseStateParams{PlaylistID: id, BaseState: store.BaseCurrent}); err != nil {
+	unanswered, err := unansweredWrite(ctx, tx.Queries, state.UnansweredWriteID)
+	if err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	result, err := merge.Merge(merge.Playlist{Base: mergeBase(base), Read: read, Entries: mergeEntries(entries), Unanswered: unanswered, Sort: sort})
+	if err != nil {
+		return merged{}, merge.Result{}, fmt.Errorf("merge playlist %s: %w", id, err)
+	}
+	revision, err := tx.ReplaceOrder(ctx, id, state.Revision, storeEntries(result.Entries))
+	if err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	if err := tx.ReplaceBase(ctx, id, storeBase(unplaced(read))); err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	if err := tx.SetUnansweredWrite(ctx, generated.SetUnansweredWriteParams{PlaylistID: id}); err != nil {
+		return merged{}, merge.Result{}, err
+	}
+	after, err := tx.GetPlaylistState(ctx, id)
+	if err != nil {
 		return merged{}, merge.Result{}, err
 	}
 	withIDs, err := store.Entries(ctx, tx.Queries, id)
 	if err != nil {
 		return merged{}, merge.Result{}, err
 	}
-	return merged{id: id, revision: revision, sort: state.Sort, base: read, entries: mergeEntries(withIDs)}, result, nil
+	return merged{id: id, revision: revision, sort: sort, read: read, entries: mergeEntries(withIDs), refusedWriteID: after.RefusedWriteID}, result, nil
 }
 
-// bumpRevision counts a change to the server's order of the playlist id, which
-// the transaction holding it found at revision.
-func bumpRevision(ctx context.Context, tx *store.Tx, id string, revision int64) error {
-	n, err := tx.BumpRevision(ctx, generated.BumpRevisionParams{PlaylistID: id, Revision: revision})
-	switch {
-	case err != nil:
-		return err
-	case n != 1:
-		return fmt.Errorf("playlist %s is no longer at revision %d", id, revision)
+// mergeSort is the sort a merge reads for a playlist the store holds as sorted
+// stored.
+func mergeSort(stored string) (merge.Sort, error) {
+	switch stored {
+	case store.SortManual:
+		return merge.Manual, nil
+	case store.SortAutomatic:
+		return merge.Automatic, nil
+	default:
+		return "", fmt.Errorf("a playlist is sorted %q, which is not a sort a merge knows", stored)
 	}
-	return nil
 }
 
-func mergeItems(base []store.BaseItem) []merge.Item {
-	items := make([]merge.Item, len(base))
+// unansweredWrite is the push write id names, as a merge reads it, and nil when
+// id is not valid.
+func unansweredWrite(ctx context.Context, q *generated.Queries, id sql.NullInt64) (*merge.Write, error) {
+	if !id.Valid {
+		return nil, nil
+	}
+	row, err := q.GetYouTubeWrite(ctx, id.Int64)
+	if err != nil {
+		return nil, fmt.Errorf("read the unanswered write %d: %w", id.Int64, err)
+	}
+	w := merge.Write{ItemID: row.ItemID.String, EntryID: row.EntryID.Int64, VideoID: row.VideoID.String, Position: row.Position.Int64}
+	switch row.Method {
+	case youtube.MethodPlaylistItemsInsert:
+		w.Kind = merge.Append
+		if row.Position.Valid {
+			w.Kind = merge.Insert
+		}
+	case youtube.MethodPlaylistItemsUpdate:
+		w.Kind = merge.Move
+	case youtube.MethodPlaylistItemsDelete:
+		w.Kind = merge.Delete
+	default:
+		return nil, fmt.Errorf("the unanswered write %d is a %s, which is not a write a push makes", row.WriteID, row.Method)
+	}
+	return &w, nil
+}
+
+func mergeBase(base []store.BaseItem) []merge.BaseItem {
+	items := make([]merge.BaseItem, len(base))
 	for i, item := range base {
-		items[i] = merge.Item{ID: item.ItemID, VideoID: item.VideoID}
+		items[i] = merge.BaseItem{Item: merge.Item{ID: item.ItemID, VideoID: item.VideoID}, Placed: item.Placed}
 	}
 	return items
 }
 
-func storeBase(items []merge.Item) []store.BaseItem {
+func storeBase(items []merge.BaseItem) []store.BaseItem {
 	base := make([]store.BaseItem, len(items))
 	for i, item := range items {
-		base[i] = store.BaseItem{ItemID: item.ID, VideoID: item.VideoID}
+		base[i] = store.BaseItem{ItemID: item.ID, VideoID: item.VideoID, Placed: item.Placed}
+	}
+	return base
+}
+
+// unplaced is read as a base, where a read placed every item.
+func unplaced(read []merge.Item) []merge.BaseItem {
+	base := make([]merge.BaseItem, len(read))
+	for i, item := range read {
+		base[i] = merge.BaseItem{Item: item}
 	}
 	return base
 }

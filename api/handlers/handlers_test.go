@@ -149,7 +149,7 @@ func (f *fixture) withLibrary(t *testing.T) {
 			for _, item := range items[p.PlaylistID] {
 				entries = append(entries, store.Entry{VideoID: item.VideoID, ItemID: item.ItemID})
 			}
-			if err := tx.ReplaceEntries(ctx, p.PlaylistID, entries); err != nil {
+			if _, err := tx.ReplaceOrder(ctx, p.PlaylistID, 1, entries); err != nil {
 				return err
 			}
 		}

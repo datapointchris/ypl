@@ -13,12 +13,7 @@ type BaseItem struct {
 	PlaylistID string
 	Position   int64
 	VideoID    string
-}
-
-type BaseState struct {
-	BaseState   string
-	Label       string
-	Description string
+	IsPlaced   bool
 }
 
 type EnrichFailure struct {
@@ -35,13 +30,14 @@ type Play struct {
 }
 
 type Playlist struct {
-	PlaylistID  string
-	Title       string
-	Description string
-	Privacy     string
-	Revision    int64
-	Sort        string
-	BaseState   string
+	PlaylistID        string
+	Title             string
+	Description       string
+	Privacy           string
+	Revision          int64
+	Sort              string
+	UnansweredWriteID sql.NullInt64
+	RefusedWriteID    sql.NullInt64
 }
 
 type PlaylistEntry struct {
@@ -137,6 +133,7 @@ type YoutubeWrite struct {
 	Error      sql.NullString
 	ItemID     sql.NullString
 	VideoID    sql.NullString
+	EntryID    sql.NullInt64
 	Position   sql.NullInt64
 }
 
