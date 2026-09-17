@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"slices"
 	"time"
-	_ "time/tzdata" // the quota day is Pacific, whatever zone the host is in
 
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
@@ -84,7 +83,7 @@ func (r *Runner) Run(ctx context.Context) (Report, error) {
 		requests0: r.channel.Requests(),
 		units0:    r.channel.Units(),
 	}
-	run.date = quotaDate(run.started)
+	run.date = youtube.QuotaDate(run.started)
 	run.execute()
 	return run.record()
 }
@@ -280,20 +279,4 @@ func (run *run) record() (Report, error) {
 		return *rep, fmt.Errorf("record the sync run: %w", err)
 	}
 	return *rep, nil
-}
-
-// pacific is the zone YouTube's daily quota resets in.
-var pacific = mustLoadLocation("America/Los_Angeles")
-
-func mustLoadLocation(name string) *time.Location {
-	location, err := time.LoadLocation(name)
-	if err != nil {
-		panic(fmt.Sprintf("load %s from the embedded zone database: %v", name, err))
-	}
-	return location
-}
-
-// quotaDate is the Pacific date t's units count against.
-func quotaDate(t time.Time) string {
-	return t.In(pacific).Format(time.DateOnly)
 }
