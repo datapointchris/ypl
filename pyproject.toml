@@ -38,7 +38,7 @@ dev = [
 # ---------- Configurations ---------- #
 
 [tool.codespell]
-skip = '*.css.map,*.ipynb'
+skip = '*.css.map,*.ipynb,api/*/testdata/*'
 ignore-words-list = "astroid,aNULL,ANULL,anull"
 check-filenames = true
 # count = ""

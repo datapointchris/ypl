@@ -56,6 +56,19 @@ each merge and is added to at its end, until an edit of its order tries position
 playlist whose items were written less than a minute before a run read them is left for the next
 run.
 
+Each run then reads a tracklist for each video the playlists hold that no run has read, the newest
+in a playlist first. The Data API reports neither chapters nor comments, so these reads go through
+`yt-dlp`, signed in as nobody, at `YTDLP_PATH` or on `PATH`, and the server refuses to start without
+it. A run reads at most `ENRICH_VIDEOS_PER_RUN` videos, 30 when unset, `ENRICH_PACE` apart, 10
+seconds when unset, or up to half as long again. A video's tracklist is its chapters, or failing
+those the timestamped lines of its description, or failing that the first of its top 20 comments
+holding at least 3 timestamped lines that run forward.
+
+When YouTube refuses a read for its rate limit or its bot check, the run stops reading and records
+it, and no run reads for a day after. A video YouTube will never let a signed-out read return,
+because it is private, removed, members-only or age-restricted, is not read again. A read that
+fails any other way is tried again 6 hours later, then 12, doubling up to a week.
+
 The server answers `/api/v1` only to a request carrying an access token, which `api/auth`
 verifies. The token is an RFC 9068 JWT that the identity provider `OIDC_ISSUER` signed for a client
 whose id starts with `CLI_CLIENT_ID_PREFIX`, which is `ypl-cli-` when unset. The server reads the
