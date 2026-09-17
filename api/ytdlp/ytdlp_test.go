@@ -231,6 +231,39 @@ func TestAFailureOtherThanARefusalIsNeitherKind(t *testing.T) {
 	}
 }
 
+// yt-dlp writes a fault in the arguments it was given without an ERROR: line,
+// and that sentence is the whole diagnosis. An operator whose yt-dlp no longer
+// takes an option a read passes sees it on every read of the run.
+func TestAFailureWithNoErrorLineIsNamedByYtdlpsLastWords(t *testing.T) {
+	r := reader(t, "fail")
+	t.Setenv(fakeError, "Usage: yt-dlp [OPTIONS] URL [URL...]\n\nyt-dlp: error: no such option: --write-comments\n")
+
+	_, err := r.Video(context.Background(), "Ljd32XdWRjY")
+	if err == nil || !strings.Contains(err.Error(), "no such option: --write-comments") {
+		t.Fatalf("Video = %v, want it naming what yt-dlp said last", err)
+	}
+	if errors.Is(err, ErrRateLimited) || errors.Is(err, ErrUnreadable) {
+		t.Fatalf("Video = %v, want a fault in the arguments read as neither refusal", err)
+	}
+}
+
+// A read caps the comments it asks for, so a video with more says so: what the
+// read did not return is the rest of them rather than nothing.
+func TestAReadSaysWhenItCappedTheCommentsItReturned(t *testing.T) {
+	comments := make([]string, MaxComments)
+	for i := range comments {
+		comments[i] = fmt.Sprintf(`{"text": "comment %d"}`, i)
+	}
+	capped, err := decode(fmt.Appendf(nil, `{"id": "Ljd32XdWRjY", "comments": [%s]}`, strings.Join(comments, ",")))
+	if err != nil || !capped.CommentsCapped || len(capped.Comments) != MaxComments {
+		t.Fatalf("a read of %d comments = %+v, %v, want it capped", MaxComments, capped, err)
+	}
+	under, err := decode(fmt.Appendf(nil, `{"id": "Ljd32XdWRjY", "comments": [%s]}`, strings.Join(comments[:MaxComments-1], ",")))
+	if err != nil || under.CommentsCapped {
+		t.Fatalf("a read of %d comments = %+v, %v, want it uncapped", MaxComments-1, under, err)
+	}
+}
+
 func TestAReadRefusesAnIDThatIsNotAVideoAndAnAnswerForAnotherVideo(t *testing.T) {
 	args := filepath.Join(t.TempDir(), "args")
 	r := reader(t, "answer")

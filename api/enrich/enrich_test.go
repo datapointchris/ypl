@@ -467,6 +467,27 @@ func TestARunStopsWhenItsReadsKeepFailing(t *testing.T) {
 	}
 }
 
+// Reads that fail here and there are ordinary, and only reads failing one after
+// another say the reading itself is wrong. So a read that lands clears the
+// count.
+func TestFailedReadsWithReadsBetweenThemDoNotStopARun(t *testing.T) {
+	f := newFixture(t, "vf", "ve", "vd", "vc", "vb", "va")
+	cause := errors.New("read failed: ERROR: Unable to extract initial player response")
+	for _, video := range []string{"va", "vc", "ve"} {
+		f.reader.answers[video] = cause
+	}
+
+	report := f.run(t)
+	if report.Reads != 6 || report.Enriched != 3 || len(report.Failures) != 3 {
+		t.Fatalf("report %+v, want all 6 read with 3 enriched and 3 failures", report)
+	}
+	for _, failure := range report.Failures {
+		if failure.VideoID == "" {
+			t.Fatalf("report %+v carries a failure of the run, want only the three reads'", report)
+		}
+	}
+}
+
 // A read that answers slowly spends more of a run than its pace predicts, so
 // the budget rather than the batch is what bounds the run.
 func TestARunStopsOnceItsReadsHaveSpentItsBudget(t *testing.T) {

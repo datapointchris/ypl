@@ -101,6 +101,7 @@ func (f *fixture) withRuns(t *testing.T) {
 				TracksFound:      int64(10 * i),
 				VideosUnreadable: int64(i % 2),
 				IsRateLimited:    i == len(runs)-1,
+				EnrichmentPaused: i == 2,
 			})
 			if err != nil {
 				return err
@@ -134,6 +135,12 @@ func TestSyncRunsPageNewestFirstWithTheirFailures(t *testing.T) {
 	}
 	if newest.VideoReads != 6 || newest.VideosEnriched != 3 || newest.TracksFound != 30 || newest.VideosUnreadable != 1 || !newest.IsRateLimited || first.Data[1].IsRateLimited {
 		t.Errorf("run 4's enrichment = %+v and run 3 rate limited %v, want 6 reads, 3 videos, 30 tracks, 1 unreadable, rate limited, and run 3 not", newest, first.Data[1].IsRateLimited)
+	}
+	// Run 3 made no read because an earlier refusal still held, and run 4 is the
+	// one whose own read drew a refusal. Neither carries the other's flag, and
+	// run 3's failures are the sync's rather than the pause.
+	if !first.Data[1].EnrichmentPaused || newest.EnrichmentPaused {
+		t.Errorf("run 3 paused = %v and run 4 paused = %v, want the pause on run 3 alone", first.Data[1].EnrichmentPaused, newest.EnrichmentPaused)
 	}
 	partial := first.Data[1].Failures
 	if len(partial) != 4 || partial[0].PlaylistID == nil || *partial[0].PlaylistID != "PLA" || partial[0].VideoID != nil ||
