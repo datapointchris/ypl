@@ -68,6 +68,24 @@ func (c *Client) Get(ctx context.Context, path string, out any) error {
 	return err
 }
 
+// Post sends body to path and reads what the server made into out.
+func (c *Client) Post(ctx context.Context, path string, body, out any) error {
+	_, err := c.send(ctx, http.MethodPost, path, nil, body, out)
+	return err
+}
+
+// Patch sends body to path and reads what the server holds afterwards into out.
+func (c *Client) Patch(ctx context.Context, path string, body, out any) error {
+	_, err := c.send(ctx, http.MethodPatch, path, nil, body, out)
+	return err
+}
+
+// Delete deletes path, which the server answers with no body.
+func (c *Client) Delete(ctx context.Context, path string) error {
+	_, err := c.send(ctx, http.MethodDelete, path, nil, nil, nil)
+	return err
+}
+
 // send makes one request and decodes a 2xx body into out. A nil body sends
 // none, and a nil out reads and discards the answer. header carries the fields
 // a particular request needs beyond the ones every request sends. It returns

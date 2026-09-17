@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -24,13 +25,21 @@ type fixture struct {
 	t *testing.T
 	// asked holds every request the tree made, in order, so a test can assert
 	// what a flag turned into rather than only what came back.
-	asked  []*url.URL
+	asked []*url.URL
+	// sent holds the same requests whole. A write is its method, its headers and
+	// its body as much as it is an address, and none of those is in a URL.
+	sent   []request
 	answer http.HandlerFunc
 	app    *app
 	// store is one keychain for the whole fixture. A fresh one per call would
 	// lose what `auth login` saved before `auth status` looked for it, which is
 	// the opposite of how a keychain behaves.
 	store *goclilogin.TokenStore
+	// stdin is what a verb reading a document reads. It is always set, and
+	// always to something that is not an *os.File, so the tree reads as having
+	// been piped to rather than as holding a terminal — which is what the real
+	// gate asks, and what a suite cannot otherwise answer without a pty.
+	stdin io.Reader
 }
 
 // newFixture is the tree answered by answer. The config the commands resolve is
@@ -38,9 +47,11 @@ type fixture struct {
 // whether someone had logged in.
 func newFixture(t *testing.T, answer http.HandlerFunc) *fixture {
 	t.Helper()
-	f := &fixture{t: t, answer: answer}
+	f := &fixture{t: t, answer: answer, stdin: strings.NewReader("")}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
 		f.asked = append(f.asked, r.URL)
+		f.sent = append(f.sent, request{Method: r.Method, URL: r.URL, Header: r.Header.Clone(), Body: string(body)})
 		f.answer(w, r)
 	}))
 	t.Cleanup(server.Close)
@@ -79,6 +90,7 @@ func (f *fixture) run(args ...string) answered {
 	var out, errOut bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&errOut)
+	root.SetIn(f.stdin)
 	root.SetArgs(args)
 	err := root.Execute()
 	report(&errOut, err)
@@ -145,6 +157,74 @@ func (f *fixture) lastAsked() *url.URL {
 		f.t.Fatal("the tree made no request")
 	}
 	return f.asked[len(f.asked)-1]
+}
+
+// pipe is what the next run reads from stdin.
+func (f *fixture) pipe(text string) { f.stdin = strings.NewReader(text) }
+
+// request is one request the tree made, kept whole.
+type request struct {
+	Method string
+	URL    *url.URL
+	Header http.Header
+	Body   string
+}
+
+// writes is every request that was not a read, which is what a test asserting
+// on a write wants — the reads a verb makes first are not its subject.
+func (f *fixture) writes() []request {
+	f.t.Helper()
+	var found []request
+	for _, one := range f.sent {
+		if one.Method != http.MethodGet {
+			found = append(found, one)
+		}
+	}
+	return found
+}
+
+// onlyWrite is the one write the tree made, and a failure where it made another
+// number of them. A verb that wrote twice and a verb that wrote nothing are both
+// findings, and asserting on the last one hides each.
+func (f *fixture) onlyWrite() request {
+	f.t.Helper()
+	found := f.writes()
+	if len(found) != 1 {
+		f.t.Fatalf("the tree made %d writes, want 1: %+v", len(found), found)
+	}
+	return found[0]
+}
+
+// answer is what the fake server sends for one route.
+type answer struct {
+	status int
+	body   string
+	header map[string]string
+}
+
+// answers routes on the method as well as the path, keyed as the server's own
+// route table is keyed — "PUT /api/v1/playlists/{id}/items" is a different
+// answer from the GET at that address, and a map of paths alone cannot say so.
+func answers(routes map[string]answer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		route, ok := routes[r.Method+" "+r.URL.Path]
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error": "no route answers ` + r.Method + " " + r.URL.Path + `", "code": "route_not_found"}`))
+			return
+		}
+		for name, value := range route.header {
+			w.Header().Set(name, value)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		status := route.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(route.body))
+	}
 }
 
 const onePlaylist = `[{"id": "PLA", "title": "Alpha", "description": "First", "privacy": "private",
