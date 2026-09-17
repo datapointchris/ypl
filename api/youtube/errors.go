@@ -23,4 +23,21 @@ var ErrInconsistentRead = errors.New("a paged read changed while it was read")
 
 // ErrUnexpectedResponse is the refusal for a response that lacks a part the
 // request named, or carries a value this package does not know.
-var ErrUnexpectedResponse = errors.New("YouTube returned a response this reader does not understand")
+var ErrUnexpectedResponse = errors.New("YouTube returned a response this package does not understand")
+
+// ErrPlaylistNotFound is YouTube reporting that no playlist has the id a list,
+// an insert or a delete named. It answers this for a playlist already deleted.
+var ErrPlaylistNotFound = errors.New("YouTube has no playlist with that id")
+
+// ErrItemNotFound is YouTube reporting that no playlist item has the id a delete
+// named. It answers this for an item already deleted, and for an item of a
+// deleted playlist.
+var ErrItemNotFound = errors.New("YouTube has no playlist item with that id")
+
+// ErrVideoNotFound is YouTube refusing to add a video it has no record of. It
+// answers this for a deleted video and for an id no video has.
+var ErrVideoNotFound = errors.New("YouTube has no video with that id")
+
+// ErrVideoRefused is YouTube refusing to add a video it has. It answers this for
+// a private video another channel owns.
+var ErrVideoRefused = errors.New("YouTube refuses to add that video to a playlist")

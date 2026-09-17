@@ -1,0 +1,226 @@
+{
+  "playlistItems.list unknownPart": {
+    "error": {
+      "code": 400,
+      "message": "'bogus'",
+      "errors": [
+        {
+          "message": "'bogus'",
+          "domain": "youtube.part",
+          "reason": "unknownPart",
+          "location": "part",
+          "locationType": "parameter"
+        }
+      ]
+    }
+  },
+  "playlistItems.list missingRequiredParameter": {
+    "error": {
+      "code": 400,
+      "message": "No filter selected. Expected one of: id, playlistId",
+      "errors": [
+        {
+          "message": "No filter selected. Expected one of: id, playlistId",
+          "domain": "youtube.parameter",
+          "reason": "missingRequiredParameter",
+          "location": "parameters.",
+          "locationType": "other"
+        }
+      ]
+    }
+  },
+  "playlists.list missingRequiredParameter": {
+    "error": {
+      "code": 400,
+      "message": "No filter selected. Expected one of: id, channelId, mine",
+      "errors": [
+        {
+          "message": "No filter selected. Expected one of: id, channelId, mine",
+          "domain": "youtube.parameter",
+          "reason": "missingRequiredParameter",
+          "location": "parameters.",
+          "locationType": "other"
+        }
+      ]
+    }
+  },
+  "playlistItems.list invalidPageToken": {
+    "error": {
+      "code": 400,
+      "message": "The request specifies an invalid page token.",
+      "errors": [
+        {
+          "message": "The request specifies an invalid page token.",
+          "domain": "youtube.parameter",
+          "reason": "invalidPageToken",
+          "location": "pageToken",
+          "locationType": "parameter"
+        }
+      ]
+    }
+  },
+  "playlistItems.insert SERVICE_UNAVAILABLE": {
+    "error": {
+      "code": 409,
+      "message": "The operation was aborted.",
+      "errors": [
+        {
+          "domain": "youtube.CoreErrorDomain",
+          "reason": "SERVICE_UNAVAILABLE"
+        }
+      ],
+      "status": "ABORTED"
+    }
+  },
+  "playlistItems.insert badRequest": {
+    "error": {
+      "code": 400,
+      "message": "Request contains an invalid argument.",
+      "errors": [
+        {
+          "message": "Request contains an invalid argument.",
+          "domain": "global",
+          "reason": "badRequest"
+        }
+      ],
+      "status": "INVALID_ARGUMENT"
+    }
+  },
+  "playlistItems.insert videoNotFound": {
+    "error": {
+      "code": 404,
+      "message": "Video not found.",
+      "errors": [
+        {
+          "message": "Video not found.",
+          "domain": "youtube.playlistItem",
+          "reason": "videoNotFound"
+        }
+      ]
+    }
+  },
+  "playlistItems.insert failedPrecondition": {
+    "error": {
+      "code": 400,
+      "message": "Precondition check failed.",
+      "errors": [
+        {
+          "message": "Precondition check failed.",
+          "domain": "global",
+          "reason": "failedPrecondition"
+        }
+      ],
+      "status": "FAILED_PRECONDITION"
+    }
+  },
+  "playlistItems.insert playlistNotFound": {
+    "error": {
+      "code": 404,
+      "message": "Playlist not found.",
+      "errors": [
+        {
+          "message": "Playlist not found.",
+          "domain": "youtube.playlistItem",
+          "reason": "playlistNotFound"
+        }
+      ]
+    }
+  },
+  "playlistItems.update invalidResourceType": {
+    "error": {
+      "code": 400,
+      "message": "Resource type not supported.",
+      "errors": [
+        {
+          "message": "Resource type not supported.",
+          "domain": "youtube.playlistItem",
+          "reason": "invalidResourceType"
+        }
+      ]
+    }
+  },
+  "playlistItems.update invalidPlaylistItemPosition": {
+    "error": {
+      "code": 400,
+      "message": "Invalid playlist item position.",
+      "errors": [
+        {
+          "message": "Invalid playlist item position.",
+          "domain": "youtube.playlistItem",
+          "reason": "invalidPlaylistItemPosition"
+        }
+      ]
+    }
+  },
+  "playlistItems.update invalidSnippet": {
+    "error": {
+      "code": 400,
+      "message": "Invalid specified snippet.",
+      "errors": [
+        {
+          "message": "Invalid specified snippet.",
+          "domain": "youtube.playlistItem",
+          "reason": "invalidSnippet"
+        }
+      ]
+    }
+  },
+  "playlistItems.delete playlistItemNotFound": {
+    "error": {
+      "code": 404,
+      "message": "Playlist item not found.",
+      "errors": [
+        {
+          "message": "Playlist item not found.",
+          "domain": "youtube.playlistItem",
+          "reason": "playlistItemNotFound",
+          "location": "id",
+          "locationType": "parameter"
+        }
+      ]
+    }
+  },
+  "playlists.update playlistTitleRequired": {
+    "error": {
+      "code": 400,
+      "message": "The request must specify a playlist title.",
+      "errors": [
+        {
+          "message": "The request must specify a playlist title.",
+          "domain": "youtube.playlist",
+          "reason": "playlistTitleRequired"
+        }
+      ]
+    }
+  },
+  "playlists.delete playlistNotFound": {
+    "error": {
+      "code": 404,
+      "message": "Playlist not found.",
+      "errors": [
+        {
+          "message": "Playlist not found.",
+          "domain": "youtube.playlist",
+          "reason": "playlistNotFound",
+          "location": "id",
+          "locationType": "parameter"
+        }
+      ]
+    }
+  },
+  "playlistItems.list playlistNotFound": {
+    "error": {
+      "code": 404,
+      "message": "The playlist identified with the request's <code>playlistId</code> parameter cannot be found.",
+      "errors": [
+        {
+          "message": "The playlist identified with the request's <code>playlistId</code> parameter cannot be found.",
+          "domain": "youtube.playlistItem",
+          "reason": "playlistNotFound",
+          "location": "playlistId",
+          "locationType": "parameter"
+        }
+      ]
+    }
+  }
+}

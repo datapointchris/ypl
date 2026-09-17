@@ -86,7 +86,7 @@ func run(ctx context.Context, args []string, stdout, usage io.Writer) error {
 	if err != nil {
 		return err
 	}
-	r, err := youtube.NewReader(ctx, creds)
+	r, err := youtube.NewChannel(ctx, creds)
 	if err != nil {
 		return err
 	}

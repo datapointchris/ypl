@@ -2,15 +2,9 @@ package youtube
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"sort"
-	"sync/atomic"
 
-	"golang.org/x/oauth2"
-	"google.golang.org/api/googleapi"
-	"google.golang.org/api/option"
 	ytapi "google.golang.org/api/youtube/v3"
 )
 
@@ -29,10 +23,11 @@ type Playlist struct {
 // Item is one slot in a playlist.
 type Item struct {
 	// ID is the playlistItem id, which every write to this slot names.
-	ID       string
-	VideoID  string
-	Position int64
-	Title    string
+	ID         string
+	PlaylistID string
+	VideoID    string
+	Position   int64
+	Title      string
 	// ChannelTitle is the video owner's channel, and is empty for an
 	// unavailable video.
 	ChannelTitle string
@@ -40,43 +35,14 @@ type Item struct {
 	Unavailable bool
 }
 
-// Reader lists the playlists a channel owns and the items in each.
-//
-// A read that spans several pages is not a snapshot. The checks that refuse
-// one as ErrInconsistentRead cannot see a delete and an add between the same
-// two page requests, so a playlist or item absent from a read is not known to
-// be gone until a read that names its id says so.
-type Reader struct {
-	service  *ytapi.Service
-	requests atomic.Int64
-}
-
-// NewReader reads as the channel whose owner granted creds. opts apply after the
-// credentials, so option.WithEndpoint and option.WithHTTPClient point it
-// elsewhere.
-func NewReader(ctx context.Context, creds Credentials, opts ...option.ClientOption) (*Reader, error) {
-	source := oauthConfig(creds.Client).TokenSource(ctx, &oauth2.Token{RefreshToken: creds.RefreshToken})
-	service, err := ytapi.NewService(ctx, append([]option.ClientOption{option.WithTokenSource(source)}, opts...)...)
-	if err != nil {
-		return nil, fmt.Errorf("create the YouTube client: %w", err)
-	}
-	return &Reader{service: service}, nil
-}
-
-// Requests is how many requests this reader has made to YouTube. Each costs
-// quota whether or not it succeeds.
-func (r *Reader) Requests() int64 {
-	return r.requests.Load()
-}
-
 // Playlists is every playlist the channel owns, in the order YouTube lists
 // them.
-func (r *Reader) Playlists(ctx context.Context) ([]Playlist, error) {
-	call := r.service.Playlists.List([]string{"snippet", "status"}).Mine(true).MaxResults(pageSize)
+func (c *Channel) Playlists(ctx context.Context) ([]Playlist, error) {
+	call := c.service.Playlists.List([]string{"snippet", "status"}).Mine(true).MaxResults(pageSize)
 	// The total a playlists page reports counts more playlists than the list
 	// returns, so it is compared across pages and never with the length.
 	playlists, _, err := readPages(func(token string) (page[Playlist], error) {
-		response, err := send(r, call.PageToken(token).Context(ctx).Do)
+		response, err := send(ctx, c, playlistsList, call.PageToken(token).Context(ctx).Do)
 		if err != nil {
 			return page[Playlist]{}, err
 		}
@@ -103,10 +69,10 @@ func (r *Reader) Playlists(ctx context.Context) ([]Playlist, error) {
 // the checks every paged read gets, it returns ErrInconsistentRead when the
 // number of items differs from the total the pages report, or the positions are
 // not exactly 0 through n-1.
-func (r *Reader) Items(ctx context.Context, playlistID string) ([]Item, error) {
-	call := r.service.PlaylistItems.List([]string{"snippet", "status"}).PlaylistId(playlistID).MaxResults(pageSize)
+func (c *Channel) Items(ctx context.Context, playlistID string) ([]Item, error) {
+	call := c.service.PlaylistItems.List([]string{"snippet", "status"}).PlaylistId(playlistID).MaxResults(pageSize)
 	items, total, err := readPages(func(token string) (page[Item], error) {
-		response, err := send(r, call.PageToken(token).Context(ctx).Do)
+		response, err := send(ctx, c, playlistItemsList, call.PageToken(token).Context(ctx).Do)
 		if err != nil {
 			return page[Item]{}, err
 		}
@@ -157,6 +123,7 @@ func itemFrom(resource *ytapi.PlaylistItem) (Item, error) {
 	}
 	it := Item{
 		ID:           resource.Id,
+		PlaylistID:   resource.Snippet.PlaylistId,
 		VideoID:      resource.Snippet.ResourceId.VideoId,
 		Position:     resource.Snippet.Position,
 		Title:        resource.Snippet.Title,
@@ -212,28 +179,4 @@ func readPages[T any](list func(token string) (page[T], error), id func(T) strin
 		}
 		token = p.next
 	}
-}
-
-// send is the one place this package makes a request to YouTube. It counts the
-// request, and names YouTube's quota refusal ErrQuotaSpent.
-func send[T any](r *Reader, do func(...googleapi.CallOption) (T, error)) (T, error) {
-	r.requests.Add(1)
-	response, err := do()
-	if err != nil {
-		var none T
-		return none, apiError(err)
-	}
-	return response, nil
-}
-
-func apiError(err error) error {
-	var google *googleapi.Error
-	if errors.As(err, &google) && google.Code == http.StatusForbidden {
-		for _, reason := range google.Errors {
-			if reason.Reason == "quotaExceeded" {
-				return fmt.Errorf("%w: %w", ErrQuotaSpent, err)
-			}
-		}
-	}
-	return err
 }
