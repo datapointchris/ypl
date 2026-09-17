@@ -32,10 +32,11 @@ The server edits playlists through the Data API as well. Creating, renaming or d
 and inserting, moving or deleting an item, costs 50 units a request. A rename reads the playlist
 first, for 1 unit more.
 
-The server syncs every `SYNC_INTERVAL`, an hour when unset. Each run reads every playlist at a unit
-a page and merges YouTube's order of it into the server's, then pushes the server's order back to
-YouTube, one write at a time. A run whose interval would read more in a day than the quota allows
-is recorded as partly synced.
+The server waits `SYNC_INTERVAL`, an hour when unset, between one run ending and the next
+beginning, so a run's own length is added to that. Each run reads every playlist at a unit a page
+and merges YouTube's order of it into the server's, then pushes the server's order back to YouTube,
+one write at a time, and ends by reading tracklists. A run whose interval would read more in a day
+than the quota allows is recorded as partly synced.
 
 A merge compares each side with the base, what YouTube held after the server last read the
 playlist with the server's writes since, item by item. An item YouTube removed, or one the server
@@ -56,18 +57,28 @@ each merge and is added to at its end, until an edit of its order tries position
 playlist whose items were written less than a minute before a run read them is left for the next
 run.
 
-Each run then reads a tracklist for each video the playlists hold that no run has read, the newest
-in a playlist first. The Data API reports neither chapters nor comments, so these reads go through
-`yt-dlp`, signed in as nobody, at `YTDLP_PATH` or on `PATH`, and the server refuses to start without
-it. A run reads at most `ENRICH_VIDEOS_PER_RUN` videos, 30 when unset, `ENRICH_PACE` apart, 10
-seconds when unset, or up to half as long again. A video's tracklist is its chapters, or failing
+Each run then reads a tracklist for each video the playlists hold that has none, the newest in a
+playlist first, which `api/enrich` queues and paces. The Data API reports neither chapters nor
+comments, so these reads go through `yt-dlp`, signed in as nobody, at `YTDLP_PATH` or on `PATH`;
+`api/ytdlp` runs it, one process a read. A run reads at most `ENRICH_VIDEOS_PER_RUN` videos, 30
+when unset, `ENRICH_PACE` apart, 10 seconds when unset, or up to half as long again. Those reads
+happen inside the run, so they are also half the wait between two syncs: a pace and a count whose
+reads cannot finish in half of `SYNC_INTERVAL` are refused at startup, and a run whose reads reach
+that budget stops. A server configured to read no video needs no `yt-dlp` and starts without one.
+
+`api/tracklist` is what reads a tracklist out of a video. It is the video's chapters, or failing
 those the timestamped lines of its description, or failing that the first of its top 20 comments
-holding at least 3 timestamped lines that run forward.
+holding at least 3 timestamped lines that run forward and reach at least half way through the
+video. Fewer than 3 chapters are read as no chapters, since `yt-dlp` reports chapters it derived
+from the description the same way it reports chapters YouTube marked.
 
 When YouTube refuses a read for its rate limit or its bot check, the run stops reading and records
-it, and no run reads for a day after. A video YouTube will never let a signed-out read return,
-because it is private, removed, members-only or age-restricted, is not read again. A read that
-fails any other way is tried again 6 hours later, then 12, doubling up to a week.
+it, and no run reads for a day after. A run also stops once 3 reads in a row fail, whatever they
+failed with, since only a refusal worded the way `api/ytdlp` spells it is recognized as one. A read
+that stores no tracklist, and a read that fails, are both tried again 6 hours later, then 12,
+doubling up to a week, for up to 6 attempts. A video YouTube will never let a signed-out read
+return, because it is private, removed, members-only or age-restricted, is not read again at all.
+`api/cmd/reset-enrichment` shows every video enrichment has stopped reading and puts them back.
 
 The server answers `/api/v1` only to a request carrying an access token, which `api/auth`
 verifies. The token is an RFC 9068 JWT that the identity provider `OIDC_ISSUER` signed for a client

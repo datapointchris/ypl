@@ -38,6 +38,9 @@ dev = [
 # ---------- Configurations ---------- #
 
 [tool.codespell]
+# api/*/testdata holds verbatim recordings of YouTube's answers. Their spelling
+# belongs to YouTube and to the people who wrote the descriptions and comments
+# in them, so it is theirs to be wrong, and these files are skipped.
 skip = '*.css.map,*.ipynb,api/*/testdata/*'
 ignore-words-list = "astroid,aNULL,ANULL,anull"
 check-filenames = true
