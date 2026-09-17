@@ -9,6 +9,7 @@ import (
 
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 type wireSyncRun struct {
@@ -47,8 +48,10 @@ type wireLibrary struct {
 	Plays             int64 `json:"plays"`
 }
 
-// withRuns stores three runs: the first ended ok, the second partial with a
-// failure of PLA and one of the run as a whole, and the third failed.
+// withRuns stores four runs: the first failed, the second ended ok, the third
+// partial with a failure of PLA and one of the run as a whole, and the fourth
+// failed. Every run but the ok one carries a failure, so a page that read
+// another run's failures would hold one.
 func (f *fixture) withRuns(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -56,6 +59,9 @@ func (f *fixture) withRuns(t *testing.T) {
 		outcome  string
 		failures []generated.InsertSyncFailureParams
 	}{
+		{store.OutcomeFailed, []generated.InsertSyncFailureParams{
+			{PlaylistID: sql.NullString{}, Error: "list playlists: token refused"},
+		}},
 		{store.OutcomeOK, nil},
 		{store.OutcomePartial, []generated.InsertSyncFailureParams{
 			{PlaylistID: text("PLA"), Error: "read PLA: backend error"},
@@ -99,29 +105,47 @@ func TestSyncRunsPageNewestFirstWithTheirFailures(t *testing.T) {
 	f.withRuns(t)
 
 	first := decode[wirePage[wireSyncRun]](t, f.get("/api/v1/sync/runs?limit=2"), http.StatusOK)
-	if len(first.Data) != 2 || !first.HasMore || first.Data[0].ID != 3 || first.Data[1].ID != 2 {
-		t.Fatalf("first page = %+v, want runs 3 and 2 with more", first)
+	if len(first.Data) != 2 || !first.HasMore || first.Data[0].ID != 4 || first.Data[1].ID != 3 {
+		t.Fatalf("first page = %+v, want runs 4 and 3 with more", first)
 	}
 	newest := first.Data[0]
-	if newest.Outcome != store.OutcomeFailed || newest.Playlists != 38 || newest.ItemsAdded != 2 || newest.Requests != 68 ||
+	if newest.Outcome != store.OutcomeFailed || newest.Playlists != 39 || newest.ItemsAdded != 3 || newest.Requests != 68 ||
 		newest.Units != 68 || newest.QuotaDate != "2026-09-17" || newest.StartedTs != "2026-09-17T10:00:00Z" || newest.FinishedTs != "2026-09-17T10:00:05Z" {
-		t.Errorf("run 3 = %+v", newest)
+		t.Errorf("run 4 = %+v", newest)
 	}
 	partial := first.Data[1].Failures
 	if len(partial) != 2 || partial[0].PlaylistID == nil || *partial[0].PlaylistID != "PLA" || partial[1].PlaylistID != nil ||
 		!strings.Contains(partial[1].Error, "quota") {
-		t.Errorf("run 2's failures = %+v, want PLA's then the run's", partial)
+		t.Errorf("run 3's failures = %+v, want PLA's then the run's", partial)
 	}
 	if len(newest.Failures) != 1 {
-		t.Errorf("run 3's failures = %+v, want its one", newest.Failures)
+		t.Errorf("run 4's failures = %+v, want its one", newest.Failures)
 	}
 
-	second := decode[wirePage[wireSyncRun]](t, f.get("/api/v1/sync/runs?limit=2&starting_after=2"), http.StatusOK)
-	if len(second.Data) != 1 || second.HasMore || second.Data[0].ID != 1 {
-		t.Fatalf("second page = %+v, want run 1 and no more", second)
+	second := decode[wirePage[wireSyncRun]](t, f.get("/api/v1/sync/runs?limit=2&starting_after=3"), http.StatusOK)
+	if len(second.Data) != 2 || second.HasMore || second.Data[0].ID != 2 || second.Data[1].ID != 1 {
+		t.Fatalf("second page = %+v, want runs 2 and 1 and no more", second)
 	}
 	if second.Data[0].Failures == nil || len(second.Data[0].Failures) != 0 {
-		t.Errorf("run 1's failures = %#v, want []", second.Data[0].Failures)
+		t.Errorf("run 2's failures = %#v, want []", second.Data[0].Failures)
+	}
+	if len(second.Data[1].Failures) != 1 {
+		t.Errorf("run 1's failures = %+v, want its one", second.Data[1].Failures)
+	}
+}
+
+func TestSyncRunsDefaultToAPageOfTwenty(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	for range 21 {
+		run := generated.InsertSyncRunParams{StartedTs: "2026-09-17T10:00:00Z", FinishedTs: "2026-09-17T10:00:05Z", QuotaDate: "2026-09-17", Outcome: store.OutcomeOK}
+		if _, err := f.st.Queries.InsertSyncRun(ctx, run); err != nil {
+			t.Fatalf("insert run: %v", err)
+		}
+	}
+	got := decode[wirePage[wireSyncRun]](t, f.get("/api/v1/sync/runs"), http.StatusOK)
+	if len(got.Data) != 20 || !got.HasMore {
+		t.Errorf("runs = %d with has_more %v, want 20 of the 21 and more", len(got.Data), got.HasMore)
 	}
 }
 
@@ -136,9 +160,8 @@ func TestNoSyncRunsPageAsAnEmptyList(t *testing.T) {
 func TestASyncRunsPageStartingAfterNoStoredRunIsRefused(t *testing.T) {
 	f := newFixture(t)
 	f.withRuns(t)
-	for _, after := range []string{"99", "latest"} {
-		refused(t, f.get("/api/v1/sync/runs?starting_after="+after), http.StatusBadRequest)
-	}
+	refused(t, f.get("/api/v1/sync/runs?starting_after=99"), http.StatusBadRequest, wire.CodeUnknownReference)
+	refused(t, f.get("/api/v1/sync/runs?starting_after=latest"), http.StatusBadRequest, wire.CodeInvalidParameter)
 }
 
 func TestAFailureOfARunNotReadIsRefused(t *testing.T) {
@@ -168,10 +191,10 @@ func TestStatusCountsTheLibraryAndNamesTheLatestRunAndLatestOKRun(t *testing.T) 
 	if got.Library != want {
 		t.Errorf("library = %+v, want %+v", got.Library, want)
 	}
-	if got.LastRun == nil || got.LastRun.ID != 3 || len(got.LastRun.Failures) != 1 {
-		t.Errorf("last run = %+v, want run 3 with its failure", got.LastRun)
+	if got.LastRun == nil || got.LastRun.ID != 4 || len(got.LastRun.Failures) != 1 {
+		t.Errorf("last run = %+v, want run 4 with its failure", got.LastRun)
 	}
-	if got.LastOKRun == nil || got.LastOKRun.ID != 1 || got.LastOKRun.Failures == nil {
-		t.Errorf("last ok run = %+v, want run 1 with []", got.LastOKRun)
+	if got.LastOKRun == nil || got.LastOKRun.ID != 2 || got.LastOKRun.Failures == nil {
+		t.Errorf("last ok run = %+v, want run 2 with []", got.LastOKRun)
 	}
 }

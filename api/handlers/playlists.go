@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/datapointchris/ypl/api/store/generated"
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 // playlistSummary is one playlist as GET /api/v1/playlists lists it, by title.
@@ -67,7 +68,7 @@ func (h *Handlers) listPlaylists(w http.ResponseWriter, r *http.Request) {
 	slices.SortFunc(playlists, func(a, b playlistSummary) int {
 		return cmp.Or(c.CompareString(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
 	})
-	writeJSON(w, http.StatusOK, playlists)
+	wire.JSON(w, http.StatusOK, playlists)
 }
 
 func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
@@ -119,5 +120,5 @@ func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 	}
-	writeJSON(w, http.StatusOK, shown)
+	wire.JSON(w, http.StatusOK, shown)
 }

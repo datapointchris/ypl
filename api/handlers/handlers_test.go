@@ -9,13 +9,17 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 // arrival is the time every request in these tests arrives: not UTC and not on
@@ -78,18 +82,19 @@ func decode[T any](t *testing.T, rec *httptest.ResponseRecorder, status int) T {
 	return v
 }
 
-// refused fails the test unless rec answered status with an error body.
-func refused(t *testing.T, rec *httptest.ResponseRecorder, status int) string {
+// refused fails the test unless rec answered status with a refusal carrying
+// code and a sentence.
+func refused(t *testing.T, rec *httptest.ResponseRecorder, status int, code wire.Code) {
 	t.Helper()
-	body := decode[wireError](t, rec, status)
-	if body.Error == "" {
-		t.Fatalf("a %d with no error message", status)
+	body := decode[wireRefusal](t, rec, status)
+	if body.Code != string(code) || body.Error == "" {
+		t.Fatalf("refusal %+v, want code %s with a sentence", body, code)
 	}
-	return body.Error
 }
 
-type wireError struct {
+type wireRefusal struct {
 	Error string `json:"error"`
+	Code  string `json:"code"`
 }
 
 // withLibrary stores three playlists and six videos. Alpha (PLA) holds a, b and
@@ -170,9 +175,10 @@ func TestAFailedStoreReadIsA500ThatLogsItsCause(t *testing.T) {
 	f := newFixture(t)
 	_ = f.st.Close()
 
-	message := refused(t, f.get("/api/v1/playlists"), http.StatusInternalServerError)
-	if message != "internal error" {
-		t.Errorf("the 500 said %q, want only \"internal error\"", message)
+	rec := f.get("/api/v1/playlists")
+	refused(t, rec, http.StatusInternalServerError, wire.CodeInternal)
+	if strings.Contains(rec.Body.String(), "closed") {
+		t.Errorf("the 500 carries its cause: %s", rec.Body)
 	}
 	if !strings.Contains(f.logs.String(), "database is closed") {
 		t.Errorf("the log does not carry the cause: %s", f.logs)
@@ -186,8 +192,62 @@ func TestALimitOutsideItsRangeIsRefused(t *testing.T) {
 		"/api/v1/plays?limit=101",
 		"/api/v1/plays?limit=ten",
 		"/api/v1/sync/runs?limit=0",
+		"/api/v1/sync/runs?limit=101",
+		"/api/v1/suggestions?limit=0",
 		"/api/v1/suggestions?limit=101",
 	} {
-		refused(t, f.get(target), http.StatusBadRequest)
+		refused(t, f.get(target), http.StatusBadRequest, wire.CodeInvalidLimit)
+	}
+	for _, target := range []string{"/api/v1/plays?limit=100", "/api/v1/sync/runs?limit=100", "/api/v1/suggestions?limit=100"} {
+		if rec := f.get(target); rec.Code != http.StatusOK {
+			t.Errorf("%s answered %d, want 200 at the most a limit takes", target, rec.Code)
+		}
+	}
+}
+
+func TestARequestNoRouteAnswersIsRefusedInTheEnvelope(t *testing.T) {
+	f := newFixture(t)
+
+	refused(t, f.get("/api/v1/playlist"), http.StatusNotFound, wire.CodeRouteNotFound)
+	refused(t, f.get("/api/v1/plays/a/b"), http.StatusNotFound, wire.CodeRouteNotFound)
+	for target, allow := range map[string]string{
+		"/api/v1/plays":       "GET, HEAD, POST",
+		"/api/v1/videos/a":    "GET, HEAD",
+		"/api/v1/sync/runs":   "GET, HEAD",
+		"/api/v1/playlists/x": "GET, HEAD",
+	} {
+		rec := f.do(http.MethodDelete, target, "")
+		refused(t, rec, http.StatusMethodNotAllowed, wire.CodeMethodNotAllowed)
+		if got := rec.Header().Get("Allow"); got != allow {
+			t.Errorf("DELETE %s Allow = %q, want %q", target, got, allow)
+		}
+	}
+}
+
+// readme is the repository's README.
+func readme(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatalf("read the README: %v", err)
+	}
+	return string(data)
+}
+
+// The README's endpoint table has a row for every route and no other.
+func TestTheREADMEListsEveryRoute(t *testing.T) {
+	var want []string
+	for _, rt := range New(nil, nil).routes() {
+		want = append(want, rt.method+" "+rt.path)
+	}
+	row := regexp.MustCompile("(?m)^\\| `([A-Z]+ /api/v1/[^`]*)` \\|")
+	var got []string
+	for _, match := range row.FindAllStringSubmatch(readme(t), -1) {
+		got = append(got, match[1])
+	}
+	slices.Sort(want)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("README endpoint rows = %v, want one per route: %v", got, want)
 	}
 }

@@ -19,6 +19,8 @@ chapters at all, since the Data API does not expose them under any part or field
 The consequence shapes the whole tool: organizing happens locally and instantly, and pushing
 anything back to YouTube is a separate, deliberate, queued act.
 
+## The server
+
 The server in `api/` reads playlists through the Data API instead. It has no browser to read
 cookies from, and a private playlist read through `yt-dlp` needs a signed-in session. The Data API
 signs in with an OAuth refresh token, and `api/youtube`'s package documentation says how to get
@@ -33,9 +35,11 @@ The server syncs every `SYNC_INTERVAL`, an hour when unset. Each run reads every
 stores it as YouTube holds it, at a unit a page. A run whose interval would read more in a day than
 the quota allows is recorded as partly synced.
 
-The server answers `/api/v1` only to a request carrying an access token. The token is an RFC 9068
-JWT that the identity provider `OIDC_ISSUER` signed for a client whose id starts with
-`CLI_CLIENT_ID_PREFIX`, which is `ypl-cli-` when unset. `/health` and `/ready` answer without one.
+The server answers `/api/v1` only to a request carrying an access token, which `api/auth`
+verifies. The token is an RFC 9068 JWT that the identity provider `OIDC_ISSUER` signed for a client
+whose id starts with `CLI_CLIENT_ID_PREFIX`, which is `ypl-cli-` when unset. The server reads the
+provider beside the sync, retrying while it is down, and `/ready` answers 200 once it has.
+`/health` and `/ready` answer without a token.
 
 | Request | Answers with |
 | --- | --- |
@@ -51,17 +55,23 @@ JWT that the identity provider `OIDC_ISSUER` signed for a client whose id starts
 | `GET /api/v1/status` | What the store holds, the latest run, and the latest run that ended ok |
 
 `GET /api/v1/videos` narrows by `playlist`, `min_seconds`, `max_seconds` and `artist`, which
-matches part of an artist's name ignoring case and accents. `sort` is `longest` when absent, or
-`shortest`, `newest`, `oldest`, `title` or `random`. `GET /api/v1/suggestions` takes `playlist` and a `limit`
-of up to 100, one when absent.
+matches part of an artist's name ignoring case and accents. `sort` is one of `longest`, `shortest`,
+`newest`, `oldest`, `title` or `random`. The first is the order when `sort` is absent.
+`GET /api/v1/suggestions` takes `playlist`, and a `limit` of up to 100 that is one when absent.
 
-A play's `id` is a UUIDv7 the client generates, so sending the same play again records it once.
-`played_ts` is an RFC 3339 timestamp, stored in UTC to the second, and the time the request arrives
-when it is absent.
+A play's `id` is a UUIDv7 the client generates, written lowercase with hyphens, so sending the
+same play again records it once. The server gives each play a `handle`, a short number.
+`GET /api/v1/plays/{id}` and `starting_after` take the id, the handle, or the id's last eight
+characters. `played_ts` is an RFC 3339 timestamp, stored in UTC to the second, and the time the
+request arrives when it is absent. A time more than five minutes after the request arrives is
+refused.
 
 A paged list answers `{"data": [...], "has_more": true}`. The next page is the same request with
 `starting_after` set to the last id on this one. `limit` sets the page size, 20 when absent and at
 most 100.
+
+A refused request answers `{"error": "<sentence>", "code": "<code>"}`. The sentence is for a person
+and can change. The code is for a client to branch on, and `api/wire` lists every one.
 
 ## Install
 

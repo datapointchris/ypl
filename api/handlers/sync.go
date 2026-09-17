@@ -10,6 +10,7 @@ import (
 
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 // syncRun is one run of the sync: when it ran, the Pacific date whose quota it
@@ -58,28 +59,32 @@ type library struct {
 // listSyncRuns answers a page of runs, newest first.
 func (h *Handlers) listSyncRuns(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	limit, ok := limitParam(w, r, 20, 100)
+	limit, ok := limitParam(w, r, runsPage)
 	if !ok {
 		return
 	}
-	params := generated.ListSyncRunsParams{MaxRows: limit + 1}
 	after := r.URL.Query().Get("starting_after")
+	var before int64
 	if after != "" {
 		id, err := strconv.ParseInt(after, 10, 64)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "starting_after %q is not a run id", after)
+			wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "starting_after %q is not a run id", after)
 			return
 		}
-		params.BeforeRunID = sql.NullInt64{Int64: id, Valid: true}
+		before = id
 	}
 	var shown page[syncRun]
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
-		if params.BeforeRunID.Valid {
-			if _, err := q.GetSyncRun(ctx, params.BeforeRunID.Int64); err != nil {
-				return paramRow(err, "starting_after", after)
+		var rows []generated.SyncRun
+		var err error
+		if after == "" {
+			rows, err = q.ListNewestSyncRuns(ctx, limit+1)
+		} else {
+			if _, err := q.GetSyncRun(ctx, before); err != nil {
+				return paramRow(err, referenceError{name: "starting_after", value: after})
 			}
+			rows, err = q.ListSyncRunsBefore(ctx, generated.ListSyncRunsBeforeParams{RunID: before, MaxRows: limit + 1})
 		}
-		rows, err := q.ListSyncRuns(ctx, params)
 		if err != nil {
 			return err
 		}
@@ -106,7 +111,7 @@ func (h *Handlers) listSyncRuns(w http.ResponseWriter, r *http.Request) {
 		h.writeListError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, shown)
+	wire.JSON(w, http.StatusOK, shown)
 }
 
 func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +130,7 @@ func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
 			Tracks:            counts.Tracks,
 			Plays:             counts.Plays,
 		}
-		latest, err := q.ListSyncRuns(ctx, generated.ListSyncRunsParams{MaxRows: 1})
+		latest, err := q.ListNewestSyncRuns(ctx, 1)
 		if err != nil {
 			return err
 		}
@@ -148,7 +153,7 @@ func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, shown)
+	wire.JSON(w, http.StatusOK, shown)
 }
 
 // syncRunFrom is row with no failures attached.

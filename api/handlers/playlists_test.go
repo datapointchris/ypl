@@ -3,6 +3,8 @@ package handlers
 import (
 	"net/http"
 	"testing"
+
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 type wirePlaylistSummary struct {
@@ -104,5 +106,5 @@ func TestAPlaylistWithNoItemsShowsAnEmptyList(t *testing.T) {
 
 func TestAPlaylistTheStoreDoesNotHoldIsNotFound(t *testing.T) {
 	f := newFixture(t)
-	refused(t, f.get("/api/v1/playlists/PLZ"), http.StatusNotFound)
+	refused(t, f.get("/api/v1/playlists/PLZ"), http.StatusNotFound, wire.CodeNotFound)
 }

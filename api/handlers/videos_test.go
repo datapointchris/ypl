@@ -3,8 +3,12 @@ package handlers
 import (
 	"maps"
 	"net/http"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 type wireLibraryVideo struct {
@@ -127,14 +131,29 @@ func TestALibraryRequestNamingNothingItCanAnswerIsRefused(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
 
-	for _, query := range []string{
-		"sort=loudest",
-		"min_seconds=-1",
-		"max_seconds=an+hour",
-		"min_seconds=1801&max_seconds=1800",
-		"playlist=PLZ",
+	for query, code := range map[string]wire.Code{
+		"sort=loudest":                      wire.CodeInvalidParameter,
+		"min_seconds=-1":                    wire.CodeInvalidParameter,
+		"max_seconds=an+hour":               wire.CodeInvalidParameter,
+		"min_seconds=1801&max_seconds=1800": wire.CodeInvalidParameter,
+		"playlist=PLZ":                      wire.CodeUnknownReference,
 	} {
-		refused(t, f.get("/api/v1/videos?"+query), http.StatusBadRequest)
+		refused(t, f.get("/api/v1/videos?"+query), http.StatusBadRequest, code)
+	}
+}
+
+// The README names every order sort takes, and the one used when it is absent.
+func TestTheREADMENamesEveryVideoOrder(t *testing.T) {
+	line := regexp.MustCompile("`sort` is one of ([^.]*)\\.").FindStringSubmatch(readme(t))
+	if line == nil {
+		t.Fatal("the README has no sentence naming the orders sort takes")
+	}
+	var got []string
+	for _, name := range regexp.MustCompile("`([a-z]+)`").FindAllStringSubmatch(line[1], -1) {
+		got = append(got, name[1])
+	}
+	if !slices.Equal(got, strings.Split(orderNames(), ", ")) {
+		t.Fatalf("README orders = %v, want %s in that order, the first being the default", got, orderNames())
 	}
 }
 
@@ -171,5 +190,5 @@ func TestAnUnavailableVideoShowsWithNoTracks(t *testing.T) {
 
 func TestAVideoTheStoreDoesNotHoldIsNotFound(t *testing.T) {
 	f := newFixture(t)
-	refused(t, f.get("/api/v1/videos/zzz"), http.StatusNotFound)
+	refused(t, f.get("/api/v1/videos/zzz"), http.StatusNotFound, wire.CodeNotFound)
 }

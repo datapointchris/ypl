@@ -283,16 +283,22 @@ INNER JOIN playlists AS p ON pi.playlist_id = p.playlist_id
 WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR pi.video_id = sqlc.narg(video_id);
 
 -- name: InsertPlay :execrows
--- Records a play, and records nothing when a play with that id is already
--- stored.
-INSERT INTO plays (play_id, video_id, played_ts)
-VALUES (?, ?, ?)
+-- Records a play under the next handle, and records nothing when a play with
+-- that id is already stored.
+INSERT INTO plays (play_id, handle, video_id, played_ts)
+VALUES (
+    sqlc.arg(play_id),
+    (SELECT coalesce(max(p.handle), 0) + 1 FROM plays AS p),
+    sqlc.arg(video_id),
+    sqlc.arg(played_ts)
+)
 ON CONFLICT (play_id) DO NOTHING;
 
 -- name: GetPlay :one
 -- A play with its video.
 SELECT
     pl.play_id,
+    pl.handle,
     pl.played_ts,
     v.video_id,
     v.title,
@@ -301,22 +307,61 @@ FROM plays AS pl
 INNER JOIN videos AS v ON pl.video_id = v.video_id
 WHERE pl.play_id = ?;
 
--- name: ListPlays :many
--- Plays newest first, each with its video. When after_ts is not NULL, only the
--- plays that come after the play at after_ts with the id after_id in that
--- order.
+-- name: GetPlayByHandle :one
+-- The play with the handle, with its video.
 SELECT
     pl.play_id,
+    pl.handle,
     pl.played_ts,
     v.video_id,
     v.title,
     v.channel_title
 FROM plays AS pl
 INNER JOIN videos AS v ON pl.video_id = v.video_id
-WHERE
-    CAST(sqlc.narg(after_ts) AS TEXT) IS NULL
-    OR pl.played_ts < sqlc.narg(after_ts)
-    OR (pl.played_ts = sqlc.narg(after_ts) AND pl.play_id < sqlc.narg(after_id))
+WHERE pl.handle = ?;
+
+-- name: ListPlaysByTail :many
+-- Every play whose id ends with the eight characters tail, with its video.
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE substr(pl.play_id, -8) = sqlc.arg(tail)
+ORDER BY pl.handle;
+
+-- name: ListNewestPlays :many
+-- The newest plays, each with its video.
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+ORDER BY pl.played_ts DESC, pl.play_id DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListPlaysBefore :many
+-- The plays that follow the play at played_ts with the id play_id in the order
+-- newest first, each with its video. The row-value comparison is what lets
+-- SQLite seek plays_by_time to the cursor rather than scan to it.
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE (pl.played_ts, pl.play_id) < (sqlc.arg(played_ts), sqlc.arg(play_id))
 ORDER BY pl.played_ts DESC, pl.play_id DESC
 LIMIT sqlc.arg(max_rows);
 
@@ -329,8 +374,8 @@ SELECT
     v.title,
     v.channel_title,
     v.duration_seconds,
-    max(pl.played_ts) AS last_played_ts,
-    CAST(count(pl.play_id) AS INTEGER) AS play_count
+    CAST(count(pl.play_id) AS INTEGER) AS play_count,
+    max(pl.played_ts) AS last_played_ts
 FROM videos AS v
 LEFT JOIN plays AS pl ON v.video_id = pl.video_id
 WHERE
@@ -345,9 +390,8 @@ GROUP BY v.video_id
 ORDER BY max(pl.played_ts) IS NOT NULL, max(pl.played_ts), random()
 LIMIT sqlc.arg(max_rows);
 
--- name: ListSyncRuns :many
--- Runs newest first, only those before the run before_run_id when it is not
--- NULL.
+-- name: ListNewestSyncRuns :many
+-- The newest runs.
 SELECT
     run_id,
     started_ts,
@@ -362,7 +406,26 @@ SELECT
     requests,
     units
 FROM sync_runs
-WHERE CAST(sqlc.narg(before_run_id) AS INTEGER) IS NULL OR run_id < sqlc.narg(before_run_id)
+ORDER BY run_id DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListSyncRunsBefore :many
+-- The runs before the run run_id, newest first.
+SELECT
+    run_id,
+    started_ts,
+    finished_ts,
+    quota_date,
+    outcome,
+    playlists,
+    playlists_deleted,
+    playlists_skipped,
+    items_added,
+    items_removed,
+    requests,
+    units
+FROM sync_runs
+WHERE run_id < sqlc.arg(run_id)
 ORDER BY run_id DESC
 LIMIT sqlc.arg(max_rows);
 

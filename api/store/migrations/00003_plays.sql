@@ -2,11 +2,15 @@
 
 -- One row per listen. A play is a user's log entry, keyed by a UUIDv7 the
 -- client generates, so a client that sends the same play twice records it once.
+-- handle is the short number the server assigns, for a person to type where the
+-- UUID would otherwise be the only way to name the play.
+--
 -- played_ts is an RFC 3339 timestamp in UTC to the second, the one form whose
 -- text sorts in time order. The CHECK holds that shape; it does not check the
 -- calendar.
 CREATE TABLE plays (
     play_id TEXT PRIMARY KEY,
+    handle INTEGER NOT NULL UNIQUE CHECK (handle > 0),
     video_id TEXT NOT NULL REFERENCES videos (video_id),
     played_ts TEXT NOT NULL
     CHECK (played_ts GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z')

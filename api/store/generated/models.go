@@ -16,6 +16,7 @@ type EnrichFailure struct {
 
 type Play struct {
 	PlayID   string
+	Handle   int64
 	VideoID  string
 	PlayedTs string
 }

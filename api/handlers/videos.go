@@ -13,6 +13,7 @@ import (
 	"golang.org/x/text/search"
 
 	"github.com/datapointchris/ypl/api/store/generated"
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 // libraryVideo is a video as GET /api/v1/videos lists it: what decides whether
@@ -120,12 +121,12 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if filter.MinSeconds.Valid && filter.MaxSeconds.Valid && filter.MinSeconds.Int64 > filter.MaxSeconds.Int64 {
-		writeError(w, http.StatusBadRequest, "min_seconds %d is more than max_seconds %d", filter.MinSeconds.Int64, filter.MaxSeconds.Int64)
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "min_seconds %d is more than max_seconds %d", filter.MinSeconds.Int64, filter.MaxSeconds.Int64)
 		return
 	}
 	order, ok := orderNamed(r.URL.Query().Get("sort"))
 	if !ok {
-		writeError(w, http.StatusBadRequest, "sort %q is not one of %s", r.URL.Query().Get("sort"), orderNames())
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "sort %q is not one of %s", r.URL.Query().Get("sort"), orderNames())
 		return
 	}
 	artist := r.URL.Query().Get("artist")
@@ -136,7 +137,7 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		if filter.PlaylistID.Valid {
 			if _, err := q.GetPlaylist(ctx, filter.PlaylistID.String); err != nil {
-				return paramRow(err, "playlist", filter.PlaylistID.String)
+				return paramRow(err, referenceError{name: "playlist", value: filter.PlaylistID.String})
 			}
 		}
 		var err error
@@ -186,7 +187,7 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 			return cmp.Or(order.compare(&a, &b), c.CompareString(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
 		})
 	}
-	writeJSON(w, http.StatusOK, videos)
+	wire.JSON(w, http.StatusOK, videos)
 }
 
 func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
@@ -245,7 +246,7 @@ func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 			Source:       t.Source,
 		}
 	}
-	writeJSON(w, http.StatusOK, shown)
+	wire.JSON(w, http.StatusOK, shown)
 }
 
 // contains reports whether pattern occurs in s as matcher compares them.

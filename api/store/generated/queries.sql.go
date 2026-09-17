@@ -194,6 +194,7 @@ func (q *Queries) GetLatestSyncRunWithOutcome(ctx context.Context, outcome strin
 const getPlay = `-- name: GetPlay :one
 SELECT
     pl.play_id,
+    pl.handle,
     pl.played_ts,
     v.video_id,
     v.title,
@@ -205,6 +206,7 @@ WHERE pl.play_id = ?
 
 type GetPlayRow struct {
 	PlayID       string
+	Handle       int64
 	PlayedTs     string
 	VideoID      string
 	Title        string
@@ -217,6 +219,44 @@ func (q *Queries) GetPlay(ctx context.Context, playID string) (GetPlayRow, error
 	var i GetPlayRow
 	err := row.Scan(
 		&i.PlayID,
+		&i.Handle,
+		&i.PlayedTs,
+		&i.VideoID,
+		&i.Title,
+		&i.ChannelTitle,
+	)
+	return i, err
+}
+
+const getPlayByHandle = `-- name: GetPlayByHandle :one
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE pl.handle = ?
+`
+
+type GetPlayByHandleRow struct {
+	PlayID       string
+	Handle       int64
+	PlayedTs     string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// The play with the handle, with its video.
+func (q *Queries) GetPlayByHandle(ctx context.Context, handle int64) (GetPlayByHandleRow, error) {
+	row := q.db.QueryRowContext(ctx, getPlayByHandle, handle)
+	var i GetPlayByHandleRow
+	err := row.Scan(
+		&i.PlayID,
+		&i.Handle,
 		&i.PlayedTs,
 		&i.VideoID,
 		&i.Title,
@@ -358,8 +398,13 @@ func (q *Queries) ImportVideo(ctx context.Context, arg ImportVideoParams) error 
 }
 
 const insertPlay = `-- name: InsertPlay :execrows
-INSERT INTO plays (play_id, video_id, played_ts)
-VALUES (?, ?, ?)
+INSERT INTO plays (play_id, handle, video_id, played_ts)
+VALUES (
+    ?1,
+    (SELECT coalesce(max(p.handle), 0) + 1 FROM plays AS p),
+    ?2,
+    ?3
+)
 ON CONFLICT (play_id) DO NOTHING
 `
 
@@ -369,8 +414,8 @@ type InsertPlayParams struct {
 	PlayedTs string
 }
 
-// Records a play, and records nothing when a play with that id is already
-// stored.
+// Records a play under the next handle, and records nothing when a play with
+// that id is already stored.
 func (q *Queries) InsertPlay(ctx context.Context, arg InsertPlayParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, insertPlay, arg.PlayID, arg.VideoID, arg.PlayedTs)
 	if err != nil {
@@ -548,6 +593,116 @@ func (q *Queries) ListLibraryVideos(ctx context.Context, arg ListLibraryVideosPa
 			&i.UploadDate,
 			&i.EnrichedTs,
 			&i.TrackCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNewestPlays = `-- name: ListNewestPlays :many
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+ORDER BY pl.played_ts DESC, pl.play_id DESC
+LIMIT ?1
+`
+
+type ListNewestPlaysRow struct {
+	PlayID       string
+	Handle       int64
+	PlayedTs     string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// The newest plays, each with its video.
+func (q *Queries) ListNewestPlays(ctx context.Context, maxRows int64) ([]ListNewestPlaysRow, error) {
+	rows, err := q.db.QueryContext(ctx, listNewestPlays, maxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListNewestPlaysRow
+	for rows.Next() {
+		var i ListNewestPlaysRow
+		if err := rows.Scan(
+			&i.PlayID,
+			&i.Handle,
+			&i.PlayedTs,
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNewestSyncRuns = `-- name: ListNewestSyncRuns :many
+SELECT
+    run_id,
+    started_ts,
+    finished_ts,
+    quota_date,
+    outcome,
+    playlists,
+    playlists_deleted,
+    playlists_skipped,
+    items_added,
+    items_removed,
+    requests,
+    units
+FROM sync_runs
+ORDER BY run_id DESC
+LIMIT ?1
+`
+
+// The newest runs.
+func (q *Queries) ListNewestSyncRuns(ctx context.Context, maxRows int64) ([]SyncRun, error) {
+	rows, err := q.db.QueryContext(ctx, listNewestSyncRuns, maxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SyncRun
+	for rows.Next() {
+		var i SyncRun
+		if err := rows.Scan(
+			&i.RunID,
+			&i.StartedTs,
+			&i.FinishedTs,
+			&i.QuotaDate,
+			&i.Outcome,
+			&i.Playlists,
+			&i.PlaylistsDeleted,
+			&i.PlaylistsSkipped,
+			&i.ItemsAdded,
+			&i.ItemsRemoved,
+			&i.Requests,
+			&i.Units,
 		); err != nil {
 			return nil, err
 		}
@@ -752,51 +907,105 @@ func (q *Queries) ListPlaylistSummaries(ctx context.Context) ([]ListPlaylistSumm
 	return items, nil
 }
 
-const listPlays = `-- name: ListPlays :many
+const listPlaysBefore = `-- name: ListPlaysBefore :many
 SELECT
     pl.play_id,
+    pl.handle,
     pl.played_ts,
     v.video_id,
     v.title,
     v.channel_title
 FROM plays AS pl
 INNER JOIN videos AS v ON pl.video_id = v.video_id
-WHERE
-    CAST(?1 AS TEXT) IS NULL
-    OR pl.played_ts < ?1
-    OR (pl.played_ts = ?1 AND pl.play_id < ?2)
+WHERE (pl.played_ts, pl.play_id) < (?1, ?2)
 ORDER BY pl.played_ts DESC, pl.play_id DESC
 LIMIT ?3
 `
 
-type ListPlaysParams struct {
-	AfterTs sql.NullString
-	AfterID sql.NullString
-	MaxRows int64
+type ListPlaysBeforeParams struct {
+	PlayedTs string
+	PlayID   string
+	MaxRows  int64
 }
 
-type ListPlaysRow struct {
+type ListPlaysBeforeRow struct {
 	PlayID       string
+	Handle       int64
 	PlayedTs     string
 	VideoID      string
 	Title        string
 	ChannelTitle string
 }
 
-// Plays newest first, each with its video. When after_ts is not NULL, only the
-// plays that come after the play at after_ts with the id after_id in that
-// order.
-func (q *Queries) ListPlays(ctx context.Context, arg ListPlaysParams) ([]ListPlaysRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPlays, arg.AfterTs, arg.AfterID, arg.MaxRows)
+// The plays that follow the play at played_ts with the id play_id in the order
+// newest first, each with its video. The row-value comparison is what lets
+// SQLite seek plays_by_time to the cursor rather than scan to it.
+func (q *Queries) ListPlaysBefore(ctx context.Context, arg ListPlaysBeforeParams) ([]ListPlaysBeforeRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaysBefore, arg.PlayedTs, arg.PlayID, arg.MaxRows)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListPlaysRow
+	var items []ListPlaysBeforeRow
 	for rows.Next() {
-		var i ListPlaysRow
+		var i ListPlaysBeforeRow
 		if err := rows.Scan(
 			&i.PlayID,
+			&i.Handle,
+			&i.PlayedTs,
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlaysByTail = `-- name: ListPlaysByTail :many
+SELECT
+    pl.play_id,
+    pl.handle,
+    pl.played_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM plays AS pl
+INNER JOIN videos AS v ON pl.video_id = v.video_id
+WHERE substr(pl.play_id, -8) = ?1
+ORDER BY pl.handle
+`
+
+type ListPlaysByTailRow struct {
+	PlayID       string
+	Handle       int64
+	PlayedTs     string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// Every play whose id ends with the eight characters tail, with its video.
+func (q *Queries) ListPlaysByTail(ctx context.Context, tail string) ([]ListPlaysByTailRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaysByTail, tail)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlaysByTailRow
+	for rows.Next() {
+		var i ListPlaysByTailRow
+		if err := rows.Scan(
+			&i.PlayID,
+			&i.Handle,
 			&i.PlayedTs,
 			&i.VideoID,
 			&i.Title,
@@ -821,8 +1030,8 @@ SELECT
     v.title,
     v.channel_title,
     v.duration_seconds,
-    max(pl.played_ts) AS last_played_ts,
-    CAST(count(pl.play_id) AS INTEGER) AS play_count
+    CAST(count(pl.play_id) AS INTEGER) AS play_count,
+    max(pl.played_ts) AS last_played_ts
 FROM videos AS v
 LEFT JOIN plays AS pl ON v.video_id = pl.video_id
 WHERE
@@ -848,8 +1057,8 @@ type ListSuggestionsRow struct {
 	Title           string
 	ChannelTitle    string
 	DurationSeconds sql.NullInt64
-	LastPlayedTs    interface{}
 	PlayCount       int64
+	LastPlayedTs    interface{}
 }
 
 // Available videos some playlist holds, or the named playlist when it is not
@@ -869,8 +1078,8 @@ func (q *Queries) ListSuggestions(ctx context.Context, arg ListSuggestionsParams
 			&i.Title,
 			&i.ChannelTitle,
 			&i.DurationSeconds,
-			&i.LastPlayedTs,
 			&i.PlayCount,
+			&i.LastPlayedTs,
 		); err != nil {
 			return nil, err
 		}
@@ -969,7 +1178,7 @@ func (q *Queries) ListSyncFailuresBetween(ctx context.Context, arg ListSyncFailu
 	return items, nil
 }
 
-const listSyncRuns = `-- name: ListSyncRuns :many
+const listSyncRunsBefore = `-- name: ListSyncRunsBefore :many
 SELECT
     run_id,
     started_ts,
@@ -984,20 +1193,19 @@ SELECT
     requests,
     units
 FROM sync_runs
-WHERE CAST(?1 AS INTEGER) IS NULL OR run_id < ?1
+WHERE run_id < ?1
 ORDER BY run_id DESC
 LIMIT ?2
 `
 
-type ListSyncRunsParams struct {
-	BeforeRunID sql.NullInt64
-	MaxRows     int64
+type ListSyncRunsBeforeParams struct {
+	RunID   int64
+	MaxRows int64
 }
 
-// Runs newest first, only those before the run before_run_id when it is not
-// NULL.
-func (q *Queries) ListSyncRuns(ctx context.Context, arg ListSyncRunsParams) ([]SyncRun, error) {
-	rows, err := q.db.QueryContext(ctx, listSyncRuns, arg.BeforeRunID, arg.MaxRows)
+// The runs before the run run_id, newest first.
+func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBeforeParams) ([]SyncRun, error) {
+	rows, err := q.db.QueryContext(ctx, listSyncRunsBefore, arg.RunID, arg.MaxRows)
 	if err != nil {
 		return nil, err
 	}

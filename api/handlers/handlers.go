@@ -5,24 +5,26 @@
 // A value the store does not hold is null, and a collection with no members is
 // []. A collection that grows without bound is paged: its body is {"data": [...],
 // "has_more": ...}, and the next page is the same request with starting_after
-// set to the last id on this one. An error answers with {"error": "..."} and the
-// status that names it.
+// set to the last id on this one. Every refusal, a request no route answers
+// included, is the envelope package wire writes.
 package handlers
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
 
 	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 // Handlers answers the API's requests from one store.
@@ -38,22 +40,55 @@ func New(st *store.Store, log *slog.Logger) *Handlers {
 	return &Handlers{store: st, log: log, now: time.Now}
 }
 
-// Register adds every resource's routes to mux.
-func (h *Handlers) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/playlists", h.listPlaylists)
-	mux.HandleFunc("GET /api/v1/playlists/{id}", h.showPlaylist)
-	mux.HandleFunc("GET /api/v1/videos", h.listVideos)
-	mux.HandleFunc("GET /api/v1/videos/{id}", h.showVideo)
-	mux.HandleFunc("POST /api/v1/plays", h.createPlay)
-	mux.HandleFunc("GET /api/v1/plays", h.listPlays)
-	mux.HandleFunc("GET /api/v1/plays/{id}", h.showPlay)
-	mux.HandleFunc("GET /api/v1/suggestions", h.listSuggestions)
-	mux.HandleFunc("GET /api/v1/sync/runs", h.listSyncRuns)
-	mux.HandleFunc("GET /api/v1/status", h.showStatus)
+// route is one method on one path and the handler answering it.
+type route struct {
+	method, path string
+	handle       http.HandlerFunc
 }
 
-type errorBody struct {
-	Error string `json:"error"`
+// routes is every request the API answers.
+func (h *Handlers) routes() []route {
+	return []route{
+		{http.MethodGet, "/api/v1/playlists", h.listPlaylists},
+		{http.MethodGet, "/api/v1/playlists/{id}", h.showPlaylist},
+		{http.MethodGet, "/api/v1/videos", h.listVideos},
+		{http.MethodGet, "/api/v1/videos/{id}", h.showVideo},
+		{http.MethodPost, "/api/v1/plays", h.createPlay},
+		{http.MethodGet, "/api/v1/plays", h.listPlays},
+		{http.MethodGet, "/api/v1/plays/{id}", h.showPlay},
+		{http.MethodGet, "/api/v1/suggestions", h.listSuggestions},
+		{http.MethodGet, "/api/v1/sync/runs", h.listSyncRuns},
+		{http.MethodGet, "/api/v1/status", h.showStatus},
+	}
+}
+
+// Register adds every route to mux. A path under /api/v1/ that no route
+// matches is a 404, and a method no route on its path takes is a 405 naming
+// the methods it does take.
+func (h *Handlers) Register(mux *http.ServeMux) {
+	allowed := make(map[string][]string)
+	for _, rt := range h.routes() {
+		mux.HandleFunc(rt.method+" "+rt.path, rt.handle)
+		allowed[rt.path] = append(allowed[rt.path], rt.method)
+	}
+	for path, methods := range allowed {
+		mux.HandleFunc(path, methodNotAllowed(methods))
+	}
+	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
+		wire.Refuse(w, http.StatusNotFound, wire.CodeRouteNotFound, "no route answers %s", r.URL.Path)
+	})
+}
+
+func methodNotAllowed(methods []string) http.HandlerFunc {
+	allow := slices.Clone(methods)
+	if slices.Contains(allow, http.MethodGet) {
+		allow = append(allow, http.MethodHead)
+	}
+	slices.Sort(allow)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", strings.Join(allow, ", "))
+		wire.Refuse(w, http.StatusMethodNotAllowed, wire.CodeMethodNotAllowed, "%s takes %s, not %s", r.URL.Path, strings.Join(allow, ", "), r.Method)
+	}
 }
 
 // page is one page of a paged collection. HasMore is true when rows follow the
@@ -80,71 +115,87 @@ func newCollator() *collate.Collator {
 	return collate.New(language.Und)
 }
 
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
-}
-
-func writeError(w http.ResponseWriter, status int, format string, args ...any) {
-	writeJSON(w, status, errorBody{Error: fmt.Sprintf(format, args...)})
-}
-
-// unknownParamError is a query parameter naming a row the store does not hold.
-type unknownParamError struct {
+// referenceError is a query parameter or path segment naming no row the store
+// holds, or naming more than one.
+type referenceError struct {
 	name, value string
+	candidates  []int64
 }
 
-func (e unknownParamError) Error() string {
+func (e referenceError) Error() string {
+	if len(e.candidates) > 0 {
+		return fmt.Sprintf("%s %q names more than one: %v", e.name, e.value, e.candidates)
+	}
 	return fmt.Sprintf("%s %q names nothing the store holds", e.name, e.value)
 }
 
-// paramRow is err from reading the row the query parameter name names, with a
-// row that is not there as an unknownParamError.
-func paramRow(err error, name, value string) error {
+// paramRow is err from reading the row a query parameter names, with a row
+// that is not there as a referenceError naming the parameter.
+func paramRow(err error, param referenceError) error {
 	if errors.Is(err, sql.ErrNoRows) {
-		return unknownParamError{name: name, value: value}
+		return param
 	}
 	return err
 }
 
 // writeItemError answers a failed read of the resource the path names: its row
-// not being there is a 404 naming what, and anything else a 500.
+// not being there is a 404 naming what, a reference naming more than one row a
+// 400, and anything else a 500.
 func (h *Handlers) writeItemError(w http.ResponseWriter, r *http.Request, err error, what string) {
-	if errors.Is(err, sql.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "%s not found", what)
-		return
+	var ref referenceError
+	switch {
+	case errors.As(err, &ref) && len(ref.candidates) > 0:
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeAmbiguousReference, "%s", ref.Error())
+	case errors.Is(err, sql.ErrNoRows), errors.As(err, &ref):
+		wire.Refuse(w, http.StatusNotFound, wire.CodeNotFound, "%s not found", what)
+	default:
+		h.writeInternalError(w, r, err)
 	}
-	h.writeInternalError(w, r, err)
 }
 
 // writeListError answers a failed read of a collection: a query parameter
-// naming nothing is a 400, and anything else a 500.
+// naming nothing is a 400, as is one naming more than one row, and anything
+// else a 500.
 func (h *Handlers) writeListError(w http.ResponseWriter, r *http.Request, err error) {
-	var unknown unknownParamError
-	if errors.As(err, &unknown) {
-		writeError(w, http.StatusBadRequest, "%s", unknown.Error())
-		return
+	var ref referenceError
+	switch {
+	case errors.As(err, &ref) && len(ref.candidates) > 0:
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeAmbiguousReference, "%s", ref.Error())
+	case errors.As(err, &ref):
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeUnknownReference, "%s", ref.Error())
+	default:
+		h.writeInternalError(w, r, err)
 	}
-	h.writeInternalError(w, r, err)
 }
 
 // writeInternalError answers a 500, logging err rather than sending it.
 func (h *Handlers) writeInternalError(w http.ResponseWriter, r *http.Request, err error) {
 	h.log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "err", err)
-	writeError(w, http.StatusInternalServerError, "internal error")
+	wire.Refuse(w, http.StatusInternalServerError, wire.CodeInternal, "internal error")
 }
 
-// limitParam is the query parameter limit as a count from 1 to most, or
-// fallback when it is absent. ok is false once it has answered a 400.
-func limitParam(w http.ResponseWriter, r *http.Request, fallback, most int64) (int64, bool) {
+// pageSize is how many rows a list answers: fallback when limit is absent, and
+// at most most.
+type pageSize struct {
+	fallback, most int64
+}
+
+var (
+	playsPage       = pageSize{fallback: 20, most: 100}
+	runsPage        = pageSize{fallback: 20, most: 100}
+	suggestionsDraw = pageSize{fallback: 1, most: 100}
+)
+
+// limitParam is the query parameter limit as a count within size. ok is false
+// once it has answered a 400.
+func limitParam(w http.ResponseWriter, r *http.Request, size pageSize) (int64, bool) {
 	raw := r.URL.Query().Get("limit")
 	if raw == "" {
-		return fallback, true
+		return size.fallback, true
 	}
 	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || n < 1 || n > most {
-		writeError(w, http.StatusBadRequest, "limit %q is not a whole number from 1 to %d", raw, most)
+	if err != nil || n < 1 || n > size.most {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidLimit, "limit %q is not a whole number from 1 to %d", raw, size.most)
 		return 0, false
 	}
 	return n, true
@@ -160,7 +211,7 @@ func optionalCount(w http.ResponseWriter, r *http.Request, name string) (sql.Nul
 	}
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || n < 0 {
-		writeError(w, http.StatusBadRequest, "%s %q is not a whole number of at least 0", name, raw)
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "%s %q is not a whole number of at least 0", name, raw)
 		return sql.NullInt64{}, false
 	}
 	return sql.NullInt64{Int64: n, Valid: true}, true

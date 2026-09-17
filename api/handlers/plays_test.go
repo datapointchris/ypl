@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -9,10 +10,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/datapointchris/ypl/api/wire"
 )
 
 type wirePlay struct {
 	ID       string          `json:"id"`
+	Handle   int64           `json:"handle"`
 	PlayedTs string          `json:"played_ts"`
 	Video    wirePlayedVideo `json:"video"`
 }
@@ -78,7 +82,7 @@ func TestAPlayIsRecordedOnceHoweverManyTimesItIsSent(t *testing.T) {
 
 	rec := f.do(http.MethodPost, "/api/v1/plays", body)
 	created := decode[wirePlay](t, rec, http.StatusCreated)
-	want := wirePlay{ID: play1, PlayedTs: "2026-09-01T10:00:00Z", Video: wirePlayedVideo{ID: "a", Title: "Zebra", ChannelTitle: "One"}}
+	want := wirePlay{ID: play1, Handle: 1, PlayedTs: "2026-09-01T10:00:00Z", Video: wirePlayedVideo{ID: "a", Title: "Zebra", ChannelTitle: "One"}}
 	if created != want {
 		t.Errorf("created %+v, want %+v", created, want)
 	}
@@ -127,13 +131,11 @@ func TestAPlayIDStoredForAnotherPlayConflicts(t *testing.T) {
 	f.withLibrary(t)
 	decode[wirePlay](t, f.do(http.MethodPost, "/api/v1/plays", fmt.Sprintf(`{"id": %q, "video_id": "a", "played_ts": "2026-09-01T10:00:00Z"}`, play1)), http.StatusCreated)
 
-	for name, body := range map[string]string{
-		"another video": fmt.Sprintf(`{"id": %q, "video_id": "b", "played_ts": "2026-09-01T10:00:00Z"}`, play1),
-		"another time":  fmt.Sprintf(`{"id": %q, "video_id": "a", "played_ts": "2026-09-01T11:00:00Z"}`, play1),
+	for _, body := range []string{
+		fmt.Sprintf(`{"id": %q, "video_id": "b", "played_ts": "2026-09-01T10:00:00Z"}`, play1),
+		fmt.Sprintf(`{"id": %q, "video_id": "a", "played_ts": "2026-09-01T11:00:00Z"}`, play1),
 	} {
-		if rec := f.do(http.MethodPost, "/api/v1/plays", body); rec.Code != http.StatusConflict {
-			t.Errorf("%s: answered %d, want 409: %s", name, rec.Code, rec.Body)
-		}
+		refused(t, f.do(http.MethodPost, "/api/v1/plays", body), http.StatusConflict, wire.CodePlayConflict)
 	}
 	shown := decode[wirePlay](t, f.get("/api/v1/plays/"+play1), http.StatusOK)
 	if shown.Video.ID != "a" || shown.PlayedTs != "2026-09-01T10:00:00Z" {
@@ -145,33 +147,89 @@ func TestAPlayTheServerCannotRecordIsRefused(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
 
+	withTime := func(ts string) string {
+		return fmt.Sprintf(`{"id": %q, "video_id": "a", "played_ts": %q}`, play1, ts)
+	}
 	cases := map[string]struct {
 		body   string
 		status int
+		code   wire.Code
 	}{
-		"not JSON":                          {`{"id":`, http.StatusBadRequest},
-		"an unknown field":                  {fmt.Sprintf(`{"id": %q, "video_id": "a", "rating": 5}`, play1), http.StatusBadRequest},
-		"two values":                        {fmt.Sprintf(`{"id": %q, "video_id": "a"} {}`, play1), http.StatusBadRequest},
-		"no id":                             {`{"video_id": "a"}`, http.StatusUnprocessableEntity},
-		"an id that is no UUID":             {`{"id": "play-1", "video_id": "a"}`, http.StatusUnprocessableEntity},
-		"a version 4 UUID":                  {`{"id": "4f7c2b1e-9d3a-4c8e-b5f6-0a1b2c3d4e5f", "video_id": "a"}`, http.StatusUnprocessableEntity},
-		"a version 7 id of another variant": {`{"id": "01890000-0000-7000-0000-000000000001", "video_id": "a"}`, http.StatusUnprocessableEntity},
-		"no video":                          {fmt.Sprintf(`{"id": %q}`, play1), http.StatusUnprocessableEntity},
-		"a video not stored":                {fmt.Sprintf(`{"id": %q, "video_id": "zzz"}`, play1), http.StatusUnprocessableEntity},
-		"a time without a zone":             {fmt.Sprintf(`{"id": %q, "video_id": "a", "played_ts": "2026-09-01 10:00:00"}`, play1), http.StatusUnprocessableEntity},
+		"not JSON":                           {`{"id":`, http.StatusBadRequest, wire.CodeInvalidBody},
+		"an unknown field":                   {fmt.Sprintf(`{"id": %q, "video_id": "a", "rating": 5}`, play1), http.StatusBadRequest, wire.CodeInvalidBody},
+		"two values":                         {fmt.Sprintf(`{"id": %q, "video_id": "a"} {}`, play1), http.StatusBadRequest, wire.CodeInvalidBody},
+		"no id":                              {`{"video_id": "a"}`, http.StatusUnprocessableEntity, wire.CodeInvalidPlayID},
+		"an id that is no UUID":              {`{"id": "play-1", "video_id": "a"}`, http.StatusUnprocessableEntity, wire.CodeInvalidPlayID},
+		"a version 4 UUID":                   {`{"id": "4f7c2b1e-9d3a-4c8e-b5f6-0a1b2c3d4e5f", "video_id": "a"}`, http.StatusUnprocessableEntity, wire.CodeInvalidPlayID},
+		"a version 7 id of another variant":  {`{"id": "01890000-0000-7000-0000-000000000001", "video_id": "a"}`, http.StatusUnprocessableEntity, wire.CodeInvalidPlayID},
+		"an id in uppercase":                 {`{"id": "01890000-0000-7000-8000-00000000000A", "video_id": "a"}`, http.StatusUnprocessableEntity, wire.CodeInvalidPlayID},
+		"an id in braces":                    {fmt.Sprintf(`{"id": "{%s}", "video_id": "a"}`, play1), http.StatusUnprocessableEntity, wire.CodeInvalidPlayID},
+		"no video":                           {fmt.Sprintf(`{"id": %q}`, play1), http.StatusUnprocessableEntity, wire.CodeVideoIDRequired},
+		"a video not stored":                 {fmt.Sprintf(`{"id": %q, "video_id": "zzz"}`, play1), http.StatusUnprocessableEntity, wire.CodeVideoNotStored},
+		"a time without a zone":              {withTime("2026-09-01 10:00:00"), http.StatusUnprocessableEntity, wire.CodeInvalidPlayedTs},
+		"a time past the year 9999 in UTC":   {withTime("9999-12-31T23:30:00-01:00"), http.StatusUnprocessableEntity, wire.CodePlayedTsOutOfRange},
+		"a time before the year 0000 in UTC": {withTime("0000-01-01T00:30:00+01:00"), http.StatusUnprocessableEntity, wire.CodePlayedTsOutOfRange},
+		"a time past the clock skew":         {withTime("2026-09-17T12:05:01Z"), http.StatusUnprocessableEntity, wire.CodePlayedTsInTheFuture},
 	}
 	for name, c := range cases {
-		if rec := f.do(http.MethodPost, "/api/v1/plays", c.body); rec.Code != c.status {
-			t.Errorf("%s: answered %d, want %d: %s", name, rec.Code, c.status, rec.Body)
+		rec := f.do(http.MethodPost, "/api/v1/plays", c.body)
+		var body wireRefusal
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != c.status || body.Code != string(c.code) {
+			t.Errorf("%s: answered %d %s, want %d %s", name, rec.Code, rec.Body, c.status, c.code)
 		}
 	}
 	if n := f.countPlays(t); n != 0 {
 		t.Fatalf("plays stored = %d, want 0", n)
 	}
-	missing := refused(t, f.do(http.MethodPost, "/api/v1/plays", fmt.Sprintf(`{"id": %q}`, play1)), http.StatusUnprocessableEntity)
-	if !strings.Contains(missing, "video_id is required") {
-		t.Errorf("a play with no video was refused with %q, want it to name video_id as required", missing)
+}
+
+// The request arrives at 2026-09-17T12:00:00Z.
+func TestAPlayWithinTheClockSkewIsRecorded(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	body := fmt.Sprintf(`{"id": %q, "video_id": "a", "played_ts": "2026-09-17T12:05:00Z"}`, play1)
+
+	if got := decode[wirePlay](t, f.do(http.MethodPost, "/api/v1/plays", body), http.StatusCreated); got.PlayedTs != "2026-09-17T12:05:00Z" {
+		t.Errorf("played_ts = %q, want the time sent", got.PlayedTs)
 	}
+}
+
+func TestAPlayIsNamedByItsIDItsHandleOrItsTail(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	f.withPlays(t)
+
+	for ref, want := range map[string]string{
+		play4:      play4,
+		"4":        play4,
+		"00000004": play4,
+		"5":        play5,
+	} {
+		if got := decode[wirePlay](t, f.get("/api/v1/plays/"+ref), http.StatusOK); got.ID != want {
+			t.Errorf("play %s = %s, want %s", ref, got.ID, want)
+		}
+	}
+	lettered := "01890000-0000-7000-8000-00000000abcd"
+	decode[wirePlay](t, f.do(http.MethodPost, "/api/v1/plays", fmt.Sprintf(`{"id": %q, "video_id": "a"}`, lettered)), http.StatusCreated)
+	for _, ref := range []string{"7", "0", "04", "00000009", strings.ToUpper(lettered)} {
+		refused(t, f.get("/api/v1/plays/"+ref), http.StatusNotFound, wire.CodeNotFound)
+	}
+
+	page := decode[wirePage[wirePlay]](t, f.get("/api/v1/plays?limit=2&starting_after=4"), http.StatusOK)
+	if len(page.Data) != 2 || page.Data[0].ID != play3 || page.Data[1].ID != play2 {
+		t.Errorf("the page after handle 4 = %+v, want plays 3 and 2", page.Data)
+	}
+}
+
+func TestATailTwoPlaysShareNamesNeither(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+	for _, id := range []string{"01890000-0000-7000-8000-0000aaaaaaaa", "01890000-0000-7000-8001-0000aaaaaaaa"} {
+		decode[wirePlay](t, f.do(http.MethodPost, "/api/v1/plays", fmt.Sprintf(`{"id": %q, "video_id": "a"}`, id)), http.StatusCreated)
+	}
+
+	refused(t, f.get("/api/v1/plays/aaaaaaaa"), http.StatusBadRequest, wire.CodeAmbiguousReference)
+	refused(t, f.get("/api/v1/plays?starting_after=aaaaaaaa"), http.StatusBadRequest, wire.CodeAmbiguousReference)
 }
 
 func TestPlaysPageNewestFirst(t *testing.T) {
@@ -205,10 +263,14 @@ func TestPlaysDefaultToAPageOfTwenty(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
 	f.withPlays(t)
+	for i := range 16 {
+		body := fmt.Sprintf(`{"id": "01890000-0000-7000-8000-0001%08x", "video_id": "e", "played_ts": "2026-08-%02dT10:00:00Z"}`, i, i+1)
+		decode[wirePlay](t, f.do(http.MethodPost, "/api/v1/plays", body), http.StatusCreated)
+	}
 
 	got := decode[wirePage[wirePlay]](t, f.get("/api/v1/plays"), http.StatusOK)
-	if len(got.Data) != 5 || got.HasMore {
-		t.Errorf("plays = %d with has_more %v, want all 5 and no more", len(got.Data), got.HasMore)
+	if len(got.Data) != 20 || !got.HasMore {
+		t.Errorf("plays = %d with has_more %v, want 20 of the 21 and more", len(got.Data), got.HasMore)
 	}
 	if first := got.Data[0]; first.Video != (wirePlayedVideo{ID: "b", Title: "apple", ChannelTitle: "Two"}) {
 		t.Errorf("newest play's video = %+v", first.Video)
@@ -225,12 +287,12 @@ func TestNoPlaysPageAsAnEmptyList(t *testing.T) {
 
 func TestAPlaysPageStartingAfterAPlayTheStoreDoesNotHoldIsRefused(t *testing.T) {
 	f := newFixture(t)
-	refused(t, f.get("/api/v1/plays?starting_after="+play1), http.StatusBadRequest)
+	refused(t, f.get("/api/v1/plays?starting_after="+play1), http.StatusBadRequest, wire.CodeUnknownReference)
 }
 
 func TestAPlayTheStoreDoesNotHoldIsNotFound(t *testing.T) {
 	f := newFixture(t)
-	refused(t, f.get("/api/v1/plays/"+play1), http.StatusNotFound)
+	refused(t, f.get("/api/v1/plays/"+play1), http.StatusNotFound, wire.CodeNotFound)
 }
 
 // With the plays withPlays records, e has never been played, a and c were last
@@ -288,7 +350,7 @@ func TestSuggestionsFromAPlaylistComeOnlyFromItsAvailableVideos(t *testing.T) {
 
 func TestSuggestionsFromAPlaylistTheStoreDoesNotHoldAreRefused(t *testing.T) {
 	f := newFixture(t)
-	refused(t, f.get("/api/v1/suggestions?playlist=PLZ"), http.StatusBadRequest)
+	refused(t, f.get("/api/v1/suggestions?playlist=PLZ"), http.StatusBadRequest, wire.CodeUnknownReference)
 }
 
 func TestAnAggregateOfAnotherTypeIsRefused(t *testing.T) {
