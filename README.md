@@ -229,6 +229,17 @@ server holds, and the next sync run pushes that order. Where an edit is refused,
 in a file and the refusal names it, because by then the editor has closed and that file is the only
 copy of the rearranging.
 
+`ypl play <playlist>` runs mpv in the foreground on the playlist's videos, leaving out the ones
+YouTube will not serve, and exits with mpv's own code. `--audio` drops the video window and `--mpv`
+passes an argument straight through. It opens mpv's IPC socket, which is what lets `ypl now` report
+the track inside a two-hour mix rather than the name of the mix. `ypl now` exits 1 when nothing is
+playing, so a status bar can run it unguarded.
+
+`ypl plays add <video>` records that something was listened to, by id or by a link it was copied
+from. That is what `ypl next` reads to stop suggesting the same mix. It is written when a listen is
+logged rather than inferred from playback, because `ypl play` hands mpv the whole playlist at once
+and never learns which of it got played.
+
 Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
 nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
 success, 2 for an invocation the CLI would not accept, and 1 for a command that ran and failed;
