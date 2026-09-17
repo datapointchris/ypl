@@ -17,9 +17,9 @@ func TestPlaylistsReadsEveryPage(t *testing.T) {
 	for i := range 55 {
 		api.playlists = append(api.playlists, fakePlaylist(t, fmt.Sprintf("PL%02d", i)))
 	}
-	reader := api.reader()
+	channel := api.channel()
 
-	playlists, err := reader.Playlists(context.Background())
+	playlists, err := channel.Playlists(context.Background())
 	if err != nil {
 		t.Fatalf("Playlists: %v", err)
 	}
@@ -30,8 +30,8 @@ func TestPlaylistsReadsEveryPage(t *testing.T) {
 	if playlists[7] != want {
 		t.Fatalf("playlist 7 = %+v, want %+v", playlists[7], want)
 	}
-	if served, made := api.requests.Load(), reader.Requests(); served != 2 || made != 2 {
-		t.Fatalf("served %d requests and the reader counted %d, want 2 pages of 50", served, made)
+	if served, made := api.requests.Load(), channel.Requests(); served != 2 || made != 2 {
+		t.Fatalf("served %d requests and the channel counted %d, want 2 pages of 50", served, made)
 	}
 }
 
@@ -40,9 +40,9 @@ func TestItemsReadsEveryPageInPositionOrder(t *testing.T) {
 	all := fakeItems(t, "PLA", 120)
 	slices.Reverse(all)
 	api.items["PLA"] = all
-	reader := api.reader()
+	channel := api.channel()
 
-	got, err := reader.Items(context.Background(), "PLA")
+	got, err := channel.Items(context.Background(), "PLA")
 	if err != nil {
 		t.Fatalf("Items: %v", err)
 	}
@@ -54,12 +54,12 @@ func TestItemsReadsEveryPageInPositionOrder(t *testing.T) {
 			t.Fatalf("item %d has position %d", i, it.Position)
 		}
 	}
-	want := Item{ID: "PLA-item-042", VideoID: "vid042", Position: 42, Title: "Two Hours of House", ChannelTitle: "A Mix Channel"}
+	want := Item{ID: "PLA-item-042", PlaylistID: "PLA", VideoID: "vid042", Position: 42, Title: "Two Hours of House", ChannelTitle: "A Mix Channel"}
 	if got[42] != want {
 		t.Fatalf("item 42 = %+v, want %+v", got[42], want)
 	}
-	if served, made := api.requests.Load(), reader.Requests(); served != 3 || made != 3 {
-		t.Fatalf("served %d requests and the reader counted %d, want 3 pages of 50", served, made)
+	if served, made := api.requests.Load(), channel.Requests(); served != 3 || made != 3 {
+		t.Fatalf("served %d requests and the channel counted %d, want 3 pages of 50", served, made)
 	}
 }
 
@@ -68,13 +68,14 @@ func TestRecordedItemsReadAsYouTubeReportsThem(t *testing.T) {
 	api := newFakeAPI(t)
 	api.items[playlist] = recordedItems(t, "playlistItems.json")
 
-	got, err := api.reader().Items(context.Background(), playlist)
+	got, err := api.channel().Items(context.Background(), playlist)
 	if err != nil {
 		t.Fatalf("Items: %v", err)
 	}
 	want := []Item{
 		{
 			ID:           "UEx4MHJlY29yZGVkcGFnZXgwMDAwMDAwMDAwMDAwMDAwYS4wQTFCMkMzRDRFNUY2QTdC",
+			PlaylistID:   playlist,
 			VideoID:      "x0public001",
 			Position:     0,
 			Title:        "Two Hours of House",
@@ -82,6 +83,7 @@ func TestRecordedItemsReadAsYouTubeReportsThem(t *testing.T) {
 		},
 		{
 			ID:          "UEx4MHJlY29yZGVkcGFnZXgwMDAwMDAwMDAwMDAwMDAwYS4xQjJDM0Q0RTVGNkE3QjhD",
+			PlaylistID:  playlist,
 			VideoID:     "x0deleted02",
 			Position:    1,
 			Title:       "Deleted video",
@@ -89,6 +91,7 @@ func TestRecordedItemsReadAsYouTubeReportsThem(t *testing.T) {
 		},
 		{
 			ID:          "UEx4MHJlY29yZGVkcGFnZXgwMDAwMDAwMDAwMDAwMDAwYS4yQzNENEU1RjZBN0I4QzlE",
+			PlaylistID:  playlist,
 			VideoID:     "x0private03",
 			Position:    2,
 			Title:       "Private video",
@@ -101,10 +104,10 @@ func TestRecordedItemsReadAsYouTubeReportsThem(t *testing.T) {
 }
 
 func TestAResourceMissingAPartIsRefused(t *testing.T) {
-	playlists := func(r *Reader) error { _, err := r.Playlists(context.Background()); return err }
-	items := func(r *Reader) error { _, err := r.Items(context.Background(), "PLA"); return err }
+	playlists := func(c *Channel) error { _, err := c.Playlists(context.Background()); return err }
+	items := func(c *Channel) error { _, err := c.Items(context.Background(), "PLA"); return err }
 	cases := map[string]struct {
-		read  func(*Reader) error
+		read  func(*Channel) error
 		strip func(api *fakeAPI)
 	}{
 		"a playlist with no snippet": {playlists, func(api *fakeAPI) { delete(api.playlists[0], "snippet") }},
@@ -122,7 +125,7 @@ func TestAResourceMissingAPartIsRefused(t *testing.T) {
 			api.items["PLA"] = fakeItems(t, "PLA", 1)
 			c.strip(api)
 
-			if err := c.read(api.reader()); !errors.Is(err, ErrUnexpectedResponse) {
+			if err := c.read(api.channel()); !errors.Is(err, ErrUnexpectedResponse) {
 				t.Fatalf("read = %v, want ErrUnexpectedResponse", err)
 			}
 		})
@@ -146,7 +149,7 @@ func TestEveryKnownPrivacyStatusIsReadAndAnyOtherRefused(t *testing.T) {
 			api.items["PLA"] = fakeItems(t, "PLA", 1)
 			api.items["PLA"][0]["status"] = map[string]any{"privacyStatus": status}
 
-			items, err := api.reader().Items(context.Background(), "PLA")
+			items, err := api.channel().Items(context.Background(), "PLA")
 			if want.refused {
 				if !errors.Is(err, ErrUnexpectedResponse) {
 					t.Fatalf("Items = %v, want ErrUnexpectedResponse", err)
@@ -169,7 +172,7 @@ func TestAReadThatDisagreesWithItsTotalIsRefused(t *testing.T) {
 		api.items["PLA"] = fakeItems(t, "PLA", 2)
 		api.itemsTotal["PLA"] = total
 
-		if _, err := api.reader().Items(context.Background(), "PLA"); !errors.Is(err, ErrInconsistentRead) {
+		if _, err := api.channel().Items(context.Background(), "PLA"); !errors.Is(err, ErrInconsistentRead) {
 			t.Errorf("Items with 2 served and a total of %d = %v, want ErrInconsistentRead", total, err)
 		}
 	}
@@ -179,7 +182,7 @@ func TestAGapInPositionsIsRefused(t *testing.T) {
 	api := newFakeAPI(t)
 	api.items["PLA"] = []map[string]any{fakeItem(t, recordedPublic, "PLA", 0), fakeItem(t, recordedPublic, "PLA", 2)}
 
-	if _, err := api.reader().Items(context.Background(), "PLA"); !errors.Is(err, ErrInconsistentRead) {
+	if _, err := api.channel().Items(context.Background(), "PLA"); !errors.Is(err, ErrInconsistentRead) {
 		t.Fatalf("Items with positions 0 and 2 = %v, want ErrInconsistentRead", err)
 	}
 }
@@ -187,11 +190,11 @@ func TestAGapInPositionsIsRefused(t *testing.T) {
 // Each edit lands after the first page is served and before the second.
 func TestAnEditBetweenPagesIsRefused(t *testing.T) {
 	cases := map[string]struct {
-		read func(*Reader) error
+		read func(*Channel) error
 		edit func(api *fakeAPI)
 	}{
 		"an item moved to the end": {
-			read: func(r *Reader) error { _, err := r.Items(context.Background(), "PLA"); return err },
+			read: func(ch *Channel) error { _, err := ch.Items(context.Background(), "PLA"); return err },
 			edit: func(api *fakeAPI) {
 				items := api.items["PLA"]
 				api.items["PLA"] = append(items[1:], items[0])
@@ -199,18 +202,18 @@ func TestAnEditBetweenPagesIsRefused(t *testing.T) {
 			},
 		},
 		"an item deleted": {
-			read: func(r *Reader) error { _, err := r.Items(context.Background(), "PLA"); return err },
+			read: func(ch *Channel) error { _, err := ch.Items(context.Background(), "PLA"); return err },
 			edit: func(api *fakeAPI) {
 				api.items["PLA"] = api.items["PLA"][1:]
 				renumber(api.items["PLA"])
 			},
 		},
 		"a playlist moved to the end": {
-			read: func(r *Reader) error { _, err := r.Playlists(context.Background()); return err },
+			read: func(ch *Channel) error { _, err := ch.Playlists(context.Background()); return err },
 			edit: func(api *fakeAPI) { api.playlists = append(api.playlists[1:], api.playlists[0]) },
 		},
 		"a playlist deleted": {
-			read: func(r *Reader) error { _, err := r.Playlists(context.Background()); return err },
+			read: func(ch *Channel) error { _, err := ch.Playlists(context.Background()); return err },
 			edit: func(api *fakeAPI) { api.playlists = api.playlists[1:] },
 		},
 	}
@@ -227,14 +230,14 @@ func TestAnEditBetweenPagesIsRefused(t *testing.T) {
 				}
 			}
 
-			if err := c.read(api.reader()); !errors.Is(err, ErrInconsistentRead) {
+			if err := c.read(api.channel()); !errors.Is(err, ErrInconsistentRead) {
 				t.Fatalf("read = %v, want ErrInconsistentRead", err)
 			}
 		})
 	}
 }
 
-// Reader's documentation says a read cannot see this edit, so an absence is not
+// Channel's documentation says a read cannot see this edit, so an absence is not
 // a deletion. This pins that the documentation is still true.
 func TestADeleteAndAnAddBetweenPagesGoUnseen(t *testing.T) {
 	api := newFakeAPI(t)
@@ -247,7 +250,7 @@ func TestADeleteAndAnAddBetweenPagesGoUnseen(t *testing.T) {
 		}
 	}
 
-	items, err := api.reader().Items(context.Background(), "PLA")
+	items, err := api.channel().Items(context.Background(), "PLA")
 	if err != nil {
 		t.Fatalf("Items: %v", err)
 	}
@@ -259,13 +262,18 @@ func TestADeleteAndAnAddBetweenPagesGoUnseen(t *testing.T) {
 
 func TestYouTubesQuotaRefusalIsErrQuotaSpent(t *testing.T) {
 	api := newFakeAPI(t)
-	api.refusal = &fakeRefusal{
+	api.answer = &fakeAnswer{
 		status: http.StatusForbidden,
 		body:   `{"error":{"code":403,"message":"quota","errors":[{"reason":"quotaExceeded","domain":"youtube.quota"}]}}`,
 	}
 
-	if _, err := api.reader().Playlists(context.Background()); !errors.Is(err, ErrQuotaSpent) {
-		t.Fatalf("Playlists on YouTube's quotaExceeded = %v, want ErrQuotaSpent", err)
+	channel := api.channel()
+
+	if _, err := channel.Playlists(context.Background()); !errors.Is(err, ErrQuotaSpent) {
+		t.Errorf("Playlists on YouTube's quotaExceeded = %v, want ErrQuotaSpent", err)
+	}
+	if _, err := channel.InsertItem(context.Background(), "PLA", "vidA", 0); !errors.Is(err, ErrQuotaSpent) {
+		t.Errorf("InsertItem on YouTube's quotaExceeded = %v, want ErrQuotaSpent", err)
 	}
 }
 
@@ -275,7 +283,7 @@ func TestTheFakeAnswersAsTheDataAPIDoes(t *testing.T) {
 	api := newFakeAPI(t)
 	api.playlists = []map[string]any{fakePlaylist(t, "PLA"), fakePlaylist(t, "PLB")}
 	api.items["PLA"] = fakeItems(t, "PLA", 17)
-	server := api.reader().service
+	server := api.channel().service
 	ctx := context.Background()
 	items := func(parts ...string) *ytapi.PlaylistItemsListCall {
 		return server.PlaylistItems.List(parts).PlaylistId("PLA")

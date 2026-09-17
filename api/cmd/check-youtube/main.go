@@ -35,7 +35,7 @@ var ErrUnreadPlaylists = errors.New("some playlists could not be read")
 // reader is what the check reads through.
 type reader interface {
 	Playlists(ctx context.Context) ([]youtube.Playlist, error)
-	Items(ctx context.Context, playlistID string) ([]youtube.Item, error)
+	Items(ctx context.Context, playlistID youtube.PlaylistID) ([]youtube.Item, error)
 	Requests() int64
 }
 
@@ -50,8 +50,8 @@ type report struct {
 
 // unread is a playlist whose items could not be read, and why.
 type unread struct {
-	Playlist string `json:"playlist"`
-	Error    string `json:"error"`
+	Playlist youtube.PlaylistID `json:"playlist"`
+	Error    string             `json:"error"`
 }
 
 func main() {
@@ -86,7 +86,7 @@ func run(ctx context.Context, args []string, stdout, usage io.Writer) error {
 	if err != nil {
 		return err
 	}
-	r, err := youtube.NewReader(ctx, creds)
+	r, err := youtube.NewChannel(ctx, creds)
 	if err != nil {
 		return err
 	}
@@ -94,8 +94,9 @@ func run(ctx context.Context, args []string, stdout, usage io.Writer) error {
 }
 
 // check reads every playlist through r and prints the report. A playlist whose
-// items cannot be read is reported and the check goes on to the next. A spent
-// quota, or a failure that is not about one playlist, stops it with no report.
+// items cannot be read, including one deleted since the playlists were listed,
+// is reported and the check goes on to the next. A spent quota, or a failure
+// that is not about one playlist, stops it with no report.
 func check(ctx context.Context, r reader, stdout io.Writer) error {
 	playlists, err := r.Playlists(ctx)
 	if err != nil {
@@ -104,7 +105,7 @@ func check(ctx context.Context, r reader, stdout io.Writer) error {
 	rep := report{Playlists: len(playlists), Unread: []unread{}}
 	for _, playlist := range playlists {
 		items, err := r.Items(ctx, playlist.ID)
-		if errors.Is(err, youtube.ErrInconsistentRead) || errors.Is(err, youtube.ErrUnexpectedResponse) {
+		if errors.Is(err, youtube.ErrInconsistentRead) || errors.Is(err, youtube.ErrUnexpectedResponse) || errors.Is(err, youtube.ErrPlaylistNotFound) {
 			rep.Unread = append(rep.Unread, unread{Playlist: playlist.ID, Error: err.Error()})
 			continue
 		}

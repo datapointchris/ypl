@@ -1,6 +1,7 @@
-// Package youtube reads the playlists a channel owns, and the items in each,
-// through the YouTube Data API v3, acting as the channel with an OAuth refresh
-// token.
+// Package youtube reads and edits the playlists a channel owns, and the items in
+// each, through the YouTube Data API v3, acting as the channel with an OAuth
+// refresh token. A Channel counts every request it makes and the quota each
+// costs, and names the refusals a caller can act on.
 //
 // The credentials come from a Google Cloud project with the YouTube Data API v3
 // enabled:

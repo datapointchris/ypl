@@ -26,6 +26,9 @@ one. Each request is a page of up to 50 playlists or 50 items and costs 1 unit, 
 playlist costs one unit per page of playlists plus one per page of each playlist's items, with an
 empty playlist still taking one.
 
+The server edits playlists through the Data API as well. Creating, renaming or deleting a playlist,
+and inserting, moving or deleting an item, costs 50 units a request.
+
 ## Install
 
 ```bash
