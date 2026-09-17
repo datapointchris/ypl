@@ -210,9 +210,22 @@ here, because a list in markdown goes stale and `--help` cannot.
 A playlist is named by its title or its YouTube id at every command that takes one, and the title's
 case, spacing and punctuation do not have to be reproduced. `ypl playlists show 'sunday morning'`
 finds Sunday Morning. A read also takes part of a title, so `ypl playlists show morning` finds it
-too — but only a read. A rename or a delete takes the id or the whole title, because a fragment
-that happens to match one playlist matches it unambiguously, and there is nothing for the
-two-matches refusal to catch.
+too — but only a read. A rename, a delete or an edit takes the id or the whole title, because a
+fragment that happens to match one playlist matches it unambiguously, and there is nothing for the
+two-matches refusal to catch. A fragment sent to one of those is refused by the title it is part
+of, rather than by a sentence saying nothing was found.
+
+`ypl playlists create` and `ypl playlists rename` make their change on YouTube in the request that
+asks for it, and so does `ypl playlists delete`, which asks first and needs `--yes` where there is
+nobody to ask. `--no-input` forbids the question everywhere and takes that path from a terminal.
+
+`ypl playlists edit` opens the playlist in `$VISUAL` or `$EDITOR`, one line per video with the id
+first — move lines to reorder, delete a line to remove that video, paste a URL or an id to add one,
+and save an empty buffer to abort. It is the one changing verb that does not reach YouTube: it sets
+the order the server holds, and the next sync run pushes that order. A buffer piped in is read
+instead of the editor being opened, so an order written elsewhere applies the same way. Where the
+server refuses the edit, the buffer is kept in a file and the refusal names it, because by then the
+editor has closed and that file is the only copy of the rearranging.
 
 Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
 nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
