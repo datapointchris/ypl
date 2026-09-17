@@ -127,8 +127,8 @@ def test_bare_invocation_answers_rather_than_printing_a_catalog():
 
 
 def test_the_update_check_reads_only_this_tools_releases(monkeypatch):
-    """The repository also releases the Go CLI, as cli/v1.2.3, and its newest
-    release is not a version of this tool."""
+    """A Go CLI release, tagged cli/v1.2.3, can be the repository's newest,
+    and it is not a version of this tool."""
     releases = [
         {'tag_name': 'cli/v0.1.0', 'html_url': ''},
         {'tag_name': 'v2.3.0', 'html_url': ''},
