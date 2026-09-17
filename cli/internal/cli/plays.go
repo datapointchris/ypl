@@ -5,9 +5,12 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/datapointchris/goclikit"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
+	"github.com/datapointchris/ypl/cli/internal/editbuffer"
 )
 
 // defaultPlays is how many plays a bare list reads. The collection pages over
@@ -24,7 +27,53 @@ func (a *app) playsCommand() *cobra.Command {
 			"by its handle, by its id, or by the last eight characters of that id.",
 		RunE: requireSubcommand,
 	}
-	cmd.AddCommand(a.playsListCommand(), a.playsShowCommand())
+	cmd.AddCommand(a.playsListCommand(), a.playsShowCommand(), a.playsAddCommand())
+	return cmd
+}
+
+func (a *app) playsAddCommand() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "add <video>",
+		Short: "Record that a video was listened to",
+		Long: "What `ypl next` reads to stop suggesting the same mix. Written when a listen\n" +
+			"is logged rather than inferred from playback, because `ypl play` hands mpv the\n" +
+			"whole playlist at once and never learns which of it got played.\n" +
+			"\n" +
+			"The video is named by its id or by a URL it was copied from. The server takes\n" +
+			"the moment the request arrived as when it was played.",
+		Example: "  ypl plays add dQw4w9WgXcQ                             log one by id\n" +
+			"  ypl plays add 'https://youtu.be/dQw4w9WgXcQ?t=42'     log one from a link",
+		Args: usageArgs(cobra.ExactArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			videoID := editbuffer.VideoID(args[0])
+			if videoID == "" {
+				return goclikit.UsageError(fmt.Errorf("%q is not a video id or a YouTube address", args[0]))
+			}
+			client, err := a.client(cmd.Context())
+			if err != nil {
+				return reported(err)
+			}
+			// The id is made here rather than by the server, so a play sent
+			// again after an answer went missing is stored once rather than
+			// twice. Re-running the command is a different listen and makes a
+			// new one.
+			id, err := uuid.NewV7()
+			if err != nil {
+				return fmt.Errorf("make an id for the play: %w", err)
+			}
+			play, err := client.CreatePlay(cmd.Context(), id.String(), videoID)
+			if err != nil {
+				return reported(err)
+			}
+			if asJSON {
+				return emitJSON(cmd.OutOrStdout(), play)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%d  %s  %s\n", play.Handle, play.PlayedTs, play.Video.Title)
+			return nil
+		},
+	}
+	addJSON(cmd, &asJSON, "the play")
 	return cmd
 }
 

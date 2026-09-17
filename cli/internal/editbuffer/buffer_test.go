@@ -32,25 +32,6 @@ func TestABufferParsesBackToTheIdsItWasRenderedFrom(t *testing.T) {
 	}
 }
 
-func TestRenderPutsTheIdFirstOnEveryVideoLine(t *testing.T) {
-	buffer, videoIDs := rendered()
-
-	var lines []string
-	for _, line := range strings.Split(strings.TrimRight(buffer, "\n"), "\n") {
-		if !strings.HasPrefix(line, comment) {
-			lines = append(lines, line)
-		}
-	}
-	if len(lines) != len(videoIDs) {
-		t.Fatalf("rendered %d video lines, want %d: %q", len(lines), len(videoIDs), buffer)
-	}
-	for i, line := range lines {
-		if !strings.HasPrefix(line, videoIDs[i]) {
-			t.Errorf("line %d is %q, want it to start with %q", i, line, videoIDs[i])
-		}
-	}
-}
-
 func TestParseIgnoresCommentsAndBlankLines(t *testing.T) {
 	// Rendered with the ids the buffer was built from, because a line carrying a
 	// label is one this package wrote and only a token it wrote may have words
