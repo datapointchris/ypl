@@ -584,7 +584,7 @@ wheels = [
 
 [[package]]
 name = "ypl"
-version = "2.2.2"
+version = "2.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "httpx2" },
