@@ -31,6 +31,31 @@ var trackSources = []generated.UpsertTrackSourceParams{
 	{Source: "manual", Label: "Manual", Description: "Entered by hand"},
 }
 
+// How a sync run ended, the vocabulary sync_runs.outcome draws from.
+const (
+	OutcomeOK         = "ok"
+	OutcomePartial    = "partial"
+	OutcomeQuotaSpent = "quota_spent"
+	OutcomeFailed     = "failed"
+	OutcomeCanceled   = "canceled"
+)
+
+// syncOutcomes is the sync_outcomes vocabulary, upserted on every open.
+var syncOutcomes = []generated.UpsertSyncOutcomeParams{
+	{Outcome: OutcomeOK, Label: "Synced", Description: "Every listed playlist was reconciled, and each push was made or left for a later day's allowance"},
+	{Outcome: OutcomePartial, Label: "Partly synced", Description: "The run finished, and at least one playlist was skipped or had its push stopped"},
+	{Outcome: OutcomeQuotaSpent, Label: "Quota spent", Description: "YouTube refused a request for the day's quota, in this run or an earlier one on the same Pacific date"},
+	{Outcome: OutcomeFailed, Label: "Failed", Description: "The run stopped on an error before it read every playlist"},
+	{Outcome: OutcomeCanceled, Label: "Canceled", Description: "The run was canceled before it finished"},
+}
+
+// BaseItem is one slot of a playlist's base: YouTube's playlistItem id and the
+// video in it.
+type BaseItem struct {
+	ItemID  string
+	VideoID string
+}
+
 // Store is a database with its migrations applied and its lookups seeded.
 type Store struct {
 	db *sql.DB
@@ -133,6 +158,36 @@ func (tx *Tx) ReplaceTracks(ctx context.Context, videoID string, tracks []genera
 	return nil
 }
 
+// ReplacePlaylistItems sets the server's order of the playlist playlistID to
+// videoIDs, removing every item it held before.
+func (tx *Tx) ReplacePlaylistItems(ctx context.Context, playlistID string, videoIDs []string) error {
+	if err := tx.DeletePlaylistItems(ctx, playlistID); err != nil {
+		return fmt.Errorf("delete the items of %s: %w", playlistID, err)
+	}
+	for position, videoID := range videoIDs {
+		item := generated.InsertPlaylistItemParams{PlaylistID: playlistID, Position: int64(position), VideoID: videoID}
+		if err := tx.InsertPlaylistItem(ctx, item); err != nil {
+			return fmt.Errorf("insert video %s at %d in %s: %w", videoID, position, playlistID, err)
+		}
+	}
+	return nil
+}
+
+// ReplaceBaseItems sets the base of the playlist playlistID to items, in order,
+// removing every item it held before.
+func (tx *Tx) ReplaceBaseItems(ctx context.Context, playlistID string, items []BaseItem) error {
+	if err := tx.DeleteBaseItems(ctx, playlistID); err != nil {
+		return fmt.Errorf("delete the base of %s: %w", playlistID, err)
+	}
+	for position, item := range items {
+		row := generated.InsertBaseItemParams{ItemID: item.ItemID, PlaylistID: playlistID, Position: int64(position), VideoID: item.VideoID}
+		if err := tx.InsertBaseItem(ctx, row); err != nil {
+			return fmt.Errorf("insert base item %s at %d in %s: %w", item.ItemID, position, playlistID, err)
+		}
+	}
+	return nil
+}
+
 func migrate(ctx context.Context, db *sql.DB) error {
 	fsys, err := fs.Sub(migrations, "migrations")
 	if err != nil {
@@ -152,6 +207,11 @@ func (s *Store) seed(ctx context.Context) error {
 	for _, source := range trackSources {
 		if err := s.Queries.UpsertTrackSource(ctx, source); err != nil {
 			return fmt.Errorf("seed track source %s: %w", source.Source, err)
+		}
+	}
+	for _, outcome := range syncOutcomes {
+		if err := s.Queries.UpsertSyncOutcome(ctx, outcome); err != nil {
+			return fmt.Errorf("seed sync outcome %s: %w", outcome.Outcome, err)
 		}
 	}
 	return nil

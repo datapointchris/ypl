@@ -8,10 +8,68 @@ import (
 	"database/sql"
 )
 
+type BaseItem struct {
+	ItemID     string
+	PlaylistID string
+	Position   int64
+	VideoID    string
+}
+
 type EnrichFailure struct {
 	VideoID     string
 	AttemptedTs string
 	Reason      string
+}
+
+type Playlist struct {
+	PlaylistID  string
+	Title       string
+	Description string
+	Privacy     string
+}
+
+type PlaylistItem struct {
+	PlaylistItemID int64
+	PlaylistID     string
+	Position       int64
+	VideoID        string
+}
+
+type PushRefusal struct {
+	PlaylistID string
+	VideoID    string
+	RefusedTs  string
+	Reason     string
+}
+
+type SyncFailure struct {
+	SyncFailureID int64
+	RunID         int64
+	PlaylistID    sql.NullString
+	Error         string
+}
+
+type SyncOutcome struct {
+	Outcome     string
+	Label       string
+	Description string
+}
+
+type SyncRun struct {
+	RunID            int64
+	StartedTs        string
+	FinishedTs       string
+	QuotaDate        string
+	Outcome          string
+	Playlists        int64
+	PlaylistsDeleted int64
+	PlaylistsSkipped int64
+	PulledIn         int64
+	PulledOut        int64
+	Writes           int64
+	Requests         int64
+	ReadUnits        int64
+	WriteUnits       int64
 }
 
 type Track struct {
