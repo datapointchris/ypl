@@ -4,6 +4,10 @@
 // YOUTUBE_REFRESH_TOKEN name, answers liveness and readiness probes, logs JSON
 // to stdout, and drains in-flight requests and the sync run on SIGINT or
 // SIGTERM.
+//
+// It answers /api/v1 only to a request carrying an access token the identity
+// provider OIDC_ISSUER signed for a client whose id starts with
+// CLI_CLIENT_ID_PREFIX (ypl-cli- when unset).
 package main
 
 import (
@@ -18,6 +22,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/datapointchris/ypl/api/auth"
+	"github.com/datapointchris/ypl/api/handlers"
 	"github.com/datapointchris/ypl/api/reconcile"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/youtube"
@@ -40,9 +46,10 @@ func main() {
 	}
 }
 
-// start reads the credentials and the sync interval, and opens the database,
-// applying its migrations, before the port is bound, so the service answers
-// /ready only once its schema is current.
+// start reads the configuration, opens the database, applying its migrations,
+// and reads the identity provider's discovery document before the port is
+// bound, so the service answers /ready only once its schema is current and it
+// can verify a token.
 func start(ctx context.Context) error {
 	path, err := store.Path()
 	if err != nil {
@@ -56,6 +63,10 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	issuer, clientIDPrefix, err := identityProvider()
+	if err != nil {
+		return err
+	}
 	st, err := store.Open(ctx, path)
 	if err != nil {
 		return err
@@ -63,12 +74,31 @@ func start(ctx context.Context) error {
 	defer func() { _ = st.Close() }()
 	slog.Info("database ready", "path", path)
 
+	verifier, err := auth.NewVerifier(ctx, issuer, clientIDPrefix)
+	if err != nil {
+		return err
+	}
 	channel, err := youtube.NewChannel(ctx, creds)
 	if err != nil {
 		return err
 	}
 	worker := reconcile.NewWorker(reconcile.NewRunner(st, channel, interval), interval, slog.Default())
-	return run(ctx, ":"+envOr("PORT", "8080"), worker.Run)
+	api := handler(handlers.New(st, slog.Default()), verifier)
+	return run(ctx, ":"+envOr("PORT", "8080"), api, worker.Run)
+}
+
+// defaultClientIDPrefix starts the id of every client whose tokens the API
+// accepts when CLI_CLIENT_ID_PREFIX is unset.
+const defaultClientIDPrefix = "ypl-cli-"
+
+// identityProvider is OIDC_ISSUER, which has no default, and
+// CLI_CLIENT_ID_PREFIX, or defaultClientIDPrefix when it is unset.
+func identityProvider() (issuer, clientIDPrefix string, err error) {
+	issuer = os.Getenv("OIDC_ISSUER")
+	if issuer == "" {
+		return "", "", errors.New("OIDC_ISSUER is unset: set it to the identity provider whose keys sign the CLI's access tokens")
+	}
+	return issuer, envOr("CLI_CLIENT_ID_PREFIX", defaultClientIDPrefix), nil
 }
 
 // syncInterval is SYNC_INTERVAL as a duration, or defaultSyncInterval when it is
@@ -85,27 +115,27 @@ func syncInterval() (time.Duration, error) {
 	return interval, nil
 }
 
-// run binds addr and serves on it, doing work beside the server. A port that
+// run binds addr and serves h on it, doing work beside the server. A port that
 // cannot be bound is returned before anything is logged as listening.
-func run(ctx context.Context, addr string, work func(context.Context)) error {
+func run(ctx context.Context, addr string, h http.Handler, work func(context.Context)) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	return serve(ctx, ln, work)
+	return serve(ctx, ln, h, work)
 }
 
-// serve answers requests on ln, and does work beside them, until ctx ends or
-// the first SIGINT or SIGTERM arrives. It then cancels work and drains requests
-// for up to shutdownGrace, and returns once work has returned. The signal
-// handler is released as the drain starts, so a second signal ends the process
-// immediately.
-func serve(ctx context.Context, ln net.Listener, work func(context.Context)) error {
+// serve answers requests on ln with h, and does work beside them, until ctx
+// ends or the first SIGINT or SIGTERM arrives. It then cancels work and drains
+// requests for up to shutdownGrace, and returns once work has returned. The
+// signal handler is released as the drain starts, so a second signal ends the
+// process immediately.
+func serve(ctx context.Context, ln net.Listener, h http.Handler, work func(context.Context)) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	srv := &http.Server{
-		Handler:           routes(),
+		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -146,8 +176,16 @@ func serve(ctx context.Context, ln net.Listener, work func(context.Context)) err
 	return nil
 }
 
-// routes serves /health and /ready. Authentication, when this service has it,
-// has to leave both reachable, so a container healthcheck can call them.
+// handler is every route: the probes, which answer without a token so a
+// container healthcheck can call them, and the API, which answers only a
+// request carrying a token verifier accepts.
+func handler(api *handlers.Handlers, verifier auth.TokenVerifier) http.Handler {
+	mux := routes()
+	api.Register(mux)
+	return auth.RequireBearer(verifier, slog.Default())(mux)
+}
+
+// routes serves /health and /ready.
 func routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", ok)

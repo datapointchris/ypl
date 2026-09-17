@@ -17,6 +17,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/datapointchris/ypl/api/auth"
+	"github.com/datapointchris/ypl/api/handlers"
+	"github.com/datapointchris/ypl/api/store"
 )
 
 // serveChild makes this test binary run the real main when a test starts it as
@@ -88,7 +92,7 @@ func TestRunReturnsTheBindError(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
 	defer slog.SetDefault(previous)
 
-	err = run(context.Background(), taken.Addr().String(), func(context.Context) {})
+	err = run(context.Background(), taken.Addr().String(), routes(), func(context.Context) {})
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("run on an occupied port = %v, want EADDRINUSE", err)
 	}
@@ -106,7 +110,7 @@ func TestServeAnswersUntilCanceledThenReturnsNil(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, ln, func(context.Context) {}) }()
+	go func() { done <- serve(ctx, ln, routes(), func(context.Context) {}) }()
 
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	resp, err := client.Get("http://" + ln.Addr().String() + "/ready")
@@ -141,7 +145,7 @@ func TestServeStopsItsWorkBeforeReturning(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, ln, func(ctx context.Context) {
+		done <- serve(ctx, ln, routes(), func(ctx context.Context) {
 			close(started)
 			<-ctx.Done()
 			time.Sleep(50 * time.Millisecond)
@@ -177,6 +181,77 @@ func TestSyncIntervalDefaultsToAnHourAndRefusesAnythingButAPositiveDuration(t *t
 	}
 }
 
+func TestIdentityProviderRequiresAnIssuerAndDefaultsThePrefix(t *testing.T) {
+	t.Setenv("OIDC_ISSUER", "")
+	if _, _, err := identityProvider(); err == nil {
+		t.Fatal("identityProvider with OIDC_ISSUER unset succeeded, want a refusal")
+	}
+
+	t.Setenv("OIDC_ISSUER", "https://id.example")
+	t.Setenv("CLI_CLIENT_ID_PREFIX", "")
+	if issuer, prefix, err := identityProvider(); err != nil || issuer != "https://id.example" || prefix != "ypl-cli-" {
+		t.Fatalf("identityProvider = %q, %q, %v, want the issuer and ypl-cli-", issuer, prefix, err)
+	}
+	t.Setenv("CLI_CLIENT_ID_PREFIX", "ypl-test-")
+	if _, prefix, err := identityProvider(); err != nil || prefix != "ypl-test-" {
+		t.Fatalf("identityProvider prefix = %q, %v, want ypl-test-", prefix, err)
+	}
+}
+
+// acceptOnly accepts the one token it holds and rejects every other.
+type acceptOnly string
+
+func (a acceptOnly) Verify(_ context.Context, raw string) (auth.Identity, error) {
+	if raw != string(a) {
+		return auth.Identity{}, auth.ErrUnauthorized
+	}
+	return auth.Identity{Subject: "user", ClientID: "ypl-cli-test"}, nil
+}
+
+func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "api.db"))
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	h := handler(handlers.New(st, slog.Default()), acceptOnly("good"))
+
+	cases := []struct {
+		path, token string
+		want        int
+	}{
+		{"/api/v1/playlists", "", http.StatusUnauthorized},
+		{"/api/v1/playlists", "bad", http.StatusUnauthorized},
+		{"/api/v1/playlists", "good", http.StatusOK},
+		{"/api/v1/status", "good", http.StatusOK},
+		{"/health", "", http.StatusOK},
+		{"/ready", "", http.StatusOK},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodGet, c.path, http.NoBody)
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("GET %s with token %q = %d, want %d", c.path, c.token, rec.Code, c.want)
+		}
+	}
+}
+
+// identityProviderStub serves a discovery document naming itself as the
+// issuer, which is all the service reads from the provider before it binds.
+func identityProviderStub(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		self := "http://" + r.Host
+		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": self, "jwks_uri": self + "/jwks.json"})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 func TestSecondSignalEndsTheDrain(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts the service as a child process")
@@ -184,9 +259,11 @@ func TestSecondSignalEndsTheDrain(t *testing.T) {
 
 	child := exec.Command(os.Args[0], "-test.run=^$")
 	// The credentials are placeholders, and every request the sync makes goes to
-	// a proxy port nothing listens on, so no request leaves the machine.
+	// a proxy port nothing listens on, so no request leaves the machine. The
+	// identity provider is on the loopback address, which Go never proxies.
 	child.Env = append(os.Environ(), serveChild+"=1", "PORT=0", "DATABASE_PATH="+filepath.Join(t.TempDir(), "api.db"),
 		"YOUTUBE_CLIENT_ID=id", "YOUTUBE_CLIENT_SECRET=secret", "YOUTUBE_REFRESH_TOKEN=token",
+		"OIDC_ISSUER="+identityProviderStub(t),
 		"HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1", "NO_PROXY=")
 	stdout, err := child.StdoutPipe()
 	if err != nil {
@@ -202,6 +279,18 @@ func TestSecondSignalEndsTheDrain(t *testing.T) {
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("listening addr %q: %v", addr, err)
+	}
+
+	client := &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
+	for path, want := range map[string]int{"/ready": http.StatusOK, "/api/v1/status": http.StatusUnauthorized} {
+		resp, err := client.Get("http://127.0.0.1:" + port + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("GET %s without a token = %d, want %d", path, resp.StatusCode, want)
+		}
 	}
 
 	// A request whose headers never finish keeps the connection active, so
