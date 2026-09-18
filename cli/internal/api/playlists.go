@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -48,10 +49,26 @@ func (c *Client) ListPlaylists(ctx context.Context) ([]PlaylistSummary, error) {
 	return playlists, err
 }
 
-// GetPlaylist is the playlist named by name: its YouTube id, or its title.
-func (c *Client) GetPlaylist(ctx context.Context, name string) (Playlist, error) {
+// Reference names a playlist to the server: its YouTube id, its title, or that
+// title with case, spacing and punctuation removed. PlaylistTitle is what a
+// playlist is called.
+//
+// They are separate types because a rename takes one of each, adjacent, and
+// nothing at the call site says which slot is which. Transposed, it renames the
+// playlist named by the new title to the old one, which is a YouTube write
+// nothing here can undo.
+type (
+	Reference     string
+	PlaylistTitle string
+)
+
+// Revision is which order an edit edits, as the server's ETag names it.
+type Revision string
+
+// GetPlaylist is the playlist name reaches. Part of a title reaches one here.
+func (c *Client) GetPlaylist(ctx context.Context, name Reference) (Playlist, error) {
 	var playlist Playlist
-	err := c.Get(ctx, "/api/v1/playlists/"+ref(name), &playlist)
+	err := c.Get(ctx, "/api/v1/playlists/"+ref(string(name)), &playlist)
 	return playlist, err
 }
 
@@ -64,24 +81,20 @@ type playlistDetails struct {
 
 // CreatePlaylist makes a playlist on YouTube and stores it, answering it as the
 // collection lists it.
-func (c *Client) CreatePlaylist(ctx context.Context, title string) (PlaylistSummary, error) {
-	var created PlaylistSummary
-	err := c.Post(ctx, "/api/v1/playlists", playlistDetails{Title: title}, &created)
-	return created, err
+func (c *Client) CreatePlaylist(ctx context.Context, title PlaylistTitle) (PlaylistSummary, error) {
+	return post[PlaylistSummary](ctx, c, "/api/v1/playlists", playlistDetails{Title: string(title)})
 }
 
-// RenamePlaylist retitles the playlist named by name, and answers the playlist
-// as it stands afterwards.
-func (c *Client) RenamePlaylist(ctx context.Context, name, title string) (PlaylistSummary, error) {
-	var renamed PlaylistSummary
-	err := c.Patch(ctx, "/api/v1/playlists/"+ref(name), playlistDetails{Title: title}, &renamed)
-	return renamed, err
+// RenamePlaylist retitles the playlist name reaches, and answers the playlist
+// as it stands afterwards. Part of a title does not reach one.
+func (c *Client) RenamePlaylist(ctx context.Context, name Reference, title PlaylistTitle) (PlaylistSummary, error) {
+	return patch[PlaylistSummary](ctx, c, "/api/v1/playlists/"+ref(string(name)), playlistDetails{Title: string(title)})
 }
 
-// DeletePlaylist deletes the playlist named by name, on YouTube and from the
-// server.
-func (c *Client) DeletePlaylist(ctx context.Context, name string) error {
-	return c.Delete(ctx, "/api/v1/playlists/"+ref(name))
+// DeletePlaylist deletes the playlist name reaches, on YouTube and from the
+// server. Part of a title does not reach one.
+func (c *Client) DeletePlaylist(ctx context.Context, name Reference) error {
+	return c.Delete(ctx, "/api/v1/playlists/"+ref(string(name)))
 }
 
 // Order is a playlist's order: one video id a slot, in the order it plays, with
@@ -91,39 +104,58 @@ type Order struct {
 	// Revision is which order this is, as the server's ETag names it. It is a
 	// header rather than a field, so it is neither decoded from a body nor sent
 	// in one.
-	Revision string `json:"-"`
+	Revision Revision `json:"-"`
 }
 
-// PlaylistOrder is the order of the playlist named by name, with the revision an
-// edit of it names.
-func (c *Client) PlaylistOrder(ctx context.Context, name string) (Order, error) {
+// ErrNoRevision is an order answered without an ETag. An edit says which order
+// it edited, so there is nothing to edit that answer from. It is a value rather
+// than a sentence because the only caller that can act on it has to recognize
+// it rather than read it.
+var ErrNoRevision = errors.New("the server sent an order without an ETag, and an edit names the order it edits")
+
+// PlaylistItems is the order of the playlist name reaches. Part of a title does
+// not reach one.
+//
+// The server resolves this read as narrowly as it resolves a change, which is
+// what makes it the answer to whether a reference reaches a playlist precisely
+// enough to change it. A verb that asks before it destroys reads it first,
+// because a question about a playlist the verb cannot reach is one whose answer
+// it cannot act on.
+func (c *Client) PlaylistItems(ctx context.Context, name Reference) (Order, error) {
+	var order Order
+	_, err := c.send(ctx, http.MethodGet, orderPath(name), nil, nil, &order)
+	return order, err
+}
+
+// PlaylistOrder is PlaylistItems with the revision an edit of it names.
+func (c *Client) PlaylistOrder(ctx context.Context, name Reference) (Order, error) {
 	var order Order
 	header, err := c.send(ctx, http.MethodGet, orderPath(name), nil, nil, &order)
 	if err != nil {
 		return Order{}, err
 	}
-	// An edit says which order it edited, so an answer carrying no revision is
-	// one nothing can be edited from. Saying so here names the cause, where the
-	// edit sent without one is refused for a precondition the caller never
-	// chose to leave out.
-	if order.Revision = header.Get("ETag"); order.Revision == "" {
-		return Order{}, fmt.Errorf("the server sent the order of %s without an ETag, and an edit names the order it edits", name)
+	// Named here rather than left to the edit, where a request sent without a
+	// revision is refused for a precondition the caller never chose to leave
+	// out.
+	if order.Revision = Revision(header.Get("ETag")); order.Revision == "" {
+		return Order{}, fmt.Errorf("%w: %s", ErrNoRevision, name)
 	}
 	return order, nil
 }
 
-// ReplacePlaylistOrder sets the order of the playlist named by name to videoIDs,
-// as long as its order is still the one revision names. The server pushes the
-// new order to YouTube on its next sync run.
-func (c *Client) ReplacePlaylistOrder(ctx context.Context, name, revision string, videoIDs []string) (Order, error) {
+// ReplacePlaylistOrder sets the order of the playlist name reaches to videoIDs,
+// as long as its order is still the one revision names. Part of a title does
+// not reach one. The server pushes the new order to YouTube on its next sync
+// run.
+func (c *Client) ReplacePlaylistOrder(ctx context.Context, name Reference, revision Revision, videoIDs []string) (Order, error) {
 	var replaced Order
-	header := http.Header{"If-Match": []string{revision}}
+	header := http.Header{"If-Match": []string{string(revision)}}
 	answered, err := c.send(ctx, http.MethodPut, orderPath(name), header, Order{VideoIDs: videoIDs}, &replaced)
 	if err != nil {
 		return Order{}, err
 	}
-	replaced.Revision = answered.Get("ETag")
+	replaced.Revision = Revision(answered.Get("ETag"))
 	return replaced, nil
 }
 
-func orderPath(name string) string { return "/api/v1/playlists/" + ref(name) + "/items" }
+func orderPath(name Reference) string { return "/api/v1/playlists/" + ref(string(name)) + "/items" }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -116,7 +117,16 @@ func TestThePlaylistOrderDecodesFromTheServersDocument(t *testing.T) {
 	if len(order.VideoIDs) == 0 {
 		t.Fatal("the order document carries no video ids, so it proves nothing about the field")
 	}
-	if order.Revision != "" {
-		t.Errorf("the revision decoded as %q from a body, and it is only ever a header", order.Revision)
+	// Asserted on the send rather than the read. The document carries no
+	// revision key, so decoding leaves the field empty whatever tag it has, and
+	// the check would hold under the tag it exists to forbid. Sending is where
+	// the tag bites: this same value is the PUT body, the server decodes it with
+	// DisallowUnknownFields, and a revision in it refuses every edit with 400.
+	sent, err := json.Marshal(Order{VideoIDs: []string{"a"}, Revision: "3"})
+	if err != nil {
+		t.Fatalf("the order does not encode: %v", err)
+	}
+	if bytes.Contains(sent, []byte("revision")) {
+		t.Errorf("an edit sends %s, and the revision is only ever a header", sent)
 	}
 }

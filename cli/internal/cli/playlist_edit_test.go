@@ -158,8 +158,8 @@ func TestARemovalAloneIsNotReportedAsAReordering(t *testing.T) {
 	if result.Reordered {
 		t.Error("reported a reordering, and what survived is in the order it was in")
 	}
-	if result.VideoCount != 2 {
-		t.Errorf("counted %d videos, want what the playlist holds now", result.VideoCount)
+	if result.ItemCount != 2 {
+		t.Errorf("counted %d videos, want what the playlist holds now", result.ItemCount)
 	}
 }
 
@@ -177,7 +177,7 @@ func TestAnEditThatChangedNothingStillAnswersAWholeDocument(t *testing.T) {
 		t.Errorf("stdout = %q, want empty lists rather than nulls", got.out)
 	}
 	result := asJSON[edited](t, got)
-	if result.Title != "Sunday Morning" || result.VideoCount != 3 {
+	if result.Title != "Sunday Morning" || result.ItemCount != 3 {
 		t.Errorf("answered %+v, want the playlist as it stands", result)
 	}
 }

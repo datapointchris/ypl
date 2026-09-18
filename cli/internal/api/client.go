@@ -68,16 +68,24 @@ func (c *Client) Get(ctx context.Context, path string, out any) error {
 	return err
 }
 
-// Post sends body to path and reads what the server made into out.
-func (c *Client) Post(ctx context.Context, path string, body, out any) error {
-	_, err := c.send(ctx, http.MethodPost, path, nil, body, out)
-	return err
+// post sends body to path and returns what the server made. patch sends body
+// to path and returns what it holds afterwards.
+//
+// Both are functions rather than methods, and both return the answer rather
+// than filling a parameter, because a method cannot take a type parameter and
+// an out parameter beside a body parameter is two adjacent `any` that the
+// compiler lets a caller swap. A named type per slot does not close that, since
+// every value satisfies `any` in either slot.
+func post[T any](ctx context.Context, c *Client, path string, body any) (T, error) {
+	var made T
+	_, err := c.send(ctx, http.MethodPost, path, nil, body, &made)
+	return made, err
 }
 
-// Patch sends body to path and reads what the server holds afterwards into out.
-func (c *Client) Patch(ctx context.Context, path string, body, out any) error {
-	_, err := c.send(ctx, http.MethodPatch, path, nil, body, out)
-	return err
+func patch[T any](ctx context.Context, c *Client, path string, body any) (T, error) {
+	var held T
+	_, err := c.send(ctx, http.MethodPatch, path, nil, body, &held)
+	return held, err
 }
 
 // Delete deletes path, which the server answers with no body.

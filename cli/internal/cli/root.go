@@ -72,12 +72,6 @@ func newRootCommand(a *app) *cobra.Command {
 		flag.Shorthand = ""
 	}
 
-	// Read back off the flag set rather than bound to a variable here, because a
-	// variable at this scope is process-wide state and every command in the tree
-	// would share one copy of it.
-	root.PersistentFlags().Bool(noInput, false,
-		"Never prompt; a verb that would have asked for confirmation refuses instead")
-
 	root.AddGroup(
 		&cobra.Group{ID: groupLibrary, Title: "The library:"},
 		&cobra.Group{ID: groupPlaying, Title: "Playing:"},

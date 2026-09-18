@@ -27,7 +27,7 @@ func (a *app) playlistsCreateCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			created, err := client.CreatePlaylist(cmd.Context(), args[0])
+			created, err := client.CreatePlaylist(cmd.Context(), api.PlaylistTitle(args[0]))
 			if err != nil {
 				return reported(err)
 			}
@@ -60,7 +60,7 @@ func (a *app) playlistsRenameCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			renamed, err := client.RenamePlaylist(cmd.Context(), args[0], args[1])
+			renamed, err := client.RenamePlaylist(cmd.Context(), api.Reference(args[0]), api.PlaylistTitle(args[1]))
 			if err != nil {
 				return reported(err)
 			}
@@ -92,6 +92,7 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 			"  ypl playlists delete 'Sunday Morning' --yes  delete it without asking",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			name := api.Reference(args[0])
 			// Checked before anything is read, so a caller who could never have
 			// answered is told what they left out rather than told that a write
 			// did not happen.
@@ -104,13 +105,24 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
+			deleting := args[0]
 			if !yes {
-				// Read first, so the question names what is about to go rather
+				// The order is read for nothing it holds. It is the one read the
+				// server resolves as narrowly as it resolves this delete, so a
+				// reference the delete will refuse is refused here instead of
+				// after the answer. Asking first and refusing after is how
+				// somebody comes to approve destroying a playlist on a command
+				// that could never have done it.
+				if _, err := client.PlaylistItems(cmd.Context(), name); err != nil {
+					return reported(err)
+				}
+				// Read second, so the question names what is about to go rather
 				// than repeating back what was typed.
-				playlist, err := client.GetPlaylist(cmd.Context(), args[0])
+				playlist, err := client.GetPlaylist(cmd.Context(), name)
 				if err != nil {
 					return reported(err)
 				}
+				deleting = playlist.Title
 				question := fmt.Sprintf("Delete %s (%s) from YouTube?", playlist.Title, count(playlist.ItemCount, "video"))
 				approved, err := confirm(cmd, question)
 				if err != nil {
@@ -121,10 +133,10 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 					return exitCode(1)
 				}
 			}
-			if err := client.DeletePlaylist(cmd.Context(), args[0]); err != nil {
+			if err := client.DeletePlaylist(cmd.Context(), name); err != nil {
 				return reported(err)
 			}
-			nothing(cmd, fmt.Sprintf("Deleted %s.", args[0]))
+			nothing(cmd, fmt.Sprintf("Deleted %s.", deleting))
 			return nil
 		},
 	}

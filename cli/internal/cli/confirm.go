@@ -45,10 +45,28 @@ func confirmable(cmd *cobra.Command) error {
 	return goclikit.UsageError(errors.New("refusing to prompt without an interactive terminal; pass --yes to confirm"))
 }
 
+// editable reports whether a verb may open an editor, which it checks before
+// the token and before its reads.
+//
+// A pipe is not a prompt, so a buffer piped in is read whatever --no-input
+// says. The refusal is for the one case --no-input forbids: a terminal, with
+// nothing else to read a buffer from.
+func editable(cmd *cobra.Command) error {
+	if !terminalIn(cmd) || interactive(cmd) {
+		return nil
+	}
+	return goclikit.UsageError(errors.New("refusing to open an editor with --no-input; pipe a buffer in instead"))
+}
+
 // interactive reports whether the command may take the terminal: --no-input
 // never may, and otherwise stdin has to be a terminal.
+//
+// Read off cmd.Flags() rather than the root's, because that resolves the flag
+// wherever it is declared. Reading the root's persistent set finds nothing once
+// the declaration moves down the tree, and a lookup that finds nothing reports
+// false — which is --no-input silently doing nothing.
 func interactive(cmd *cobra.Command) bool {
-	if forbidden, err := cmd.Root().PersistentFlags().GetBool(noInput); err == nil && forbidden {
+	if forbidden, err := cmd.Flags().GetBool(noInput); err == nil && forbidden {
 		return false
 	}
 	return terminalIn(cmd)

@@ -31,6 +31,17 @@ func (a *app) playlistsCommand() *cobra.Command {
 			"holds, and the next sync run pushes that order to YouTube.",
 		RunE: requireSubcommand,
 	}
+	// Declared here rather than on the root, because delete and edit are the
+	// only commands that read it and both are under this one. On the root it
+	// prints under Global Flags for every command in the tree, including the
+	// ones that never prompt.
+	//
+	// Read back off the flag set rather than bound to a variable here, because a
+	// variable at this scope is process-wide state and every command in the tree
+	// would share one copy of it.
+	cmd.PersistentFlags().Bool(noInput, false,
+		"Never prompt; a verb that would have asked for confirmation refuses instead")
+
 	cmd.AddGroup(
 		&cobra.Group{ID: groupPlaylistReading, Title: "Reading:"},
 		&cobra.Group{ID: groupPlaylistWriting, Title: "Changing:"},
@@ -93,7 +104,7 @@ func (a *app) playlistsShowCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			playlist, err := client.GetPlaylist(cmd.Context(), args[0])
+			playlist, err := client.GetPlaylist(cmd.Context(), api.Reference(args[0]))
 			if err != nil {
 				return reported(err)
 			}

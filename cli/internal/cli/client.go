@@ -44,7 +44,21 @@ func newAPIClient(ctx context.Context) (*api.Client, error) {
 // renewed says so and names the command that renews it, however it arrived:
 // from no token at all, from a refresh the provider refused, or from the server
 // refusing what was sent.
+//
+// A joined error is translated a part at a time and joined again. Translating
+// the whole of one swaps a sentence in for every part of it, and the parts a
+// caller joined on are the ones carrying what it did — an edit joins the file
+// its buffer was kept in, and losing that leaves the file on disk with nothing
+// naming it.
 func reported(err error) error {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		parts := joined.Unwrap()
+		said := make([]error, len(parts))
+		for i, part := range parts {
+			said[i] = reported(part)
+		}
+		return errors.Join(said...)
+	}
 	var refusal *api.Refusal
 	switch {
 	case errors.Is(err, errNeedsLogin):

@@ -113,9 +113,19 @@ func Parse(text string, known map[string]bool) ([]string, error) {
 		if stripped == "" || strings.HasPrefix(stripped, comment) {
 			continue
 		}
-		token := strings.Fields(stripped)[0]
+		fields := strings.Fields(stripped)
+		token := fields[0]
 		videoID := token
 		if !known[token] {
+			// A line the buffer did not render is one somebody typed, and what
+			// they type is an id or a URL on its own. Words after it make it a
+			// note. Without this the length rule alone admits every
+			// eleven-character English word — "placeholder", "Interesting" —
+			// which is sent as a video id and comes back as a refusal about a
+			// video YouTube does not have, naming no line.
+			if len(fields) > 1 {
+				return nil, &LineError{Number: i + 1, Line: line, Reason: "is a note rather than a video id or URL"}
+			}
 			videoID = VideoID(token)
 		}
 		if videoID == "" {

@@ -52,7 +52,10 @@ func TestRenderPutsTheIdFirstOnEveryVideoLine(t *testing.T) {
 }
 
 func TestParseIgnoresCommentsAndBlankLines(t *testing.T) {
-	got, err := Parse("# a heading\n\n   \ndQw4w9WgXcQ  Some - Mix\n#dQw4w9WgXcQ commented out\n", nil)
+	// Rendered with the ids the buffer was built from, because a line carrying a
+	// label is one this package wrote and only a token it wrote may have words
+	// after it.
+	got, err := Parse("# a heading\n\n   \ndQw4w9WgXcQ  Some - Mix\n#dQw4w9WgXcQ commented out\n", held([]string{"dQw4w9WgXcQ"}))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -143,23 +146,42 @@ func TestVideoIDReadsEveryShapeOfAddressAndRefusesTheRest(t *testing.T) {
 	}
 }
 
-func TestCommandPrefersVisualAndFallsBackToVi(t *testing.T) {
+// Open is one of the CLI's two subprocess doors, and what it depends on is a
+// binary this package does not implement. So the editor is a real one: which
+// variable is read, the variable being split into arguments, the file it is
+// given, what comes back, and an editor that exited without saving are all
+// answered by running one. vi is the exception — it is what runs where neither
+// variable is set, and nothing can drive a full-screen editor in a test, so
+// Command is asked for that one directly.
+func TestTheEditorRunsOverTheBufferAndSaysWhetherItChanged(t *testing.T) {
 	t.Setenv("VISUAL", "")
 	t.Setenv("EDITOR", "")
 	if got := Command(); !slices.Equal(got, []string{defaultEditor}) {
 		t.Errorf("with neither variable set the editor is %v, want %v", got, []string{defaultEditor})
 	}
 
-	t.Setenv("EDITOR", "ed")
-	if got := Command(); !slices.Equal(got, []string{"ed"}) {
-		t.Errorf("with EDITOR set the editor is %v, want ed", got)
+	// $EDITOR may be a line editor for dumb terminals, and a playlist is not
+	// something to rearrange in ed. false exits 1, so reading EDITOR here would
+	// be an error rather than a clean run.
+	t.Setenv("EDITOR", "false")
+	t.Setenv("VISUAL", "true")
+	if _, changedIt, err := Open("first\nsecond\n"); err != nil || changedIt {
+		t.Errorf("an editor that saved nothing gave changedIt=%v err=%v, want false and no error", changedIt, err)
 	}
 
-	// $EDITOR may be a line editor for dumb terminals, and a playlist is not
-	// something to rearrange in ed.
-	t.Setenv("VISUAL", "code --wait")
-	if got := Command(); !slices.Equal(got, []string{"code", "--wait"}) {
-		t.Errorf("the editor is %v, want VISUAL split into its arguments", got)
+	// VISUAL split into its arguments, reaching a binary that edits the file it
+	// is handed in place.
+	t.Setenv("VISUAL", "sed -i 1d")
+	switch text, changedIt, err := Open("first\nsecond\n"); {
+	case err != nil:
+		t.Errorf("the edit failed: %v", err)
+	case text != "second\n" || !changedIt:
+		t.Errorf("the editor gave %q changedIt=%v, want %q and true", text, changedIt, "second\n")
+	}
+
+	t.Setenv("VISUAL", "false")
+	if _, _, err := Open("first\n"); err == nil {
+		t.Error("an editor that exited without saving was taken as a save")
 	}
 }
 
