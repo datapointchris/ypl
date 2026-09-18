@@ -371,11 +371,21 @@ func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 	if deleted := f.run("plays", "delete", "41", "--yes"); deleted.code != 0 || len(f.writes()) != 2 {
 		t.Errorf("delete --yes exited %d with %d writes in all, want 0 and a second delete: %s", deleted.code, len(f.writes()), deleted.err)
 	}
+	// A play already deleted is gone as asked, so deleting it succeeds and
+	// sends nothing.
+	f = newFixture(t, answers(map[string]answer{
+		"GET /api/v1/plays/42": {status: http.StatusGone, body: `{"error": "play 42 was deleted", "code": "play_deleted"}`},
+	}))
+	if again := f.run("plays", "delete", "42", "--yes"); again.code != 0 || len(f.writes()) != 0 || !strings.Contains(again.err, "already deleted") {
+		t.Errorf("deleting a deleted play exited %d after %d writes saying %q, want 0, none, and that it was deleted",
+			again.code, len(f.writes()), again.err)
+	}
 
 	// Playback counts a mix as heard once it has played long enough, counting
 	// only ground covered at the speed of playing, and only on the player this
 	// playback started. The server refuses some plays: one once, one until
-	// playback ends, and one always.
+	// playback ends, and one always. It answers one as deleted, as it does a
+	// play whose first send landed unanswered and was then taken back.
 	var ending atomic.Bool
 	refusedOnce := false
 	f = newFixture(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -391,6 +401,11 @@ func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 			refuse = !ending.Load()
 		case "yyyyyyyyyyy":
 			refuse = true
+		case "zzzzzzzzzzz":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGone)
+			_, _ = w.Write([]byte(`{"error": "play was deleted", "code": "play_deleted"}`))
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if refuse {
@@ -431,6 +446,7 @@ func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 	played("rrrrrrrrrrr", mine, 1, 7200, 0, 10)      // then played on past it
 	played("ddddddddddd", mine, 2, 7200, 0, 1240)    // at double speed
 	played("ooooooooooo", theirs, 1, 7200, 0, 1300)  // another player's, on the same socket
+	played("zzzzzzzzzzz", mine, 1, 7200, 0, 1210)    // deleted as it was sent
 	played("xxxxxxxxxxx", mine, 1, 7200, 0, 1210)    // refused until playback ends
 	played("yyyyyyyyyyy", mine, 1, 7200, 0, 1210)    // refused always
 
@@ -494,6 +510,9 @@ func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 	}
 	if len(sentFor["aaaaaaaaaaa"]) != 2 || len(sentFor["xxxxxxxxxxx"]) < 2 {
 		t.Errorf("sent the refused plays %d and %d times, want each sent again", len(sentFor["aaaaaaaaaaa"]), len(sentFor["xxxxxxxxxxx"]))
+	}
+	if len(sentFor["zzzzzzzzzzz"]) != 1 {
+		t.Errorf("sent the deleted play %d times, want once and then settled", len(sentFor["zzzzzzzzzzz"]))
 	}
 
 	// What went unsent is named with the command that records it.

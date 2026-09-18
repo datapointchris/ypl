@@ -41,9 +41,10 @@ func (a *app) playsDeleteCommand() *cobra.Command {
 			"mix as though that listen had not happened, which is how a play `ypl play`\n" +
 			"recorded wrongly is taken back.\n" +
 			"\n" +
-			"It asks first, and needs --yes where there is nobody to ask. The handle is\n" +
-			"never given to another play, so a handle from an old listing finds nothing\n" +
-			"rather than a different listen.",
+			"It asks first, and needs --yes where there is nobody to ask. A play already\n" +
+			"deleted is reported as such, and the command succeeds. The handle is never\n" +
+			"given to another play, so a handle from an old listing finds nothing rather\n" +
+			"than a different listen.",
 		Example: "  ypl plays delete 41        ask, then delete it\n" +
 			"  ypl plays delete 41 --yes  delete it without asking",
 		Args: usageArgs(cobra.ExactArgs(1)),
@@ -64,6 +65,10 @@ func (a *app) playsDeleteCommand() *cobra.Command {
 			// the delete names it by its id, so a handle cannot reach a
 			// different play between the question and the answer.
 			play, err := client.GetPlay(cmd.Context(), args[0])
+			if api.PlayDeleted(err) {
+				nothing(cmd, fmt.Sprintf("Play %s was already deleted.", args[0]))
+				return nil
+			}
 			if err != nil {
 				return reported(err)
 			}

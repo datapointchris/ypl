@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"strconv"
 )
 
@@ -72,9 +73,18 @@ func (c *Client) GetPlay(ctx context.Context, name string) (Play, error) {
 
 // DeletePlay deletes the play name names, by any name GetPlay takes. The
 // server never gives its handle to another play, and refuses its id if it is
-// sent again.
+// sent again. A play already deleted is deleted as asked, and answers nil.
 func (c *Client) DeletePlay(ctx context.Context, name string) error {
 	return c.Delete(ctx, "/api/v1/plays/"+ref(name))
+}
+
+// PlayDeleted reports whether err is the server saying the play a request
+// named was deleted, which it answers wherever that play is named. It is not a
+// reference mistyped, and a caller that wanted the play gone has what it
+// wanted.
+func PlayDeleted(err error) bool {
+	var refusal *Refusal
+	return errors.As(err, &refusal) && refusal.Code == "play_deleted"
 }
 
 // MaxSuggestions is the most the server draws at once. Suggestions are a draw
