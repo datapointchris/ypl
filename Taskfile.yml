@@ -12,17 +12,16 @@ tasks:
     cmds:
       - task --list
 
-  # A worktree is a clean checkout, so everything gitignored is absent. The
-  # Python environment comes back from the lockfile. .planning is linked to the
-  # same target as the primary checkout's link, only where nothing is there yet.
-  # PRIMARY resolves from any worktree because they share one git directory.
+  # A worktree is a clean checkout, so everything gitignored is absent.
+  # .planning is linked to the same target as the primary checkout's link, only
+  # where nothing is there yet. PRIMARY resolves from any worktree because they
+  # share one git directory.
   setup:
     desc: Make a fresh checkout runnable
     vars:
       PRIMARY:
         sh: git rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||'
     cmds:
-      - uv sync --all-extras --dev
       - |
         target=$(readlink "{{.PRIMARY}}/.planning") || exit 0
         if [ ! -e .planning ] && [ ! -L .planning ]; then
@@ -32,9 +31,9 @@ tasks:
         fi
 
   # The pre-commit hooks against every file, run exactly as a commit runs them
-  # against the files it stages. ruff comes from the revision the config pins.
-  # The Go hooks call the go, gofumpt and golangci-lint on PATH, where CI
-  # installs golangci-lint at a pinned version of its own.
+  # against the files it stages. The Go hooks call the go, gofumpt and
+  # golangci-lint on PATH, where CI installs golangci-lint at a pinned version
+  # of its own.
   lint:
     desc: Run every pre-commit hook against every file
     cmds:
@@ -43,18 +42,8 @@ tasks:
   test:
     desc: Test every subsystem
     cmds:
-      - task: py:test
       - task: api:test
       - task: cli:test
-
-  # ---------------------------------------------------------------------------
-  # Python tool, at the repository root
-  # ---------------------------------------------------------------------------
-
-  py:test:
-    desc: Run the Python test suite
-    cmds:
-      - uv run pytest
 
   # ---------------------------------------------------------------------------
   # API, module github.com/datapointchris/ypl/api

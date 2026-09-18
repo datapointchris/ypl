@@ -1,0 +1,10 @@
+# codespell's own file, since the repository has no manifest that would carry
+# its settings for every stack.
+#
+# api/*/testdata holds verbatim recordings of YouTube's answers. Their spelling
+# belongs to YouTube and to the people who wrote the descriptions and comments
+# in them, so it is theirs to be wrong, and these files are skipped.
+[codespell]
+skip = api/*/testdata/*
+check-filenames =
+check-hidden =

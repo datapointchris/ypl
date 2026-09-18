@@ -117,12 +117,3 @@ field is ignored — and a value it has wrong is a refusal the client reports as
 The slug a playlist is offered by on Tab is a derivation the server owns, and it is the one copy
 that is pinned: `api/handlers` writes its own slug of a set of titles to `testdata/wire/slugs.json`,
 and the completion test holds the client's to every pair.
-
-## Where the Python tool fits
-
-`src/` and `tests/` are the original single-user Python tool. It is the source of the library the
-server imports once, through `api/cmd/import-python-mirror`, and it is not part of the server. Its
-release is gated on its own paths, so a commit that changes only `api/**` publishes nothing:
-keep a change to `README.md` or `pyproject.toml` in its own `docs:` or `chore:` commit rather than
-folding it into a `feat(api):` one, or the filter is defeated and a release is cut for a Python
-tool that did not change.

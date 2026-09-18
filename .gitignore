@@ -1,33 +1,14 @@
 # OS
 .DS_Store
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-*.egg
-dist/
-build/
-*.manifest
-*.spec
-.venv/
-venv/
-.env
-.coverage
-.coverage.*
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
 # Go
 /bin/
+dist/
 # `go build ./...` writes the executable when the pattern matches one main package.
 /api/api
 
 # Project
+.env
 TESTING.*
 client_secret*
 service_account*

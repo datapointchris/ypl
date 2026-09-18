@@ -657,48 +657,6 @@ func (q *Queries) GetYouTubeWrite(ctx context.Context, writeID int64) (GetYouTub
 	return i, err
 }
 
-const importVideo = `-- name: ImportVideo :exec
-INSERT INTO videos (
-    video_id, title, channel_title, duration_seconds, description, upload_date, is_unavailable, enriched_ts
-)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (video_id) DO UPDATE SET
-    title = excluded.title,
-    channel_title = excluded.channel_title,
-    duration_seconds = excluded.duration_seconds,
-    description = excluded.description,
-    upload_date = excluded.upload_date,
-    is_unavailable = excluded.is_unavailable,
-    enriched_ts = excluded.enriched_ts
-`
-
-type ImportVideoParams struct {
-	VideoID         string
-	Title           string
-	ChannelTitle    string
-	DurationSeconds sql.NullInt64
-	Description     sql.NullString
-	UploadDate      sql.NullString
-	IsUnavailable   bool
-	EnrichedTs      sql.NullString
-}
-
-// Writes every column, so it is only for a copy of a whole row. A caller holding
-// some of a video's columns would overwrite the rest.
-func (q *Queries) ImportVideo(ctx context.Context, arg ImportVideoParams) error {
-	_, err := q.db.ExecContext(ctx, importVideo,
-		arg.VideoID,
-		arg.Title,
-		arg.ChannelTitle,
-		arg.DurationSeconds,
-		arg.Description,
-		arg.UploadDate,
-		arg.IsUnavailable,
-		arg.EnrichedTs,
-	)
-	return err
-}
-
 const insertBaseItem = `-- name: InsertBaseItem :exec
 INSERT INTO base_items (item_id, playlist_id, position, video_id, is_placed)
 VALUES (?, ?, ?, ?, ?)
@@ -2125,6 +2083,49 @@ func (q *Queries) ListVideosToEnrich(ctx context.Context, arg ListVideosToEnrich
 		return nil, err
 	}
 	return items, nil
+}
+
+const seedVideo = `-- name: SeedVideo :exec
+INSERT INTO videos (
+    video_id, title, channel_title, duration_seconds, description, upload_date, is_unavailable, enriched_ts
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (video_id) DO UPDATE SET
+    title = excluded.title,
+    channel_title = excluded.channel_title,
+    duration_seconds = excluded.duration_seconds,
+    description = excluded.description,
+    upload_date = excluded.upload_date,
+    is_unavailable = excluded.is_unavailable,
+    enriched_ts = excluded.enriched_ts
+`
+
+type SeedVideoParams struct {
+	VideoID         string
+	Title           string
+	ChannelTitle    string
+	DurationSeconds sql.NullInt64
+	Description     sql.NullString
+	UploadDate      sql.NullString
+	IsUnavailable   bool
+	EnrichedTs      sql.NullString
+}
+
+// Writes every column of a video, which is how a test sets one up. Nothing the
+// server runs calls it: a caller holding some of a video's columns would
+// overwrite the rest.
+func (q *Queries) SeedVideo(ctx context.Context, arg SeedVideoParams) error {
+	_, err := q.db.ExecContext(ctx, seedVideo,
+		arg.VideoID,
+		arg.Title,
+		arg.ChannelTitle,
+		arg.DurationSeconds,
+		arg.Description,
+		arg.UploadDate,
+		arg.IsUnavailable,
+		arg.EnrichedTs,
+	)
+	return err
 }
 
 const setEntryItem = `-- name: SetEntryItem :execrows

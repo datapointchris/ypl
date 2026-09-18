@@ -342,7 +342,7 @@ func TestAPlaylistWithAnUnknownPrivacyIsRefused(t *testing.T) {
 func TestAReadOfAnUnavailableVideoKeepsItsStoredTitle(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
-	if err := st.Queries.ImportVideo(ctx, generated.ImportVideoParams{
+	if err := st.Queries.SeedVideo(ctx, generated.SeedVideoParams{
 		VideoID: "v1", Title: "A Mix", ChannelTitle: "A Channel", Description: sql.NullString{String: "tracklist", Valid: true},
 	}); err != nil {
 		t.Fatalf("import: %v", err)

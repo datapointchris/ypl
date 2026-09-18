@@ -89,9 +89,9 @@ func TestOpenAppliesMigrationsAndSeedsTheSources(t *testing.T) {
 
 	// Two programs open this store and both migrate on the way in, so the
 	// migration is serialized by a lock beside the database. Opening a second
-	// store on the same path while the first is live is what a seed command run
-	// beside a starting server does, and it has to find the schema whole rather
-	// than half applied.
+	// store on the same path while the first is live is what `reset-enrichment`
+	// run beside a starting server does, and it has to find the schema whole
+	// rather than half applied.
 	beside, err := Open(context.Background(), path)
 	if err != nil {
 		t.Fatalf("open a second store on the same path: %v", err)
@@ -110,8 +110,8 @@ func TestOpenAppliesMigrationsAndSeedsTheSources(t *testing.T) {
 func TestReopeningAnExistingDatabaseChangesNothing(t *testing.T) {
 	ctx := context.Background()
 	first, path := open(t)
-	if err := first.Queries.ImportVideo(ctx, video("v1")); err != nil {
-		t.Fatalf("import video: %v", err)
+	if err := first.Queries.SeedVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("seed video: %v", err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -184,8 +184,8 @@ func TestUnavailabilityIsABoolean(t *testing.T) {
 func TestReplaceTracksReplacesTheWholeTracklist(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
-	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
-		t.Fatalf("import video: %v", err)
+	if err := st.Queries.SeedVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("seed video: %v", err)
 	}
 	replace(t, st, track("", 1, "chapter"), track("", 2, "chapter"), track("", 3, "chapter"))
 	replace(t, st, track("", 1, "chapter"))
@@ -204,8 +204,8 @@ func TestReplaceTracksReplacesTheWholeTracklist(t *testing.T) {
 func TestAFailedReplacementKeepsThePreviousTracklist(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
-	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
-		t.Fatalf("import video: %v", err)
+	if err := st.Queries.SeedVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("seed video: %v", err)
 	}
 	replace(t, st, track("", 1, "chapter"), track("", 2, "chapter"))
 
@@ -229,7 +229,7 @@ func TestAFailedTransactionLeavesNothingBehind(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
 	err := st.InTx(ctx, func(tx *Tx) error {
-		if err := tx.ImportVideo(ctx, video("v1")); err != nil {
+		if err := tx.SeedVideo(ctx, video("v1")); err != nil {
 			return err
 		}
 		return tx.InsertTrack(ctx, track("missing", 1, "chapter"))
@@ -250,7 +250,7 @@ func TestAReadTransactionReadsOneSnapshot(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
+		if err := st.Queries.SeedVideo(ctx, video("v1")); err != nil {
 			return err
 		}
 		after, err := q.CountVideos(ctx)
@@ -285,10 +285,10 @@ func TestAWriteTransactionHoldsTheWriteLockFromItsStart(t *testing.T) {
 		if _, err := tx.CountVideos(ctx); err != nil {
 			return err
 		}
-		if err := generated.New(other).ImportVideo(ctx, video("v2")); sqliteCode(err) != sqlite3.SQLITE_BUSY {
+		if err := generated.New(other).SeedVideo(ctx, video("v2")); sqliteCode(err) != sqlite3.SQLITE_BUSY {
 			t.Errorf("another connection's write while a write transaction was open = %v, want SQLITE_BUSY", err)
 		}
-		return tx.ImportVideo(ctx, video("v1"))
+		return tx.SeedVideo(ctx, video("v1"))
 	})
 	if err != nil {
 		t.Fatalf("a transaction that read before it wrote: %v", err)
@@ -316,12 +316,12 @@ func TestAReadTransactionRefusesAWriteAndLeavesItsConnectionWritable(t *testing.
 	st.db.SetMaxOpenConns(1)
 
 	err := st.InReadTx(ctx, func(q *generated.Queries) error {
-		return q.ImportVideo(ctx, video("v1"))
+		return q.SeedVideo(ctx, video("v1"))
 	})
 	if sqliteCode(err) != sqlite3.SQLITE_READONLY {
 		t.Fatalf("a write inside a read transaction = %v, want SQLITE_READONLY", err)
 	}
-	if err := st.Queries.ImportVideo(ctx, video("v2")); err != nil {
+	if err := st.Queries.SeedVideo(ctx, video("v2")); err != nil {
 		t.Fatalf("a write after the read transaction: %v", err)
 	}
 	if n := countVideos(t, st); n != 1 {
@@ -336,8 +336,8 @@ func TestAReadTransactionRefusesAWriteAndLeavesItsConnectionWritable(t *testing.
 func TestPlaysTakeHandlesPastEveryDeletedOneAndARepeatTakesNone(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
-	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
-		t.Fatalf("import video: %v", err)
+	if err := st.Queries.SeedVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("seed video: %v", err)
 	}
 	insert := func(id string) {
 		t.Helper()
@@ -376,8 +376,8 @@ func TestPlaysTakeHandlesPastEveryDeletedOneAndARepeatTakesNone(t *testing.T) {
 func TestAPlayTimeNotInUTCToTheSecondIsRefused(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
-	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
-		t.Fatalf("import video: %v", err)
+	if err := st.Queries.SeedVideo(ctx, video("v1")); err != nil {
+		t.Fatalf("seed video: %v", err)
 	}
 	for _, ts := range []string{"2026-09-01T10:00:00.5Z", "2026-09-01T10:00:00+02:00", "2026-09-01 10:00:00", "2026-09-01T10:00:00z"} {
 		if _, err := st.Queries.InsertPlay(ctx, generated.InsertPlayParams{PlayID: ts, VideoID: "v1", PlayedTs: ts}); err == nil {
@@ -400,8 +400,8 @@ func replace(t *testing.T, st *Store, tracks ...generated.InsertTrackParams) {
 	}
 }
 
-func video(id string) generated.ImportVideoParams {
-	return generated.ImportVideoParams{VideoID: id, Title: "A Mix", ChannelTitle: "A Channel"}
+func video(id string) generated.SeedVideoParams {
+	return generated.SeedVideoParams{VideoID: id, Title: "A Mix", ChannelTitle: "A Channel"}
 }
 
 func track(videoID string, position int64, source string) generated.InsertTrackParams {

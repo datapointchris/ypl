@@ -10,62 +10,6 @@ permissions:
 
 jobs:
 
-  python:
-    runs-on: ubuntu-latest
-    steps:
-
-      - uses: actions/checkout@v7
-
-      # generated:python
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - run: uv sync --all-extras --dev
-
-      # uvx, not `uv run` — the latter resolves ruff from the repo's own
-      # dependencies, and a repo treating ruff as an installed tool rather than a
-      # project dependency does not declare it. The version is the one the
-      # pre-commit hook pins, so the two cannot disagree about a finding.
-      - run: uvx ruff@0.12.5 check .
-
-      - run: uvx ruff@0.12.5 format --check .
-
-      # Declaring mypy as a dependency is the opt-in, and `uv run` is the same
-      # invocation the pre-commit hook uses, so a repo passing locally passes
-      # here. A [tool.mypy] section is not the opt-in: the standard pyproject
-      # template writes one into every repo, infra repos included, and those
-      # have nothing importable to check.
-      # Tested by import rather than `mypy --version`: `uv run` falls back to
-      # PATH, so a machine with mypy installed globally reports it present in a
-      # repo that never declared it, and the check would pass locally while
-      # behaving differently on a clean runner.
-      - name: Type check
-        run: |
-          if uv run python -c "import mypy" >/dev/null 2>&1; then
-            uv run mypy . --install-types --non-interactive
-          else
-            echo "mypy not a project dependency; skipping"
-          fi
-
-      # --with pytest, unlike the mypy step above, because skipping is the wrong
-      # answer here: a repo with a real test suite that never declared pytest as
-      # a dependency would silently stop being tested. Supplying the runner runs
-      # the tests; a suite needing plugins still declares those itself.
-      #
-      # pytest exits 5 when it collects nothing, which is not a failure for a
-      # repo that has no tests yet. Written explicitly rather than as an && chain
-      # because the runner uses `bash -e`, where the concise form depends on
-      # subtle errexit-exemption rules.
-      - name: Test
-        run: |
-          set +e
-          uv run --with pytest pytest
-          code=$?
-          set -e
-          if [ "$code" -eq 0 ] || [ "$code" -eq 5 ]; then exit 0; fi
-          exit 1
-
   go-api:
     runs-on: ubuntu-latest
     defaults:
@@ -75,12 +19,22 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      # > custom:before:go-api - yt-dlp for the test that hands it a read's arguments
       # The API reads videos by running yt-dlp, and one test hands the real
       # binary the arguments a read passes, so that an option yt-dlp does not
       # take is red here rather than on the deployed host. That test skips when
       # yt-dlp is absent, which without this step is everywhere.
-      - name: Install yt-dlp
-        run: pipx install yt-dlp
+      #
+      # The release is the one the image pins, read from the Dockerfile so one
+      # edit moves both. The tag writes 2026.08.19 and PyPI 2026.8.19.
+      - name: Install the yt-dlp the image ships
+        run: |
+          tag=$(sed -n 's|.*yt-dlp/releases/download/\([0-9.]*\)/.*|\1|p' Dockerfile | head -n 1)
+          if [ -z "$tag" ]; then
+            echo "::error file=api/Dockerfile::no yt-dlp release is pinned by URL"
+            exit 1
+          fi
+          pipx install "yt-dlp==$(echo "$tag" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 }')"
 
       # generated:go-api
       - uses: actions/setup-go@v7

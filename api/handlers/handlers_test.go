@@ -108,7 +108,7 @@ type wireRefusal struct {
 func (f *fixture) withLibrary(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
-	videos := []generated.ImportVideoParams{
+	videos := []generated.SeedVideoParams{
 		{VideoID: "a", Title: "Zebra", ChannelTitle: "One", DurationSeconds: known(3600), Description: text("A long set"), UploadDate: text("2020-01-01"), EnrichedTs: text("2026-01-01T00:00:00Z")},
 		{VideoID: "b", Title: "apple", ChannelTitle: "Two", DurationSeconds: known(1800), UploadDate: text("2022-05-01")},
 		{VideoID: "c", Title: "Évora", ChannelTitle: "Two"},
@@ -131,7 +131,7 @@ func (f *fixture) withLibrary(t *testing.T) {
 	}
 	err := f.st.InTx(ctx, func(tx *store.Tx) error {
 		for _, v := range videos {
-			if err := tx.ImportVideo(ctx, v); err != nil {
+			if err := tx.SeedVideo(ctx, v); err != nil {
 				return err
 			}
 		}

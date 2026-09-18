@@ -28,14 +28,12 @@ import (
 var migrations embed.FS
 
 // trackSources is the vocabulary tracks.source draws from, upserted on every
-// open. It holds the Python tool's seed, so every track a Python mirror can hold
-// has its source here, and comment, which only the server reads.
+// open: the three places a read finds a tracklist. The upsert never deletes, so
+// a source a store already holds stays with its tracks.
 var trackSources = []generated.UpsertTrackSourceParams{
 	{Source: "chapter", Label: "Chapter", Description: "A chapter of the video, whose start and end are numbers rather than text anything parsed. yt-dlp reports a chapter YouTube marked and one it derived from the description alike"},
 	{Source: "description", Label: "Description", Description: "Parsed from the video description"},
 	{Source: "comment", Label: "Comment", Description: "Parsed from timestamped lines in one of the video's top comments"},
-	{Source: "llm", Label: "Claude", Description: "Extracted by Claude from unstructured text"},
-	{Source: "manual", Label: "Manual", Description: "Entered by hand"},
 }
 
 // How a sync run ended, the vocabulary sync_runs.outcome draws from.
@@ -433,7 +431,8 @@ func (tx *Tx) ReplaceBase(ctx context.Context, playlistID string, items []BaseIt
 // Postgres and none for SQLite, so without this each runs `Up` against the same
 // file and a second one arriving mid-create fails on a schema that is half
 // applied. The window is the first open of an empty database, which is exactly
-// the moment a seed command is most likely to be run beside a starting server.
+// the moment `reset-enrichment`, the other program that opens this store, is
+// most likely to be run beside a starting server.
 //
 // The lock is a file beside the database rather than a row in it, because the
 // thing being serialized is the creation of the tables a row would live in.
