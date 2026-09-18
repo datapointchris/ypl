@@ -1,7 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
@@ -31,7 +37,10 @@ func (a *app) playCommand() *cobra.Command {
 			"server already knows which ones those are.\n" +
 			"\n" +
 			"Playback opens mpv's IPC socket, which is what lets `ypl now` say which track\n" +
-			"of a two-hour mix is on.",
+			"of a two-hour mix is on. It is also how a play is recorded: once a mix has\n" +
+			"played for 20 minutes, or half its length when that is shorter, the server is\n" +
+			"told, and `ypl next` stops offering it first. A seek forward is not listening,\n" +
+			"so it does not count toward that.",
 		Example: "  ypl play sunday-morning             the whole playlist, in its order\n" +
 			"  ypl play                            a draw, least recently heard first\n" +
 			"  ypl play sunday-morning --audio     no video window\n" +
@@ -85,12 +94,47 @@ func (a *app) playCommand() *cobra.Command {
 			if !mpv.Addressable(socket) {
 				// mpv logs this and plays on regardless, which leaves `ypl now`
 				// quietly reporting nothing with no way to tell why.
-				nothing(cmd, fmt.Sprintf("%s is too long for a unix socket, so `ypl now` will not see this.", socket))
+				nothing(cmd, fmt.Sprintf("%s is too long for a unix socket, so `ypl now` will not see this and no play is recorded.", socket))
 				socket = ""
 			}
-			outcome, err := mpv.Play(cmd.Context(), socket, arguments, urls)
+
+			// Ctrl-C reaches every process on the terminal, mpv and this one
+			// alike. mpv quits on it. This process has the last send and the
+			// report still to do, so it catches the interrupt rather than
+			// dying on it. Caught rather than ignored, because an ignored
+			// signal stays ignored in the mpv it starts.
+			interrupted := make(chan os.Signal, 1)
+			signal.Notify(interrupted, os.Interrupt)
+			defer signal.Stop(interrupted)
+
+			// The recorder reads the socket mpv opens, answering only for the
+			// player this playback starts, and stops when mpv exits. What it
+			// has to say waits for the terminal to come back, because mpv is
+			// drawing on it until then.
+			recording, stopRecording := context.WithCancel(cmd.Context())
+			result := make(chan delivered, 1)
+			var player atomic.Int64
+			if socket != "" {
+				ticks := time.NewTicker(readEvery)
+				defer ticks.Stop()
+				read := fromPlayer(func() (mpv.State, error) { return mpv.Read(socket) }, player.Load)
+				go func() { result <- recordListens(recording, client, read, ticks.C, time.Now) }()
+			} else {
+				result <- delivered{}
+			}
+			outcome, err := mpv.Play(cmd.Context(), socket, arguments, urls, func(pid int) { player.Store(int64(pid)) })
+			stopRecording()
+			reportPlays(cmd, <-result)
 			if err != nil {
 				return reported(err)
+			}
+			// An interrupt ends playback the way quitting mpv does, and is
+			// answered with the shell's code for one, so a script can tell.
+			// What mpv exited with is its answer to the same signal.
+			select {
+			case <-interrupted:
+				return exitCode(130)
+			default:
 			}
 			// A player that failed is a command that failed, which is exit 1.
 			// mpv's own status is said rather than returned: it spends 2 on a
@@ -111,6 +155,22 @@ func (a *app) playCommand() *cobra.Command {
 	// and never a rendering flag's. `ypl playlists show --json` and
 	// `ypl next --json` are the reads.
 	return cmd
+}
+
+// reportPlays says what a playback recorded, and names each play the server
+// was not told about with the command that records it, since `ypl next` will
+// otherwise offer that mix again as if unheard.
+func reportPlays(cmd *cobra.Command, result delivered) {
+	if len(result.stored) > 0 {
+		titles := make([]string, len(result.stored))
+		for i, play := range result.stored {
+			titles[i] = play.Video.Title
+		}
+		nothing(cmd, fmt.Sprintf("Recorded %s: %s.", count(int64(len(titles)), "play"), strings.Join(titles, ", ")))
+	}
+	for _, missed := range result.unsent {
+		nothing(cmd, fmt.Sprintf("Could not record a play of %s: %v. `ypl plays add %s` records it.", missed.videoID, missed.err, missed.videoID))
+	}
 }
 
 // drawn is a draw of the library made the way `ypl next` makes one, up to
