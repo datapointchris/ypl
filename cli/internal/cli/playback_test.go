@@ -118,6 +118,37 @@ func TestNowReportsTheTrackAtThePositionMpvIsAt(t *testing.T) {
 	if !strings.Contains(plain.out, "Moby - Second") || !strings.Contains(plain.out, "Six Hours Of House") {
 		t.Errorf("printed %q, want the track and the video", plain.out)
 	}
+
+	// The edges of the same question, which one run of the command cannot
+	// reach. start_seconds is nullable in the store, so a track whose start the
+	// tracklist does not carry arrives here and cannot hold a position. mpv
+	// answers no time-pos until playback has started, so a nil position is the
+	// ordinary first read rather than a broken one.
+	at := func(seconds int64) *int64 { return &seconds }
+	edges := []api.Track{
+		{Position: 1, Title: "No start"},
+		{Position: 2, StartSeconds: at(100), EndSeconds: at(200), Title: "Bounded"},
+		{Position: 3, StartSeconds: at(200), Title: "Last"},
+	}
+	for _, edge := range []struct {
+		why      string
+		position *int64
+		want     string
+	}{
+		{"a track with no start cannot be known to hold a position", at(50), ""},
+		{"a position inside a bounded track is that track", at(150), "Bounded"},
+		{"an end is where the track stops, so the position on it is the next one", at(200), "Last"},
+		{"the last track runs to the end of the video", at(9000), "Last"},
+		{"nothing has a position before playback starts", nil, ""},
+	} {
+		name := ""
+		if got := trackAt(edges, edge.position); got != nil {
+			name = got.Title
+		}
+		if name != edge.want {
+			t.Errorf("%s: reported %q, want %q", edge.why, name, edge.want)
+		}
+	}
 }
 
 // Exits 1 rather than failing, so a status bar can run it unguarded.
