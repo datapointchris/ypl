@@ -10,13 +10,6 @@ import (
 	"github.com/datapointchris/ypl/cli/internal/api"
 )
 
-// The playlist verbs are split by whether they change the channel, so the half
-// that writes to YouTube is visible without reading each Short.
-const (
-	groupPlaylistReading = "playlist-reading"
-	groupPlaylistWriting = "playlist-writing"
-)
-
 func (a *app) playlistsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "playlists",
@@ -32,10 +25,10 @@ func (a *app) playlistsCommand() *cobra.Command {
 			"holds, and the next sync run pushes that order to YouTube.",
 		RunE: requireSubcommand,
 	}
-	// Declared here rather than on the root, because delete and edit are the
-	// only commands that read it and both are under this one. On the root it
-	// prints under Global Flags for every command in the tree, including the
-	// ones that never prompt.
+	// Declared on the namespaces whose verbs read it rather than on the root.
+	// Here those are delete and edit, and `ypl plays delete` declares its own.
+	// On the root it prints under Global Flags for every command in the tree,
+	// including the ones that never prompt.
 	//
 	// Read back off the flag set rather than bound to a variable here, because a
 	// variable at this scope is process-wide state and every command in the tree
@@ -43,10 +36,7 @@ func (a *app) playlistsCommand() *cobra.Command {
 	cmd.PersistentFlags().Bool(noInput, false,
 		"Never prompt; a verb that would have asked for confirmation refuses instead")
 
-	cmd.AddGroup(
-		&cobra.Group{ID: groupPlaylistReading, Title: "Reading:"},
-		&cobra.Group{ID: groupPlaylistWriting, Title: "Changing:"},
-	)
+	splitReadingFromChanging(cmd)
 	cmd.AddCommand(
 		a.playlistsListCommand(),
 		a.playlistsShowCommand(),
@@ -62,7 +52,7 @@ func (a *app) playlistsListCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "list",
-		GroupID: groupPlaylistReading,
+		GroupID: groupReading,
 		Short:   "List every playlist with what it holds",
 		Example: "  ypl playlists list         what is on the channel, and how much of it is read\n" +
 			"  ypl playlists list --json  the same, for a script",
@@ -95,7 +85,7 @@ func (a *app) playlistsShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "show <playlist>",
-		GroupID: groupPlaylistReading,
+		GroupID: groupReading,
 		Short:   "Show one playlist and the videos in it, in order",
 		Example: "  ypl playlists show 'sunday morning'  what is in it, in the order it plays\n" +
 			"  ypl playlists show morning           part of a title is enough for a read",

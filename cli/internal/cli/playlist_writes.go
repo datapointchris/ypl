@@ -12,7 +12,7 @@ func (a *app) playlistsCreateCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "create <title>",
-		GroupID: groupPlaylistWriting,
+		GroupID: groupChanging,
 		Short:   "Make a new playlist on the channel",
 		Long: "Creates the playlist on YouTube, private, and stores it. It is made in this\n" +
 			"request rather than by the next sync run, so the id it comes back with is\n" +
@@ -47,7 +47,7 @@ func (a *app) playlistsRenameCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "rename <playlist> <title>",
-		GroupID: groupPlaylistWriting,
+		GroupID: groupChanging,
 		Short:   "Retitle a playlist, on YouTube and here",
 		Long: "Renames it on YouTube in this request. The playlist is named by its id, its\n" +
 			"whole title, or that title slugged — part of a title does not reach a rename,\n" +
@@ -80,7 +80,7 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:     "delete <playlist>",
-		GroupID: groupPlaylistWriting,
+		GroupID: groupChanging,
 		Short:   "Delete a playlist from the channel",
 		Long: "Deletes it on YouTube in this request, and from the server with everything it\n" +
 			"held. Nothing here can put it back: the videos are still in the library, and\n" +
@@ -99,7 +99,7 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 			// answered is told what they left out rather than told that a write
 			// did not happen.
 			if !yes {
-				if err := confirmable(cmd); err != nil {
+				if err := a.confirmable(cmd); err != nil {
 					return err
 				}
 			}
@@ -126,7 +126,7 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 				}
 				deleting = playlist.Title
 				question := fmt.Sprintf("Delete %s (%s) from YouTube?", playlist.Title, count(playlist.ItemCount, "video"))
-				approved, err := confirm(cmd, question)
+				approved, err := a.confirm(cmd, question)
 				if err != nil {
 					return err
 				}

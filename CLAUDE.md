@@ -1,7 +1,8 @@
 # ypl
 
-Organize YouTube playlists of long DJ mixes. `README.md` says what the parts are and how the sync
-works; this file covers what someone changing the code has to hold in mind.
+Organize YouTube playlists of long DJ mixes. `README.md` says what the parts are, and
+`api/README.md` how the server and its sync work; this file covers what someone changing the code
+has to hold in mind.
 
 ## Every way out of a process is named
 
@@ -91,6 +92,11 @@ Enrichment's marks are derived from foreign text and from one bounded observatio
 is permanent without a route back. A video is queued on whether it holds tracks, never on whether
 a read has reached it, and `api/cmd/reset-enrichment` shows every video enrichment has stopped
 reading and puts them back. Anything added that excludes a video from future work ships the same.
+
+A play is the same kind of verdict once `ypl play` infers it from playback: it sinks a mix in the
+draw on one bounded observation. `ypl plays delete` takes one back, and `deleted_plays` keeps its
+handle from naming another play and its id from being stored again. Every door that names a play
+consults that table, because a door that did not would answer a deleted play as one never held.
 
 ## The two modules never import each other
 

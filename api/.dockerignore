@@ -1,4 +1,7 @@
 # The build context is the Go module minus what only its tests read, so editing
-# a test leaves the image's build cache intact.
+# a test leaves the image's build cache intact. The release workflow publishes
+# an image only for a change this context carries, so a path listed here also
+# never restarts the deployed server.
 **/*_test.go
 **/testdata
+README.md

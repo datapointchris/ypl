@@ -146,6 +146,13 @@ func recordListens(ctx context.Context, client *api.Client, read func() (mpv.Sta
 			bounded, cancel := context.WithTimeout(ctx, within)
 			play, err := client.CreatePlay(bounded, id, api.VideoID(videoID))
 			cancel()
+			// A play is deleted while it waits to be sent again when its first
+			// send landed unanswered and somebody took it back. It is settled,
+			// and sending it on would only be refused again.
+			if api.PlayDeleted(err) {
+				delete(pending, videoID)
+				continue
+			}
 			if err != nil {
 				refused[videoID] = err
 				continue

@@ -207,6 +207,16 @@ func (q *Queries) DeleteEntries(ctx context.Context, playlistID string) error {
 	return err
 }
 
+const deletePlay = `-- name: DeletePlay :exec
+DELETE FROM plays WHERE play_id = ?
+`
+
+// Deletes a play.
+func (q *Queries) DeletePlay(ctx context.Context, playID string) error {
+	_, err := q.db.ExecContext(ctx, deletePlay, playID)
+	return err
+}
+
 const deletePlaylist = `-- name: DeletePlaylist :exec
 DELETE FROM playlists
 WHERE playlist_id = ?
@@ -742,7 +752,14 @@ const insertPlay = `-- name: InsertPlay :execrows
 INSERT INTO plays (play_id, handle, video_id, played_ts)
 VALUES (
     ?1,
-    (SELECT coalesce(max(p.handle), 0) + 1 FROM plays AS p),
+    (
+        SELECT coalesce(max(taken.handle), 0) + 1
+        FROM (
+            SELECT p.handle FROM plays AS p
+            UNION ALL
+            SELECT d.handle FROM deleted_plays AS d
+        ) AS taken
+    ),
     ?2,
     ?3
 )
@@ -755,8 +772,8 @@ type InsertPlayParams struct {
 	PlayedTs string
 }
 
-// Records a play under the next handle, and records nothing when a play with
-// that id is already stored.
+// Records a play under the next handle, past every handle a deleted play
+// held, and records nothing when a play with that id is already stored.
 func (q *Queries) InsertPlay(ctx context.Context, arg InsertPlayParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, insertPlay, arg.PlayID, arg.VideoID, arg.PlayedTs)
 	if err != nil {
@@ -922,6 +939,44 @@ func (q *Queries) InsertYouTubeWrite(ctx context.Context, arg InsertYouTubeWrite
 	var write_id int64
 	err := row.Scan(&write_id)
 	return write_id, err
+}
+
+const isPlayDeleted = `-- name: IsPlayDeleted :one
+SELECT EXISTS (
+    SELECT 1 FROM deleted_plays AS d
+    WHERE
+        d.play_id = CAST(?1 AS TEXT)
+        OR d.handle = CAST(?2 AS INTEGER)
+        OR substr(d.play_id, -8) = CAST(?3 AS TEXT)
+) AS deleted
+`
+
+type IsPlayDeletedParams struct {
+	PlayID sql.NullString
+	Handle sql.NullInt64
+	Tail   sql.NullString
+}
+
+// Whether a deleted play had the id play_id, the handle handle, or an id
+// ending with the eight characters tail, each compared only when it is not
+// NULL.
+func (q *Queries) IsPlayDeleted(ctx context.Context, arg IsPlayDeletedParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isPlayDeleted, arg.PlayID, arg.Handle, arg.Tail)
+	var deleted bool
+	err := row.Scan(&deleted)
+	return deleted, err
+}
+
+const keepDeletedPlay = `-- name: KeepDeletedPlay :exec
+INSERT INTO deleted_plays (play_id, handle)
+SELECT p.play_id, p.handle FROM plays AS p
+WHERE p.play_id = ?
+`
+
+// Keeps a play's id and handle, before the play itself is deleted.
+func (q *Queries) KeepDeletedPlay(ctx context.Context, playID string) error {
+	_, err := q.db.ExecContext(ctx, keepDeletedPlay, playID)
+	return err
 }
 
 const latestPlaylistWriteSettledAfter = `-- name: LatestPlaylistWriteSettledAfter :one

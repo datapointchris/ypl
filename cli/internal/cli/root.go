@@ -28,9 +28,25 @@ const (
 	groupSetup   = "setup"
 )
 
+// Within a namespace whose verbs both read and change something, the verbs
+// are split by which they do, so the half that changes something is visible
+// without reading each Short.
+const (
+	groupReading  = "reading"
+	groupChanging = "changing"
+)
+
+// splitReadingFromChanging gives cmd the two sections its verbs go under.
+func splitReadingFromChanging(cmd *cobra.Command) {
+	cmd.AddGroup(
+		&cobra.Group{ID: groupReading, Title: "Reading:"},
+		&cobra.Group{ID: groupChanging, Title: "Changing:"},
+	)
+}
+
 // NewRootCommand returns the ypl command tree.
 func NewRootCommand() *cobra.Command {
-	return newRootCommand(&app{client: newAPIClient, tokens: goclilogin.NewTokenStore})
+	return newRootCommand(&app{client: newAPIClient, tokens: goclilogin.NewTokenStore, terminal: isTerminal})
 }
 
 func newRootCommand(a *app) *cobra.Command {

@@ -85,6 +85,7 @@ func (h *Handlers) routes() []route {
 		{http.MethodPost, "/api/v1/plays", h.createPlay},
 		{http.MethodGet, "/api/v1/plays", h.listPlays},
 		{http.MethodGet, "/api/v1/plays/{id}", h.showPlay},
+		{http.MethodDelete, "/api/v1/plays/{id}", h.deletePlay},
 		{http.MethodGet, "/api/v1/suggestions", h.listSuggestions},
 		{http.MethodGet, "/api/v1/sync/runs", h.listSyncRuns},
 		{http.MethodGet, "/api/v1/status", h.showStatus},
@@ -172,6 +173,10 @@ type referenceError struct {
 	// fragment of, so the answer carries what to send instead of only that
 	// nothing answered to what was sent.
 	nearby []string
+	// deleted is a reference naming a play that was deleted, which the store
+	// can tell from one it never held because it keeps what each deleted play
+	// was named by.
+	deleted bool
 }
 
 // The sentence for nearby says what the store can see and no more. A reference
@@ -186,6 +191,8 @@ func (e referenceError) Error() string {
 	case len(e.nearby) > 0:
 		return fmt.Sprintf("%[1]s %[2]q names none exactly, and is inside %[3]s; a %[1]s is named by its whole title or its id, never by part of one",
 			e.name, e.value, strings.Join(e.nearby, ", "))
+	case e.deleted:
+		return fmt.Sprintf("%s %q names a play that was deleted", e.name, e.value)
 	}
 	return fmt.Sprintf("%s %q names nothing the store holds", e.name, e.value)
 }
@@ -205,11 +212,16 @@ func paramRow(err error, param referenceError) error {
 // too, and keeps its own sentence for the title it names. The status is the
 // same because the condition is: nothing answers to what was sent, whether the
 // caller shortened a title or named a row that has gone.
+//
+// A deleted play is the one row whose going the store records, and it answers
+// 410, so a caller can tell a play taken back from a reference mistyped.
 func (h *Handlers) writeItemError(w http.ResponseWriter, r *http.Request, err error, what string) {
 	var ref referenceError
 	switch {
 	case errors.As(err, &ref) && len(ref.candidates) > 0:
 		wire.Refuse(w, http.StatusBadRequest, wire.CodeAmbiguousReference, "%s", ref.Error())
+	case errors.As(err, &ref) && ref.deleted:
+		wire.Refuse(w, http.StatusGone, wire.CodePlayDeleted, "%s was deleted", what)
 	case errors.As(err, &ref) && len(ref.nearby) > 0:
 		wire.Refuse(w, http.StatusNotFound, wire.CodeNotFound, "%s", ref.Error())
 	case errors.Is(err, sql.ErrNoRows), errors.As(err, &ref):

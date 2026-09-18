@@ -38,7 +38,7 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "edit <playlist>",
-		GroupID: groupPlaylistWriting,
+		GroupID: groupChanging,
 		Short:   "Rearrange a playlist in your editor",
 		Long: "Opens one line per video — the id first, then the title — in $VISUAL or\n" +
 			"$EDITOR. Move lines to reorder, delete a line to remove that video, paste a\n" +
@@ -62,7 +62,7 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 			// exit 1 whenever the token or the server is the thing that failed
 			// first, and exit 2 is the only code telling a caller to retry with
 			// different arguments.
-			if err := editable(cmd); err != nil {
+			if err := a.editable(cmd); err != nil {
 				return err
 			}
 			client, err := a.client(cmd.Context())
@@ -82,7 +82,7 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 			}
 
 			buffer := editbuffer.Render(playlist.Title, rows(playlist, order.VideoIDs))
-			text, err := readBuffer(cmd, buffer)
+			text, err := a.readBuffer(cmd, buffer)
 			if err != nil {
 				return err
 			}
@@ -135,8 +135,8 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 // A piped buffer is taken whether or not --no-input was passed, since a pipe is
 // not a prompt. The terminal case --no-input forbids is refused by editable,
 // before the token and the reads.
-func readBuffer(cmd *cobra.Command, buffer string) (string, error) {
-	if !terminalIn(cmd) {
+func (a *app) readBuffer(cmd *cobra.Command, buffer string) (string, error) {
+	if !a.terminalIn(cmd) {
 		piped, err := io.ReadAll(cmd.InOrStdin())
 		if err != nil {
 			return "", fmt.Errorf("read the buffer from stdin: %w", err)

@@ -381,7 +381,7 @@ func TestTheRetryWaitDoublesUpToAWeek(t *testing.T) {
 
 // The README states how enrichment reads as the code holds it.
 func TestTheREADMEStatesHowEnrichmentReads(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	data, err := os.ReadFile(filepath.Join("..", "README.md"))
 	if err != nil {
 		t.Fatalf("read the README: %v", err)
 	}
