@@ -69,7 +69,7 @@ type suggestion struct {
 
 var (
 	errVideoNotStored = errors.New("video not stored")
-	errPlayRetired    = errors.New("play retired")
+	errPlayDeleted    = errors.New("play deleted")
 )
 
 // createPlay records a play. A new play answers 201. The same id sent again for
@@ -120,12 +120,12 @@ func (h *Handlers) createPlay(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
-		retired, err := tx.IsPlayRetired(ctx, body.ID)
+		deleted, err := tx.IsPlayDeleted(ctx, generated.IsPlayDeletedParams{PlayID: sql.NullString{String: body.ID, Valid: true}})
 		if err != nil {
 			return err
 		}
-		if retired {
-			return errPlayRetired
+		if deleted {
+			return errPlayDeleted
 		}
 		n, err := tx.InsertPlay(ctx, generated.InsertPlayParams{PlayID: body.ID, VideoID: body.VideoID, PlayedTs: playedTs})
 		if err != nil {
@@ -139,8 +139,8 @@ func (h *Handlers) createPlay(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errVideoNotStored):
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeVideoNotStored, "video %s is not in the store", body.VideoID)
 		return
-	case errors.Is(err, errPlayRetired):
-		wire.Refuse(w, http.StatusGone, wire.CodePlayRetired, "play %s was deleted, and its id records nothing again", body.ID)
+	case errors.Is(err, errPlayDeleted):
+		wire.Refuse(w, http.StatusGone, wire.CodePlayDeleted, "play %s was deleted, and its id records nothing again", body.ID)
 		return
 	case err != nil:
 		h.writeInternalError(w, r, err)
@@ -175,17 +175,24 @@ func (h *Handlers) showPlay(w http.ResponseWriter, r *http.Request) {
 }
 
 // deletePlay deletes the play ref names, which answers 204. Its id and handle
-// are kept in retired_plays, so the handle is never given to another play and
+// are kept in deleted_plays, so the handle is never given to another play and
 // the id, sent again, is refused rather than stored a second time.
+//
+// A play already deleted answers 204 as well. The caller wants it gone and it
+// is, and a delete sent again after its answer went missing is how one arrives.
 func (h *Handlers) deletePlay(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	ref := r.PathValue("id")
 	err := h.store.InTx(ctx, func(tx *store.Tx) error {
 		stored, err := resolvePlay(ctx, tx.Queries, "play", ref)
+		var missing referenceError
+		if errors.As(err, &missing) && missing.deleted {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
-		if err := tx.RetirePlay(ctx, stored.PlayID); err != nil {
+		if err := tx.KeepDeletedPlay(ctx, stored.PlayID); err != nil {
 			return err
 		}
 		return tx.DeletePlay(ctx, stored.PlayID)
@@ -201,13 +208,24 @@ func (h *Handlers) deletePlay(w http.ResponseWriter, r *http.Request) {
 // characters of its id. A ref naming more than one play, a tail two ids share or
 // an all-digit tail that is also another play's handle, is a referenceError
 // listing their handles. name is what the error calls ref.
+//
+// A ref naming no play the store holds is a referenceError, marked deleted
+// when a deleted play was named by it. A play the store holds is always the
+// answer over a deleted one, so a tail a deleted id shared with a live one
+// still reaches the live play.
 func resolvePlay(ctx context.Context, q *generated.Queries, name, ref string) (generated.GetPlayRow, error) {
+	var named generated.IsPlayDeletedParams
 	if id, err := uuid.Parse(ref); err == nil && id.String() == ref {
 		row, err := q.GetPlay(ctx, ref)
-		return row, paramRow(err, referenceError{name: name, value: ref})
+		if !errors.Is(err, sql.ErrNoRows) {
+			return row, err
+		}
+		named.PlayID = sql.NullString{String: ref, Valid: true}
+		return generated.GetPlayRow{}, missingPlay(ctx, q, referenceError{name: name, value: ref}, named)
 	}
 	var found []generated.GetPlayRow
 	if handle, err := strconv.ParseInt(ref, 10, 64); err == nil && handle > 0 && strconv.FormatInt(handle, 10) == ref {
+		named.Handle = sql.NullInt64{Int64: handle, Valid: true}
 		row, err := q.GetPlayByHandle(ctx, handle)
 		switch {
 		case err == nil:
@@ -217,6 +235,7 @@ func resolvePlay(ctx context.Context, q *generated.Queries, name, ref string) (g
 		}
 	}
 	if isTail(ref) {
+		named.Tail = sql.NullString{String: ref, Valid: true}
 		rows, err := q.ListPlaysByTail(ctx, ref)
 		if err != nil {
 			return generated.GetPlayRow{}, err
@@ -229,7 +248,7 @@ func resolvePlay(ctx context.Context, q *generated.Queries, name, ref string) (g
 	}
 	switch len(found) {
 	case 0:
-		return generated.GetPlayRow{}, referenceError{name: name, value: ref}
+		return generated.GetPlayRow{}, missingPlay(ctx, q, referenceError{name: name, value: ref}, named)
 	case 1:
 		return found[0], nil
 	}
@@ -243,6 +262,17 @@ func resolvePlay(ctx context.Context, q *generated.Queries, name, ref string) (g
 		candidates[i] = strconv.FormatInt(handle, 10)
 	}
 	return generated.GetPlayRow{}, referenceError{name: name, value: ref, candidates: candidates}
+}
+
+// missingPlay is missing, marked deleted when a deleted play was named by
+// what named holds.
+func missingPlay(ctx context.Context, q *generated.Queries, missing referenceError, named generated.IsPlayDeletedParams) error {
+	deleted, err := q.IsPlayDeleted(ctx, named)
+	if err != nil {
+		return err
+	}
+	missing.deleted = deleted
+	return missing
 }
 
 // isTail reports whether ref has the shape of a play id's last tailLength

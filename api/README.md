@@ -112,8 +112,10 @@ the request arrives is refused.
 
 Deleting is the one correction a stored play takes. A deleted play's handle is never given to
 another play, so a handle typed from an old listing finds nothing rather than a different listen.
-Its id sent to `POST /api/v1/plays` again answers 410 with `play_retired`, so a retry arriving after
-the delete cannot store the play a second time.
+A deleted play answers as deleted by every name it had. `GET /api/v1/plays/{id}` answers 410 with
+`play_deleted`. `DELETE` answers 204 again, since the play is gone as asked. Its id sent to
+`POST /api/v1/plays` again answers 410 with `play_deleted`, so a retry arriving after the delete
+cannot store the play a second time. A name no play ever had answers 404.
 
 Creating, renaming and deleting a playlist write to YouTube in the request, one request at a time.
 The server records each write before sending it and settles it with YouTube's answer, and the store

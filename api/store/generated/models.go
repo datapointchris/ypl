@@ -16,6 +16,11 @@ type BaseItem struct {
 	IsPlaced   bool
 }
 
+type DeletedPlay struct {
+	PlayID string
+	Handle int64
+}
+
 type EnrichFailure struct {
 	VideoID     string
 	AttemptedTs string
@@ -60,11 +65,6 @@ type PlaylistSort struct {
 	Sort        string
 	Label       string
 	Description string
-}
-
-type RetiredPlay struct {
-	PlayID string
-	Handle int64
 }
 
 type SyncFailure struct {

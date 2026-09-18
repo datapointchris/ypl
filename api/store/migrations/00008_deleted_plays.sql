@@ -4,11 +4,11 @@
 -- play later. A handle is what a person types, and one given out again would
 -- make an old command reach a different listen. An id sent again after its
 -- play was deleted is refused rather than stored a second time.
-CREATE TABLE retired_plays (
+CREATE TABLE deleted_plays (
     play_id TEXT PRIMARY KEY,
     handle INTEGER NOT NULL UNIQUE CHECK (handle > 0)
 );
 
 -- +goose Down
 
-DROP TABLE retired_plays;
+DROP TABLE deleted_plays;

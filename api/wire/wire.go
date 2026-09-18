@@ -40,7 +40,7 @@ const (
 	CodePlayConflict Code = "play_conflict"
 
 	// 410
-	CodePlayRetired Code = "play_retired"
+	CodePlayDeleted Code = "play_deleted"
 
 	// 412
 	CodePreconditionFailed Code = "precondition_failed"

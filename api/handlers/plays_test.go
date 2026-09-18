@@ -290,10 +290,12 @@ func TestAPlaysPageStartingAfterAPlayTheStoreDoesNotHoldIsRefused(t *testing.T) 
 	refused(t, f.get("/api/v1/plays?starting_after="+play1), http.StatusBadRequest, wire.CodeUnknownReference)
 }
 
-// A deleted play is not found, and neither is one the store never held. Its
-// handle is never given to another play, which the newest handle is where
-// reuse would show, and its id sent again is refused rather than stored.
-func TestADeletedPlayKeepsItsHandleAndItsIDFromAnsweringAgain(t *testing.T) {
+// A deleted play answers as deleted at every verb, by each name it had: a read
+// is refused as gone, a delete sent again succeeds, and its id sent again is
+// refused rather than stored. A play the store never held is not found. The
+// deleted play's handle is never given to another play, which the newest
+// handle is where reuse would show.
+func TestADeletedPlayAnswersDeletedAtEveryVerbAndKeepsItsHandle(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
 	f.withPlays(t)
@@ -304,9 +306,15 @@ func TestADeletedPlayKeepsItsHandleAndItsIDFromAnsweringAgain(t *testing.T) {
 	if got := f.countPlays(t); got != 4 {
 		t.Errorf("the store holds %d plays after one of five was deleted, want 4", got)
 	}
-	refused(t, f.get("/api/v1/plays/"+play5), http.StatusNotFound, wire.CodeNotFound)
-	refused(t, f.do(http.MethodDelete, "/api/v1/plays/5", ""), http.StatusNotFound, wire.CodeNotFound)
-	refused(t, f.get("/api/v1/plays/01890000-0000-7000-8000-000000000009"), http.StatusNotFound, wire.CodeNotFound)
+	for _, name := range []string{play5, "5", play5[len(play5)-8:]} {
+		refused(t, f.get("/api/v1/plays/"+name), http.StatusGone, wire.CodePlayDeleted)
+		if again := f.do(http.MethodDelete, "/api/v1/plays/"+name, ""); again.Code != http.StatusNoContent {
+			t.Errorf("deleting deleted play %s again answered %d: %s", name, again.Code, again.Body)
+		}
+	}
+	never := "01890000-0000-7000-8000-000000000009"
+	refused(t, f.get("/api/v1/plays/"+never), http.StatusNotFound, wire.CodeNotFound)
+	refused(t, f.do(http.MethodDelete, "/api/v1/plays/"+never, ""), http.StatusNotFound, wire.CodeNotFound)
 
 	next := decode[wirePlay](t, f.do(http.MethodPost, "/api/v1/plays",
 		`{"id": "01890000-0000-7000-8000-000000000006", "video_id": "a"}`), http.StatusCreated)
@@ -314,7 +322,7 @@ func TestADeletedPlayKeepsItsHandleAndItsIDFromAnsweringAgain(t *testing.T) {
 		t.Errorf("the next play took handle %d, want 6 rather than the deleted play's", next.Handle)
 	}
 	refused(t, f.do(http.MethodPost, "/api/v1/plays", fmt.Sprintf(`{"id": %q, "video_id": "b"}`, play5)),
-		http.StatusGone, wire.CodePlayRetired)
+		http.StatusGone, wire.CodePlayDeleted)
 }
 
 // With the plays withPlays records, e has never been played, a and c were last

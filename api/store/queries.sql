@@ -497,7 +497,7 @@ VALUES (
         FROM (
             SELECT p.handle FROM plays AS p
             UNION ALL
-            SELECT r.handle FROM retired_plays AS r
+            SELECT d.handle FROM deleted_plays AS d
         ) AS taken
     ),
     sqlc.arg(video_id),
@@ -505,13 +505,21 @@ VALUES (
 )
 ON CONFLICT (play_id) DO NOTHING;
 
--- name: IsPlayRetired :one
--- Whether a play with this id was deleted.
-SELECT EXISTS (SELECT 1 FROM retired_plays AS r WHERE r.play_id = ?) AS retired;
+-- name: IsPlayDeleted :one
+-- Whether a deleted play had the id play_id, the handle handle, or an id
+-- ending with the eight characters tail, each compared only when it is not
+-- NULL.
+SELECT EXISTS (
+    SELECT 1 FROM deleted_plays AS d
+    WHERE
+        d.play_id = CAST(sqlc.narg(play_id) AS TEXT)
+        OR d.handle = CAST(sqlc.narg(handle) AS INTEGER)
+        OR substr(d.play_id, -8) = CAST(sqlc.narg(tail) AS TEXT)
+) AS deleted;
 
--- name: RetirePlay :exec
+-- name: KeepDeletedPlay :exec
 -- Keeps a play's id and handle, before the play itself is deleted.
-INSERT INTO retired_plays (play_id, handle)
+INSERT INTO deleted_plays (play_id, handle)
 SELECT p.play_id, p.handle FROM plays AS p
 WHERE p.play_id = ?;
 

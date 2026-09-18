@@ -757,7 +757,7 @@ VALUES (
         FROM (
             SELECT p.handle FROM plays AS p
             UNION ALL
-            SELECT r.handle FROM retired_plays AS r
+            SELECT d.handle FROM deleted_plays AS d
         ) AS taken
     ),
     ?2,
@@ -941,16 +941,42 @@ func (q *Queries) InsertYouTubeWrite(ctx context.Context, arg InsertYouTubeWrite
 	return write_id, err
 }
 
-const isPlayRetired = `-- name: IsPlayRetired :one
-SELECT EXISTS (SELECT 1 FROM retired_plays AS r WHERE r.play_id = ?) AS retired
+const isPlayDeleted = `-- name: IsPlayDeleted :one
+SELECT EXISTS (
+    SELECT 1 FROM deleted_plays AS d
+    WHERE
+        d.play_id = CAST(?1 AS TEXT)
+        OR d.handle = CAST(?2 AS INTEGER)
+        OR substr(d.play_id, -8) = CAST(?3 AS TEXT)
+) AS deleted
 `
 
-// Whether a play with this id was deleted.
-func (q *Queries) IsPlayRetired(ctx context.Context, playID string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, isPlayRetired, playID)
-	var retired bool
-	err := row.Scan(&retired)
-	return retired, err
+type IsPlayDeletedParams struct {
+	PlayID sql.NullString
+	Handle sql.NullInt64
+	Tail   sql.NullString
+}
+
+// Whether a deleted play had the id play_id, the handle handle, or an id
+// ending with the eight characters tail, each compared only when it is not
+// NULL.
+func (q *Queries) IsPlayDeleted(ctx context.Context, arg IsPlayDeletedParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isPlayDeleted, arg.PlayID, arg.Handle, arg.Tail)
+	var deleted bool
+	err := row.Scan(&deleted)
+	return deleted, err
+}
+
+const keepDeletedPlay = `-- name: KeepDeletedPlay :exec
+INSERT INTO deleted_plays (play_id, handle)
+SELECT p.play_id, p.handle FROM plays AS p
+WHERE p.play_id = ?
+`
+
+// Keeps a play's id and handle, before the play itself is deleted.
+func (q *Queries) KeepDeletedPlay(ctx context.Context, playID string) error {
+	_, err := q.db.ExecContext(ctx, keepDeletedPlay, playID)
+	return err
 }
 
 const latestPlaylistWriteSettledAfter = `-- name: LatestPlaylistWriteSettledAfter :one
@@ -2099,18 +2125,6 @@ func (q *Queries) ListVideosToEnrich(ctx context.Context, arg ListVideosToEnrich
 		return nil, err
 	}
 	return items, nil
-}
-
-const retirePlay = `-- name: RetirePlay :exec
-INSERT INTO retired_plays (play_id, handle)
-SELECT p.play_id, p.handle FROM plays AS p
-WHERE p.play_id = ?
-`
-
-// Keeps a play's id and handle, before the play itself is deleted.
-func (q *Queries) RetirePlay(ctx context.Context, playID string) error {
-	_, err := q.db.ExecContext(ctx, retirePlay, playID)
-	return err
 }
 
 const setEntryItem = `-- name: SetEntryItem :execrows
