@@ -25,14 +25,16 @@ The CLI, on every workstation:
 | This machine's keychain | `goclilogin` | The OS keychain, or a mode-600 file where there is none | The refresh token lives there |
 | A browser | `pkg/browser` | Whatever `xdg-open` or `open` resolves to, once, during `ypl auth login` | A subprocess |
 | An editor | `cli/internal/editbuffer` | Whatever `$VISUAL` or `$EDITOR` names, holding the terminal, during `ypl playlists edit` | A subprocess, and the terminal until it exits |
-| mpv | `cli/internal/mpv` | mpv on `PATH`, holding the terminal, during `ypl play`; and its IPC socket at `$XDG_STATE_HOME/ypl/mpv.sock` during `ypl now` | A subprocess, the terminal until it exits, and whatever mpv itself reaches |
+| mpv | `cli/internal/mpv` | mpv on `PATH`, holding the terminal, during `ypl playlists play`; and its IPC socket at `$XDG_STATE_HOME/ypl/mpv.sock` during `ypl now` | A subprocess, the terminal until it exits, and whatever mpv itself reaches |
 
-mpv makes its own network requests, as yt-dlp does. It is given the watch URLs of the videos being
-played and nothing else — no credential, no token, no part of the store. `ypl now` only reads from
-the socket it opened, and sends mpv no command.
+mpv makes its own network requests, as yt-dlp does. What crosses to it is the watch URLs, the
+socket path, `--no-video` under `--audio`, and whatever `--mpv` was given — no credential, no token,
+no part of the store. mpv opens the socket itself, from the flag `ypl playlists play` passes it, and
+`ypl now` connects to it afterwards. The only thing `ypl now` writes there is `get_property`, which
+is how mpv's IPC is asked anything and changes nothing about what is playing.
 
 `api/ytdlp.Reader.Video` is the only place in the server that starts a process. In the CLI there
-are three, `ypl auth login`, `ypl playlists edit` and `ypl play`, and the first hands its
+are three, `ypl auth login`, `ypl playlists edit` and `ypl playlists play`, and the first hands its
 subprocess the opposite of what the other two hand theirs. The browser launcher is given
 `os.DevNull`, because a pipe would keep the login blocked until the browser exits. The editor and
 mpv are given this process's own streams, because each draws an interface and takes keys, and a
