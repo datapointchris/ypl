@@ -93,6 +93,10 @@ is permanent without a route back. A video is queued on whether it holds tracks,
 a read has reached it, and `api/cmd/reset-enrichment` shows every video enrichment has stopped
 reading and puts them back. Anything added that excludes a video from future work ships the same.
 
+A play is the same kind of verdict once `ypl play` infers it from playback: it sinks a mix in the
+draw on one bounded observation. `ypl plays delete` takes one back, and `retired_plays` keeps its
+handle from naming another play and its id from being stored again.
+
 ## The two modules never import each other
 
 `cli/internal/api` carries its own copy of the JSON shapes, and `cli/internal/config` reads every

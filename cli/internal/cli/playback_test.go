@@ -311,8 +311,9 @@ func deafSocket(t *testing.T) {
 }
 
 // A play is keyed by the client so a retry stores one row, whether it came from
-// `plays add` naming a video by a link or from playback counting one as heard.
-func TestAListenIsRecordedOnceUnderAnIdTheClientMade(t *testing.T) {
+// `plays add` naming a video by a link or from playback counting one as heard,
+// and it is taken back by deleting it.
+func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 	stored := `{"id": "01920000-0000-7000-8000-000000000000", "handle": 41, "played_ts": "2026-09-17T12:00:00Z",
 		"video": {"id": "dQw4w9WgXcQ", "title": "Six Hours Of House", "channel_title": "One"}}`
 	f := newFixture(t, answers(map[string]answer{"POST /api/v1/plays": {body: stored}}))
@@ -341,6 +342,24 @@ func TestAListenIsRecordedOnceUnderAnIdTheClientMade(t *testing.T) {
 	f = newFixture(t, answers(nil))
 	if refused := f.run("plays", "add", "not a video"); refused.code != 2 || len(f.sent) != 0 {
 		t.Errorf("exited %d after %d requests, want 2 and none", refused.code, len(f.sent))
+	}
+
+	// A play is taken back by deleting it. Where nobody can answer the
+	// question, nothing is asked of the server. The delete names the play by
+	// the id the read answered with, so the handle typed cannot reach another
+	// play between the two.
+	f = newFixture(t, answers(map[string]answer{
+		"GET /api/v1/plays/41": {body: stored},
+		"DELETE /api/v1/plays/01920000-0000-7000-8000-000000000000": {status: http.StatusNoContent},
+	}))
+	if refused := f.run("plays", "delete", "41"); refused.code != 2 || len(f.sent) != 0 {
+		t.Errorf("with nobody to ask, exited %d after %d requests, want 2 and none", refused.code, len(f.sent))
+	}
+	if deleted := f.run("plays", "delete", "41", "--yes"); deleted.code != 0 {
+		t.Fatalf("delete --yes exited %d: %s", deleted.code, deleted.err)
+	}
+	if sent := f.onlyWrite(); sent.Method != http.MethodDelete || sent.URL.Path != "/api/v1/plays/01920000-0000-7000-8000-000000000000" {
+		t.Errorf("sent %s %s, want the delete by the play's id", sent.Method, sent.URL.Path)
 	}
 
 	// Playback counts a mix as heard once it has played long enough, counting

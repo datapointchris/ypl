@@ -27,8 +27,69 @@ func (a *app) playsCommand() *cobra.Command {
 			"by its handle, by its id, or by the last eight characters of that id.",
 		RunE: requireSubcommand,
 	}
-	cmd.AddCommand(a.playsListCommand(), a.playsShowCommand(), a.playsAddCommand())
+	cmd.AddCommand(a.playsListCommand(), a.playsShowCommand(), a.playsAddCommand(), a.playsDeleteCommand())
 	return cmd
+}
+
+func (a *app) playsDeleteCommand() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "delete <play>",
+		Short: "Take back a play, so its mix ranks as if unheard by it",
+		Long: "Deletes a play the server holds, named by its handle, its id or the last\n" +
+			"eight characters of that id. `ypl next` and a bare `ypl play` then rank the\n" +
+			"mix as though that listen had not happened, which is how a play `ypl play`\n" +
+			"recorded wrongly is taken back.\n" +
+			"\n" +
+			"It asks first, and needs --yes where there is nobody to ask. The handle is\n" +
+			"never given to another play, so a handle from an old listing finds nothing\n" +
+			"rather than a different listen.",
+		Example: "  ypl plays delete 41        ask, then delete it\n" +
+			"  ypl plays delete 41 --yes  delete it without asking",
+		Args: usageArgs(cobra.ExactArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Checked before anything is read, so a caller who could never
+			// have answered is told what they left out rather than told that a
+			// delete did not happen.
+			if !yes {
+				if err := confirmable(cmd); err != nil {
+					return err
+				}
+			}
+			client, err := a.client(cmd.Context())
+			if err != nil {
+				return reported(err)
+			}
+			// Read first, so the question names the listen about to go, and
+			// the delete names it by its id, so a handle cannot reach a
+			// different play between the question and the answer.
+			play, err := client.GetPlay(cmd.Context(), args[0])
+			if err != nil {
+				return reported(err)
+			}
+			said := fmt.Sprintf("play %d, %s at %s", play.Handle, play.Video.Title, play.PlayedTs)
+			if !yes {
+				approved, err := confirm(cmd, "Delete "+said+"?")
+				if err != nil {
+					return err
+				}
+				if !approved {
+					nothing(cmd, "Nothing was deleted.")
+					return exitCode(1)
+				}
+			}
+			if err := client.DeletePlay(cmd.Context(), play.ID); err != nil {
+				return reported(err)
+			}
+			nothing(cmd, "Deleted "+said+".")
+			return nil
+		},
+	}
+	addYes(cmd, &yes, "delete it")
+	// Declared here rather than on plays, because this is the one play verb
+	// that asks anything.
+	cmd.Flags().Bool(noInput, false, "Never prompt; without --yes the delete refuses instead")
+	return goclikit.WithRecoveryHints(cmd, hintPlays)
 }
 
 func (a *app) playsAddCommand() *cobra.Command {

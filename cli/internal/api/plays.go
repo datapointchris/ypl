@@ -70,6 +70,13 @@ func (c *Client) GetPlay(ctx context.Context, name string) (Play, error) {
 	return play, err
 }
 
+// DeletePlay deletes the play name names, by any name GetPlay takes. The
+// server never gives its handle to another play, and refuses its id if it is
+// sent again.
+func (c *Client) DeletePlay(ctx context.Context, name string) error {
+	return c.Delete(ctx, "/api/v1/plays/"+ref(name))
+}
+
 // MaxSuggestions is the most the server draws at once. Suggestions are a draw
 // reshuffled among videos last played at the same moment, so there is no next
 // page to read and a larger ask is refused rather than paged.

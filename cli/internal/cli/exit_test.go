@@ -456,7 +456,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		"ypl config show": true, "ypl help": true, "ypl update": true,
 		"ypl playlists create": true, "ypl playlists delete": true, "ypl playlists edit": true,
 		"ypl playlists rename": true, "ypl playlists show": true,
-		"ypl plays add": true, "ypl plays show": true, "ypl status": true,
+		"ypl plays add": true, "ypl plays delete": true, "ypl plays show": true, "ypl status": true,
 		"ypl sync run": true, "ypl sync runs show": true, "ypl videos show": true,
 		"ypl videos sorts": true,
 	}
