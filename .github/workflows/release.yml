@@ -10,8 +10,10 @@ permissions:
   contents: read
 
 # Two pushes to main inside one run's window would otherwise race: both resolve
-# the same next CLI version from the same newest tag, and the later run fails
-# creating a tag that already exists.
+# the same next CLI version from the same newest tag, and the later run finds
+# the earlier run's release and replaces its binaries, checksums and notes with
+# a build of its own commit, under a tag that still names the first. Nothing
+# about that fails.
 # Never cancel-in-progress: a canceled release can leave a tag with no release.
 concurrency:
   group: release-${{ github.ref }}

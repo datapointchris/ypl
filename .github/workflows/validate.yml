@@ -24,8 +24,17 @@ jobs:
       # binary the arguments a read passes, so that an option yt-dlp does not
       # take is red here rather than on the deployed host. That test skips when
       # yt-dlp is absent, which without this step is everywhere.
-      - name: Install yt-dlp
-        run: pipx install yt-dlp
+      #
+      # The release is the one the image pins, read from the Dockerfile so one
+      # edit moves both. The tag writes 2026.08.19 and PyPI 2026.8.19.
+      - name: Install the yt-dlp the image ships
+        run: |
+          tag=$(sed -n 's|.*yt-dlp/releases/download/\([0-9.]*\)/.*|\1|p' Dockerfile | head -n 1)
+          if [ -z "$tag" ]; then
+            echo "::error file=api/Dockerfile::no yt-dlp release is pinned by URL"
+            exit 1
+          fi
+          pipx install "yt-dlp==$(echo "$tag" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 }')"
 
       # generated:go-api
       - uses: actions/setup-go@v7
