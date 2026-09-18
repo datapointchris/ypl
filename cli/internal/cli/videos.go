@@ -148,10 +148,23 @@ func printVideos(out io.Writer, videos []api.LibraryVideo) {
 			video.ChannelTitle,
 			clock(video.DurationSeconds),
 			strconv.FormatInt(video.TrackCount, 10),
-			strings.Join(video.Artists, ", "),
+			firstArtists(video.Artists),
 		}
 	}
 	table(out, []string{"VIDEO", "TITLE", "CHANNEL", "LENGTH", "TRACKS", "ARTISTS"}, rows)
+}
+
+// shownArtists is how many artists a row of the library names. A mix's
+// tracklist can name forty, and a row that long wraps every row after it.
+const shownArtists = 3
+
+// firstArtists is the first shownArtists of artists, and how many more there
+// are. --json carries every one.
+func firstArtists(artists []string) string {
+	if len(artists) <= shownArtists {
+		return strings.Join(artists, ", ")
+	}
+	return fmt.Sprintf("%s +%d", strings.Join(artists[:shownArtists], ", "), len(artists)-shownArtists)
 }
 
 func printVideo(out io.Writer, video api.Video) {

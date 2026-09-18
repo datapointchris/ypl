@@ -374,12 +374,19 @@ func TestPlaylistsShowSendsTheNameAsOnePathSegment(t *testing.T) {
 }
 
 func TestVideosListTurnsItsFlagsIntoTheServersParameters(t *testing.T) {
-	f := newFixture(t, serves(map[string]string{"/api/v1/videos": `[]`}))
+	f := newFixture(t, serves(map[string]string{"/api/v1/videos": `[{"id": "a", "title": "Zebra", "channel_title": "One",
+		"duration_seconds": 5400, "upload_date": null, "is_unavailable": false, "enriched_ts": null, "track_count": 4,
+		"artists": ["Björk", "Burial", "Caribou", "Four Tet"], "playlists": []}]`}))
 
-	got := f.run("videos", "list", "--json",
+	got := f.run("videos", "list",
 		"--playlist", "alpha", "--artist", "björk", "--min-minutes", "90", "--max-minutes", "120", "--sort", "longest")
 	if got.code != 0 {
 		t.Fatalf("exited %d: %s%s", got.code, got.out, got.err)
+	}
+	// A mix names dozens of artists, and a row holding all of them wraps every
+	// row after it.
+	if strings.Contains(got.out, "Four Tet") || !strings.Contains(got.out, "+1") {
+		t.Errorf("the row named %q, want the first artists and a count of the rest", got.out)
 	}
 	want := url.Values{
 		"playlist":    {"alpha"},
