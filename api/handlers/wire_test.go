@@ -62,31 +62,60 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		if doc.sorted {
 			body = sortedByID(t, body)
 		}
-		var pretty bytes.Buffer
-		if err := json.Indent(&pretty, bytes.TrimSpace(body), "", "  "); err != nil {
-			t.Fatalf("%s did not answer JSON: %v", doc.target, err)
-		}
-		// Exactly one, since the answer's own encoder already ends with one and
-		// the end-of-file hook would strip the second back out from under this.
-		pretty.WriteByte('\n')
+		pinned(t, doc.name, doc.target, body)
+	}
 
-		path := filepath.Join("testdata", "wire", doc.name+".json")
-		if *update {
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatalf("make testdata/wire: %v", err)
-			}
-			if err := os.WriteFile(path, pretty.Bytes(), 0o644); err != nil {
-				t.Fatalf("write %s: %v", path, err)
-			}
-			continue
+	// The slug a playlist is reached by. The CLI offers these on Tab and has to
+	// derive the same one from a title the server does, hyphens included, or it
+	// offers a reference the server answers with a 404. The titles are the
+	// shapes the derivation can disagree on: punctuation runs, edges, case,
+	// letters outside ASCII, and a title with nothing left.
+	type slugged struct {
+		Title string `json:"title"`
+		Slug  string `json:"slug"`
+	}
+	var slugs []slugged
+	for _, title := range []string{
+		"Sunday Morning", "002 - Audio - Tech", "Björk: Live!", "  Deep  House  ", "WSC-1",
+		"DEEP", "Café del Mar", "日本の夜", "Mix #3 (2024)", "a__b", "!!!",
+	} {
+		slugs = append(slugs, slugged{Title: title, Slug: slug(title)})
+	}
+	body, err := json.Marshal(slugs)
+	if err != nil {
+		t.Fatalf("encode the slugs: %v", err)
+	}
+	pinned(t, "slugs", "the title slugs", body)
+}
+
+// pinned writes body as the wire document name under -update, and otherwise
+// requires the stored one to hold exactly it. what names where body came from.
+func pinned(t *testing.T, name, what string, body []byte) {
+	t.Helper()
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, bytes.TrimSpace(body), "", "  "); err != nil {
+		t.Fatalf("%s is not JSON: %v", what, err)
+	}
+	// Exactly one, since the answer's own encoder already ends with one and
+	// the end-of-file hook would strip the second back out from under this.
+	pretty.WriteByte('\n')
+
+	path := filepath.Join("testdata", "wire", name+".json")
+	if *update {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("make testdata/wire: %v", err)
 		}
-		stored, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s — run `go test ./handlers -update` to write it: %v", path, err)
+		if err := os.WriteFile(path, pretty.Bytes(), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
 		}
-		if !bytes.Equal(stored, pretty.Bytes()) {
-			t.Errorf("%s no longer answers what %s holds; run `go test ./handlers -update` and check what moved", doc.target, path)
-		}
+		return
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s — run `go test ./handlers -update` to write it: %v", path, err)
+	}
+	if !bytes.Equal(stored, pretty.Bytes()) {
+		t.Errorf("%s no longer answers what %s holds; run `go test ./handlers -update` and check what moved", what, path)
 	}
 }
 
