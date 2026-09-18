@@ -62,6 +62,11 @@ type PlaylistSort struct {
 	Description string
 }
 
+type RetiredPlay struct {
+	PlayID string
+	Handle int64
+}
+
 type SyncFailure struct {
 	SyncFailureID int64
 	RunID         int64

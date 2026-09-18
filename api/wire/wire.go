@@ -39,6 +39,9 @@ const (
 	// 409
 	CodePlayConflict Code = "play_conflict"
 
+	// 410
+	CodePlayRetired Code = "play_retired"
+
 	// 412
 	CodePreconditionFailed Code = "precondition_failed"
 

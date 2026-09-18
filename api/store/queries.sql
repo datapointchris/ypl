@@ -487,16 +487,37 @@ INNER JOIN playlists AS p ON pe.playlist_id = p.playlist_id
 WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR pe.video_id = sqlc.narg(video_id);
 
 -- name: InsertPlay :execrows
--- Records a play under the next handle, and records nothing when a play with
--- that id is already stored.
+-- Records a play under the next handle, past every handle a deleted play
+-- held, and records nothing when a play with that id is already stored.
 INSERT INTO plays (play_id, handle, video_id, played_ts)
 VALUES (
     sqlc.arg(play_id),
-    (SELECT coalesce(max(p.handle), 0) + 1 FROM plays AS p),
+    (
+        SELECT coalesce(max(taken.handle), 0) + 1
+        FROM (
+            SELECT p.handle FROM plays AS p
+            UNION ALL
+            SELECT r.handle FROM retired_plays AS r
+        ) AS taken
+    ),
     sqlc.arg(video_id),
     sqlc.arg(played_ts)
 )
 ON CONFLICT (play_id) DO NOTHING;
+
+-- name: IsPlayRetired :one
+-- Whether a play with this id was deleted.
+SELECT EXISTS (SELECT 1 FROM retired_plays AS r WHERE r.play_id = ?) AS retired;
+
+-- name: RetirePlay :exec
+-- Keeps a play's id and handle, before the play itself is deleted.
+INSERT INTO retired_plays (play_id, handle)
+SELECT p.play_id, p.handle FROM plays AS p
+WHERE p.play_id = ?;
+
+-- name: DeletePlay :exec
+-- Deletes a play.
+DELETE FROM plays WHERE play_id = ?;
 
 -- name: GetPlay :one
 -- A play with its video.

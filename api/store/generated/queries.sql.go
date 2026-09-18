@@ -207,6 +207,16 @@ func (q *Queries) DeleteEntries(ctx context.Context, playlistID string) error {
 	return err
 }
 
+const deletePlay = `-- name: DeletePlay :exec
+DELETE FROM plays WHERE play_id = ?
+`
+
+// Deletes a play.
+func (q *Queries) DeletePlay(ctx context.Context, playID string) error {
+	_, err := q.db.ExecContext(ctx, deletePlay, playID)
+	return err
+}
+
 const deletePlaylist = `-- name: DeletePlaylist :exec
 DELETE FROM playlists
 WHERE playlist_id = ?
@@ -742,7 +752,14 @@ const insertPlay = `-- name: InsertPlay :execrows
 INSERT INTO plays (play_id, handle, video_id, played_ts)
 VALUES (
     ?1,
-    (SELECT coalesce(max(p.handle), 0) + 1 FROM plays AS p),
+    (
+        SELECT coalesce(max(taken.handle), 0) + 1
+        FROM (
+            SELECT p.handle FROM plays AS p
+            UNION ALL
+            SELECT r.handle FROM retired_plays AS r
+        ) AS taken
+    ),
     ?2,
     ?3
 )
@@ -755,8 +772,8 @@ type InsertPlayParams struct {
 	PlayedTs string
 }
 
-// Records a play under the next handle, and records nothing when a play with
-// that id is already stored.
+// Records a play under the next handle, past every handle a deleted play
+// held, and records nothing when a play with that id is already stored.
 func (q *Queries) InsertPlay(ctx context.Context, arg InsertPlayParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, insertPlay, arg.PlayID, arg.VideoID, arg.PlayedTs)
 	if err != nil {
@@ -922,6 +939,18 @@ func (q *Queries) InsertYouTubeWrite(ctx context.Context, arg InsertYouTubeWrite
 	var write_id int64
 	err := row.Scan(&write_id)
 	return write_id, err
+}
+
+const isPlayRetired = `-- name: IsPlayRetired :one
+SELECT EXISTS (SELECT 1 FROM retired_plays AS r WHERE r.play_id = ?) AS retired
+`
+
+// Whether a play with this id was deleted.
+func (q *Queries) IsPlayRetired(ctx context.Context, playID string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isPlayRetired, playID)
+	var retired bool
+	err := row.Scan(&retired)
+	return retired, err
 }
 
 const latestPlaylistWriteSettledAfter = `-- name: LatestPlaylistWriteSettledAfter :one
@@ -2070,6 +2099,18 @@ func (q *Queries) ListVideosToEnrich(ctx context.Context, arg ListVideosToEnrich
 		return nil, err
 	}
 	return items, nil
+}
+
+const retirePlay = `-- name: RetirePlay :exec
+INSERT INTO retired_plays (play_id, handle)
+SELECT p.play_id, p.handle FROM plays AS p
+WHERE p.play_id = ?
+`
+
+// Keeps a play's id and handle, before the play itself is deleted.
+func (q *Queries) RetirePlay(ctx context.Context, playID string) error {
+	_, err := q.db.ExecContext(ctx, retirePlay, playID)
+	return err
 }
 
 const setEntryItem = `-- name: SetEntryItem :execrows

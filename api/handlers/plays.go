@@ -23,8 +23,8 @@ const maxPlayBody = 4 << 10
 
 // clockSkew is how far a client's clock may run ahead of the server's and still
 // record a play at the time the client read. A play later than that is refused:
-// it would rank its video as just played until then, and no request can correct
-// a play once it is stored.
+// it would rank its video as just played until then, and deleting it is the
+// only correction a stored play takes.
 const clockSkew = 5 * time.Minute
 
 // tailLength is how many of a play id's last characters name it where the
@@ -67,11 +67,16 @@ type suggestion struct {
 	LastPlayedTs    *string `json:"last_played_ts"`
 }
 
-var errVideoNotStored = errors.New("video not stored")
+var (
+	errVideoNotStored = errors.New("video not stored")
+	errPlayRetired    = errors.New("play retired")
+)
 
 // createPlay records a play. A new play answers 201. The same id sent again for
 // the same video answers 200 with the play as stored, unless it names another
-// played_ts, which answers 409 as another video does.
+// played_ts, which answers 409 as another video does. The id of a play that was
+// deleted answers 410, so a retry arriving after the delete cannot bring the
+// play back.
 func (h *Handlers) createPlay(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	arrival := h.now()
@@ -115,6 +120,13 @@ func (h *Handlers) createPlay(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
+		retired, err := tx.IsPlayRetired(ctx, body.ID)
+		if err != nil {
+			return err
+		}
+		if retired {
+			return errPlayRetired
+		}
 		n, err := tx.InsertPlay(ctx, generated.InsertPlayParams{PlayID: body.ID, VideoID: body.VideoID, PlayedTs: playedTs})
 		if err != nil {
 			return err
@@ -126,6 +138,9 @@ func (h *Handlers) createPlay(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, errVideoNotStored):
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeVideoNotStored, "video %s is not in the store", body.VideoID)
+		return
+	case errors.Is(err, errPlayRetired):
+		wire.Refuse(w, http.StatusGone, wire.CodePlayRetired, "play %s was deleted, and its id records nothing again", body.ID)
 		return
 	case err != nil:
 		h.writeInternalError(w, r, err)
@@ -157,6 +172,29 @@ func (h *Handlers) showPlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wire.JSON(w, http.StatusOK, playFrom(stored))
+}
+
+// deletePlay deletes the play ref names, which answers 204. Its id and handle
+// are kept in retired_plays, so the handle is never given to another play and
+// the id, sent again, is refused rather than stored a second time.
+func (h *Handlers) deletePlay(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ref := r.PathValue("id")
+	err := h.store.InTx(ctx, func(tx *store.Tx) error {
+		stored, err := resolvePlay(ctx, tx.Queries, "play", ref)
+		if err != nil {
+			return err
+		}
+		if err := tx.RetirePlay(ctx, stored.PlayID); err != nil {
+			return err
+		}
+		return tx.DeletePlay(ctx, stored.PlayID)
+	})
+	if err != nil {
+		h.writeItemError(w, r, err, "play "+ref)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // resolvePlay is the play ref names: its id, its handle, or the last tailLength

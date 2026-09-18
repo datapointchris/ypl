@@ -85,6 +85,7 @@ func (h *Handlers) routes() []route {
 		{http.MethodPost, "/api/v1/plays", h.createPlay},
 		{http.MethodGet, "/api/v1/plays", h.listPlays},
 		{http.MethodGet, "/api/v1/plays/{id}", h.showPlay},
+		{http.MethodDelete, "/api/v1/plays/{id}", h.deletePlay},
 		{http.MethodGet, "/api/v1/suggestions", h.listSuggestions},
 		{http.MethodGet, "/api/v1/sync/runs", h.listSyncRuns},
 		{http.MethodGet, "/api/v1/status", h.showStatus},

@@ -82,6 +82,7 @@ provider beside the sync, retrying while it is down, and `/ready` answers 200 on
 | `POST /api/v1/plays` | The play it records, from `{"id", "video_id", "played_ts"}` |
 | `GET /api/v1/plays` | Plays newest first, a page at a time |
 | `GET /api/v1/plays/{id}` | One play |
+| `DELETE /api/v1/plays/{id}` | Nothing, once it has deleted the play |
 | `GET /api/v1/suggestions` | What to play next: never-played videos first, then the least recently played |
 | `GET /api/v1/sync/runs` | Sync runs newest first with their failures, a page at a time |
 | `GET /api/v1/status` | What the store holds, the latest run, and the latest run that ended ok |
@@ -104,10 +105,15 @@ matches part of an artist's name ignoring case and accents. `sort` is one of `lo
 
 A play's `id` is a UUIDv7 the client generates, written lowercase with hyphens, so sending the
 same play again records it once. The server gives each play a `handle`, a short number.
-`GET /api/v1/plays/{id}` and `starting_after` take the id, the handle, or the id's last eight
-characters. `played_ts` is an RFC 3339 timestamp, stored in UTC to the second, and the time the
-request arrives when it is absent. A time more than five minutes after the request arrives is
-refused.
+`GET /api/v1/plays/{id}`, `DELETE /api/v1/plays/{id}` and `starting_after` take the id, the
+handle, or the id's last eight characters. `played_ts` is an RFC 3339 timestamp, stored in UTC to
+the second, and the time the request arrives when it is absent. A time more than five minutes after
+the request arrives is refused.
+
+Deleting is the one correction a stored play takes. A deleted play's handle is never given to
+another play, so a handle typed from an old listing finds nothing rather than a different listen.
+Its id sent to `POST /api/v1/plays` again answers 410 with `play_retired`, so a retry arriving after
+the delete cannot store the play a second time.
 
 Creating, renaming and deleting a playlist write to YouTube in the request, one request at a time.
 The server records each write before sending it and settles it with YouTube's answer, and the store
