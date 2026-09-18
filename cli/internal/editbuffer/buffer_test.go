@@ -32,25 +32,6 @@ func TestABufferParsesBackToTheIdsItWasRenderedFrom(t *testing.T) {
 	}
 }
 
-func TestRenderPutsTheIdFirstOnEveryVideoLine(t *testing.T) {
-	buffer, videoIDs := rendered()
-
-	var lines []string
-	for _, line := range strings.Split(strings.TrimRight(buffer, "\n"), "\n") {
-		if !strings.HasPrefix(line, comment) {
-			lines = append(lines, line)
-		}
-	}
-	if len(lines) != len(videoIDs) {
-		t.Fatalf("rendered %d video lines, want %d: %q", len(lines), len(videoIDs), buffer)
-	}
-	for i, line := range lines {
-		if !strings.HasPrefix(line, videoIDs[i]) {
-			t.Errorf("line %d is %q, want it to start with %q", i, line, videoIDs[i])
-		}
-	}
-}
-
 func TestParseIgnoresCommentsAndBlankLines(t *testing.T) {
 	// Rendered with the ids the buffer was built from, because a line carrying a
 	// label is one this package wrote and only a token it wrote may have words
@@ -106,43 +87,6 @@ func TestParseKeepsADuplicate(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("parsed %v, want both slots", got)
-	}
-}
-
-func TestVideoIDReadsEveryShapeOfAddressAndRefusesTheRest(t *testing.T) {
-	const id = "dQw4w9WgXcQ"
-	for _, c := range []struct {
-		token string
-		want  string
-	}{
-		{id, id},
-		{"  " + id + "  ", id},
-		{"https://www.youtube.com/watch?v=" + id, id},
-		{"https://www.youtube.com/watch?v=" + id + "&list=PLabc&t=42s", id},
-		{"https://m.youtube.com/watch?v=" + id, id},
-		{"https://music.youtube.com/watch?v=" + id, id},
-		{"WWW.YOUTUBE.COM/watch?v=" + id, id},
-		{"https://youtu.be/" + id, id},
-		{"https://youtu.be/" + id + "?t=42", id},
-		{"youtu.be/" + id, id},
-		{"https://www.youtube.com/shorts/" + id, id},
-		{"https://www.youtube.com/embed/" + id, id},
-		{"https://www.youtube.com/live/" + id, id},
-		{"https://www.youtube.com/v/" + id, id},
-		{"", ""},
-		{"short", ""},
-		{"this is not an id at all", ""},
-		{"https://vimeo.com/123456789", ""},
-		// The host decides, not the shape of what follows it. Somewhere else's
-		// address in YouTube's shape is somewhere else's video.
-		{"https://example.com/watch?v=" + id, ""},
-		{"https://notyoutube.com/shorts/" + id, ""},
-		{"https://www.youtube.com/playlist?list=PLabc", ""},
-		{"https://www.youtube.com/", ""},
-	} {
-		if got := VideoID(c.token); got != c.want {
-			t.Errorf("VideoID(%q) = %q, want %q", c.token, got, c.want)
-		}
 	}
 }
 

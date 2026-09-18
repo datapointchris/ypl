@@ -229,6 +229,19 @@ server holds, and the next sync run pushes that order. Where an edit is refused,
 in a file and the refusal names it, because by then the editor has closed and that file is the only
 copy of the rearranging.
 
+`ypl playlists play <playlist>` runs mpv in the foreground on the playlist's videos, leaving out the
+ones YouTube will not serve. `--audio` drops the video window and `--mpv` passes an argument
+straight through. A player that failed is exit 1 and mpv's own status is written to stderr, because
+mpv spends 2 on a file it cannot open and this tool spends 2 on an invocation it would not accept.
+It opens mpv's IPC socket, which is what lets `ypl now` report the track inside a two-hour mix
+rather than the name of the mix. `ypl now` writes its answer and then exits 1 when nothing is
+playing, so a status bar can run it unguarded in either mode.
+
+`ypl plays add <video>` records that something was listened to, by id or by a link it was copied
+from. That is what `ypl next` reads to stop suggesting the same mix. It is written when a listen is
+logged rather than inferred from playback, because `ypl playlists play` hands mpv the whole playlist
+at once and never learns which of it got played.
+
 Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
 nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
 success, 2 for an invocation the CLI would not accept, and 1 for a command that ran and failed;
@@ -432,12 +445,12 @@ Private and unlisted playlists need a logged-in session — set `cookies_from_br
 | `$XDG_DATA_HOME/ypl/remote/` | What YouTube held for each playlist at the last reconcile, one JSON file per playlist. The base of the three-way merge, and the only copy of each slot's `setVideoId`. Not rebuildable — re-reading YouTube answers what is there now, not what was there then. |
 | `$XDG_CONFIG_HOME/ypl/config.toml` | Settings, hand-written. `ypl config show` prints what is in effect. |
 | `$XDG_CONFIG_HOME/ypl/auth.json` | Which browser holds the YouTube session, and which channel to act as. Written by `ypl auth`. No credential: the cookies are read from the browser on every run. |
-| `$XDG_STATE_HOME/ypl/mpv.sock` | mpv's IPC socket while `ypl play` is running. Read by `ypl now`. |
+| `$XDG_STATE_HOME/ypl/mpv.sock` | mpv's IPC socket while `ypl playlists play` is running. Read by `ypl now`. |
 
 ## Playing
 
 ```bash
-ypl play 'Sunday' --audio --sort random    # runs mpv in the foreground
+ypl playlists play 'Sunday' --audio        # runs mpv in the foreground
 ypl now                                    # what is playing, down to the track
 ```
 
@@ -456,9 +469,10 @@ Four Tet - Baby
 Shimza for Cercle at Citadelle de Sisteron  0:42:13 / 2:05:33
 ```
 
-It exits 1 when nothing is playing, with nothing on stdout, so a status bar can run it unguarded.
-On Arch, waybar's built-in `mpris` module already shows mpv without any of this — install
-`mpv-mpris` and `ypl play` appears there on its own.
+It writes its answer and then exits 1 when nothing is playing, so a status bar can run it
+unguarded and still have something to parse. On Arch, waybar's built-in `mpris` module already
+shows mpv without any of this — install `mpv-mpris` and `ypl playlists play` appears there on its
+own.
 
 ## Building a playlist from what you have
 
@@ -508,8 +522,8 @@ ypl plays add <id>              # record a listen
 ypl plays list                  # what has been played lately
 ```
 
-History is recorded when a listen is logged, not inferred from playback: `ypl play` hands mpv the
-whole list at once and blocks, so it never learns which of it actually got played.
+History is recorded when a listen is logged, not inferred from playback: `ypl playlists play` hands
+mpv the whole list at once and blocks, so it never learns which of it actually got played.
 
 It is a file rather than a table because the mirror is disposable — it re-syncs for free — and a
 record of what you have listened to cannot be rebuilt from anything. Deleting the mirror does not

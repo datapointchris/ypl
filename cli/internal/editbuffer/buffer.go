@@ -19,8 +19,9 @@ package editbuffer
 
 import (
 	"fmt"
-	"net/url"
 	"strings"
+
+	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
 
 // comment begins a line the buffer ignores.
@@ -32,22 +33,6 @@ const instructions = `# Reorder these lines to reorder the playlist.
 # Add a line with a URL or id to add one.
 #
 # Lines starting with # are ignored. Save an empty buffer to abort.`
-
-// idLength is how many characters a YouTube video id has, and idAlphabet what
-// they are drawn from.
-const idLength = 11
-
-const idAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
-
-// watchHosts serve a video at /watch?v=; shortHosts serve one at /<id>.
-var watchHosts = map[string]bool{
-	"youtube.com": true, "www.youtube.com": true, "m.youtube.com": true, "music.youtube.com": true,
-}
-
-var shortHosts = map[string]bool{"youtu.be": true}
-
-// pathPrefixes are the paths that carry an id as their next segment.
-var pathPrefixes = []string{"/shorts/", "/embed/", "/v/", "/live/"}
 
 // idColumn and labelColumn are what the two padded columns are widened to. The
 // id column is fixed because YouTube ids are, and the columns are padded rather
@@ -126,7 +111,7 @@ func Parse(text string, known map[string]bool) ([]string, error) {
 			if len(fields) > 1 {
 				return nil, &LineError{Number: i + 1, Line: line, Reason: "is a note rather than a video id or URL"}
 			}
-			videoID = VideoID(token)
+			videoID = youtube.VideoID(token)
 		}
 		if videoID == "" {
 			return nil, &LineError{Number: i + 1, Line: line, Reason: "does not start with a video id or URL"}
@@ -134,66 +119,4 @@ func Parse(text string, known map[string]bool) ([]string, error) {
 		videoIDs = append(videoIDs, videoID)
 	}
 	return videoIDs, nil
-}
-
-// VideoID is the video a token names: a bare id, or the id inside a YouTube
-// URL. It is "" for anything else.
-//
-// A URL is read structurally rather than matched, so one carrying extra query
-// parameters — `&list=`, `&t=`, the tracking ones YouTube's share button
-// appends — yields the same id as the bare link. What a URL names is taken as
-// given, since `v=` says what it is; only a bare token has to look like an id,
-// which is what keeps a line of prose from being filed as a video.
-func VideoID(token string) string {
-	candidate := strings.TrimSpace(token)
-	switch {
-	case candidate == "":
-		return ""
-	case !strings.Contains(candidate, "/"):
-		if isVideoID(candidate) {
-			return candidate
-		}
-		return ""
-	}
-	// A URL written without a scheme parses as a path, and then the host this
-	// reads is empty. The `//` makes it an authority either way.
-	if !strings.Contains(candidate, "//") {
-		candidate = "//" + candidate
-	}
-	parsed, err := url.Parse(candidate)
-	if err != nil {
-		return ""
-	}
-	host := strings.ToLower(parsed.Host)
-	if shortHosts[host] {
-		return firstSegment(parsed.Path)
-	}
-	if !watchHosts[host] {
-		return ""
-	}
-	if named := parsed.Query()["v"]; len(named) > 0 {
-		return named[0]
-	}
-	for _, prefix := range pathPrefixes {
-		if strings.HasPrefix(parsed.Path, prefix) {
-			return firstSegment(strings.TrimPrefix(parsed.Path, prefix))
-		}
-	}
-	return ""
-}
-
-// isVideoID reports whether text is an id as YouTube writes one.
-func isVideoID(text string) bool {
-	if len(text) != idLength {
-		return false
-	}
-	return strings.IndexFunc(text, func(r rune) bool {
-		return !strings.ContainsRune(idAlphabet, r)
-	}) < 0
-}
-
-// firstSegment is the first path segment of path, and "" where there is none.
-func firstSegment(path string) string {
-	segment, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
-	return segment
 }

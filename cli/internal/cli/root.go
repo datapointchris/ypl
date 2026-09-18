@@ -83,6 +83,7 @@ func newRootCommand(a *app) *cobra.Command {
 		a.videosCommand(),
 		a.playsCommand(),
 		a.nextCommand(),
+		a.nowCommand(),
 		a.statusCommand(),
 		a.syncCommand(),
 		a.authCommand(),

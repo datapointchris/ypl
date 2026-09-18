@@ -485,6 +485,11 @@ func TestAnUnavailableVideoIsNotPromisedALaterRead(t *testing.T) {
 	if !strings.Contains(got.out, "will not serve") {
 		t.Fatalf("the reason it has no tracklist is not stated:\n%s", got.out)
 	}
+	// Its length is null too, and a mix of unknown length is not a mix of no
+	// length. A zero here would read as a video that is really that long.
+	if strings.Contains(got.out, "0:00") {
+		t.Fatalf("a length the server does not hold was rendered as a zero:\n%s", got.out)
+	}
 }
 
 // A consumer writes one filter against a collection, or it writes a filter and

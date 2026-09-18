@@ -6,13 +6,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
+	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
-
-// watchURL is where a video is played from. It is built here rather than sent
-// by the server, since it is a fact about YouTube rather than about the store.
-func watchURL(videoID string) string {
-	return "https://www.youtube.com/watch?v=" + videoID
-}
 
 func (a *app) nextCommand() *cobra.Command {
 	var (
@@ -50,7 +45,7 @@ func (a *app) nextCommand() *cobra.Command {
 				}
 			} else {
 				for _, suggestion := range suggestions {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", suggestion.Title, watchURL(suggestion.ID))
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", suggestion.Title, youtube.WatchURL(suggestion.ID))
 				}
 			}
 			if len(suggestions) == 0 {
@@ -76,7 +71,7 @@ type suggestedVideo struct {
 func withURLs(suggestions []api.Suggestion) []suggestedVideo {
 	drawn := make([]suggestedVideo, len(suggestions))
 	for i, suggestion := range suggestions {
-		drawn[i] = suggestedVideo{Suggestion: suggestion, URL: watchURL(suggestion.ID)}
+		drawn[i] = suggestedVideo{Suggestion: suggestion, URL: youtube.WatchURL(suggestion.ID)}
 	}
 	return drawn
 }

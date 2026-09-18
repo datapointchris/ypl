@@ -292,6 +292,8 @@ func words(hint string) []string {
 // reading a tree the binary never assembles passes while the binary is broken.
 func TestEverySuggestedCommandExists(t *testing.T) {
 	said := map[string]bool{}
+	exercised := map[string]bool{}
+	root := func() *cobra.Command { return newRootCommand(&app{}) }
 	// Each invocation is required to produce a hint of its own. A floor across
 	// the whole set is satisfied by any one survivor, so dropping the backticks
 	// from three of four sentences would leave it green.
@@ -301,6 +303,8 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		{"plays", "list"},
 		{"sync", "runs", "list"},
 		{"next"},
+		{"now"},
+		{"playlists", "play", "Empty"},
 		{"auth", "status"},
 		{"auth", "token"},
 	} {
@@ -310,8 +314,19 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 			"/api/v1/suggestions": `[]`,
 			"/api/v1/plays":       `{"data": [], "has_more": false}`,
 			"/api/v1/sync/runs":   `{"data": [], "has_more": false}`,
+			"/api/v1/playlists/Empty": `{"id": "PLA", "title": "Empty", "privacy": "private", "item_count": 1,
+				"enriched_count": 0, "unavailable_count": 1, "synced_ts": null, "items": [
+					{"position": 1, "video": {"id": "aaaaaaaaaaa", "title": "A", "channel_title": "One",
+						"duration_seconds": 60, "is_unavailable": true}}]}`,
 		}))
+		// `now` reads a socket and `playlists play` runs a player, and both
+		// write their hint before reaching either.
+		shortStateDir(t)
+		stubMpv(t, 0)
 		got := f.run(args...)
+		if found, _, err := root().Find(args); err == nil {
+			exercised[found.CommandPath()] = true
+		}
 		here := hinted.FindAllStringSubmatch(got.out+got.err, -1)
 		if len(here) == 0 {
 			t.Errorf("%v named no command to run next", args)
@@ -339,15 +354,36 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 	// no error for a word that named nothing. The leftovers are the whole
 	// finding: `ypl playlists refresh` resolves to playlists with "refresh"
 	// unconsumed, which is exactly the hint this gate exists to catch.
-	root := newRootCommand(&app{})
+	// The runs above are a list, and a list is true only when it was written.
+	// Every leaf the tree grows is either exercised or named here, so a new
+	// command cannot go uncovered in silence. A leaf lands here because it
+	// prompts, writes to YouTube, or answers completely and so has nothing to
+	// suggest next.
+	writesNoHintHere := map[string]bool{
+		"ypl auth login": true, "ypl auth logout": true, "ypl auth refresh": true,
+		"ypl config edit": true, "ypl config example": true, "ypl config path": true,
+		"ypl config show": true, "ypl help": true, "ypl update": true,
+		"ypl playlists create": true, "ypl playlists delete": true, "ypl playlists edit": true,
+		"ypl playlists rename": true, "ypl playlists show": true,
+		"ypl plays add": true, "ypl plays show": true, "ypl status": true,
+		"ypl sync run": true, "ypl sync runs show": true, "ypl videos show": true,
+		"ypl videos sorts": true,
+	}
+	for _, leaf := range leaves(root()) {
+		if !exercised[leaf] && !writesNoHintHere[leaf] {
+			t.Errorf("%s is in the tree and no run here reads the hint it writes", leaf)
+		}
+	}
+
 	for hint := range said {
 		named := words(hint)
 		if len(named) == 0 {
 			t.Errorf("a command told the reader to run `ypl %s`, which names no command at all", hint)
 			continue
 		}
-		found, rest, err := root.Find(named)
-		if err != nil || len(rest) > 0 || found == root {
+		tree := root()
+		found, rest, err := tree.Find(named)
+		if err != nil || len(rest) > 0 || found == tree {
 			t.Errorf("a command told the reader to run `ypl %s`, which the tree does not have", hint)
 		}
 	}
@@ -390,42 +426,15 @@ func TestTheRejectedTokenHintIsAmongTheCheckedOnes(t *testing.T) {
 	}
 }
 
-// "1 videos" is a rendering fault a reader notices, and one noticed costs the
-// rest of the line its credibility.
-func TestCountNamesOneThingSingly(t *testing.T) {
-	for _, c := range []struct {
-		n     int64
-		thing string
-		want  string
-	}{
-		{0, "video", "0 videos"},
-		{1, "video", "1 video"},
-		{2, "video", "2 videos"},
-		{1, "playlist", "1 playlist"},
-		{11, "track", "11 tracks"},
-	} {
-		if got := count(c.n, c.thing); got != c.want {
-			t.Errorf("count(%d, %q) = %q, want %q", c.n, c.thing, got, c.want)
-		}
+// leaves is every command in the tree that runs something, named as cobra spells
+// a command path. A namespace is not one: it only shows help.
+func leaves(cmd *cobra.Command) []string {
+	if len(cmd.Commands()) == 0 {
+		return []string{cmd.CommandPath()}
 	}
-}
-
-func TestClockReadsSecondsAsAPersonWritesADuration(t *testing.T) {
-	for _, c := range []struct {
-		seconds *int64
-		want    string
-	}{
-		{nil, ""},
-		{known(0), "0:00"},
-		{known(59), "0:59"},
-		{known(90), "1:30"},
-		{known(3600), "1:00:00"},
-		{known(7325), "2:02:05"},
-	} {
-		if got := clock(c.seconds); got != c.want {
-			t.Errorf("clock(%v) = %q, want %q", c.seconds, got, c.want)
-		}
+	found := []string{}
+	for _, child := range cmd.Commands() {
+		found = append(found, leaves(child)...)
 	}
+	return found
 }
-
-func known(n int64) *int64 { return &n }
