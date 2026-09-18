@@ -1,13 +1,17 @@
 package cli
 
 import (
+	"errors"
 	"net/http"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
+
+	"github.com/datapointchris/ypl/cli/internal/api"
 )
 
 // Exit 2 is the only answer that tells a caller to try different arguments
@@ -20,6 +24,8 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		{"playlists", "show"},
 		{"playlists", "show", "one", "two"},
 		{"playlists", "list", "--nope"},
+		{"play", "one", "two"},
+		{"play", "--limit", "101"},
 		{"videos", "list", "--min-minutes", "120", "--max-minutes", "60"},
 		{"videos", "list", "--min-minutes", "-5"},
 		{"videos", "list", "--max-minutes", "-1"},
@@ -31,6 +37,18 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		f := newFixture(t, serves(nil))
 		if got := f.run(args...); got.code != 2 {
 			t.Errorf("%v exited %d, want 2: %s%s", args, got.code, got.out, got.err)
+		}
+	}
+
+	// A word one slip from a command is answered with the command, at the root
+	// and inside a namespace alike.
+	f := newFixture(t, serves(nil))
+	for args, meant := range map[[2]string]string{
+		{"playslist", "play"}: "playlists",
+		{"playlists", "lisy"}: "list",
+	} {
+		if got := f.run(args[:]...); !slices.Contains(strings.Fields(got.err), meant) {
+			t.Errorf("%v said %q, want it to name %q", args, got.err, meant)
 		}
 	}
 }
@@ -118,6 +136,10 @@ func TestEveryNamespaceShowsHelpWhenGivenNothing(t *testing.T) {
 		t.Fatalf("walked %d namespaces, want every node with subcommands", len(found))
 	}
 	for _, args := range found {
+		// The root is the one node that answers bare, with the glance.
+		if len(args) == 0 {
+			continue
+		}
 		f := newFixture(t, serves(nil))
 		got := f.run(args...)
 		if got.code != 0 {
@@ -140,6 +162,31 @@ func TestARefusalFromTheServerCarriesItsOwnSentence(t *testing.T) {
 	}
 	if !strings.Contains(got.err, "playlist nope not found") {
 		t.Fatalf("stderr = %q, want the server's own sentence", got.err)
+	}
+
+	// The not-found hint replaces the text it is handed, so it is handed all
+	// of it. A refused edit carries where its buffer was kept beside the
+	// server's sentence, and that is the only copy of the rearranging left.
+	refused := errors.Join(&api.Refusal{Status: http.StatusNotFound, Code: "not_found", Message: "playlist nope not found"},
+		errors.New("the buffer is kept at /tmp/ypl-edit"))
+	if subject, ok := notFound(refused); !ok || !strings.Contains(subject, "/tmp/ypl-edit") {
+		t.Errorf("the hint went under %q, want every part of the error", subject)
+	}
+	// Only a reference the server did not recognize is a not-found. Two
+	// playlists answering one reference already name both, and a refusal with
+	// no sentence never reached the server.
+	for _, c := range []struct {
+		refusal api.Refusal
+		want    bool
+	}{
+		{api.Refusal{Status: http.StatusBadRequest, Code: "unknown_reference", Message: "names nothing"}, true},
+		{api.Refusal{Status: http.StatusBadRequest, Code: "ambiguous_reference", Message: "names two"}, false},
+		{api.Refusal{Status: http.StatusNotFound, Code: "not_found"}, false},
+		{api.Refusal{Status: http.StatusServiceUnavailable, Code: "unavailable", Message: "down"}, false},
+	} {
+		if _, ok := notFound(&c.refusal); ok != c.want {
+			t.Errorf("%+v read as a not-found: %v, want %v", c.refusal, ok, c.want)
+		}
 	}
 }
 
@@ -291,9 +338,31 @@ func words(hint string) []string {
 // walk is against the assembled tree rather than one built here, since a gate
 // reading a tree the binary never assembles passes while the binary is broken.
 func TestEverySuggestedCommandExists(t *testing.T) {
+	// The gate reads a hint by its delimiters, so a flag, a placeholder or a
+	// hyphen in the verb does not make one invisible to it. A narrower pattern
+	// would pass every run below on the one plain hint each happens to carry.
+	for sentence, want := range map[string][]string{
+		"`ypl status` says what it holds.":                  {"status"},
+		"`ypl videos list --json` is the whole library":     {"videos", "list"},
+		"`ypl playlists show <playlist>` names one":         {"playlists", "show"},
+		"`ypl sync runs list -n 5` shows the newest":        {"sync", "runs", "list"},
+		"`ypl playlists refresh-all` re-reads them, a verb": {"playlists", "refresh-all"},
+	} {
+		found := hinted.FindStringSubmatch(sentence)
+		if len(found) < 2 || !slices.Equal(words(found[1]), want) {
+			t.Fatalf("the gate read %q as %v, want %v", sentence, found, want)
+		}
+	}
+
 	said := map[string]bool{}
 	exercised := map[string]bool{}
-	root := func() *cobra.Command { return newRootCommand(&app{}) }
+	// Cobra adds `help` as the binary executes, so the tree read here adds it
+	// too; a bare `ypl` names it.
+	root := func() *cobra.Command {
+		tree := newRootCommand(&app{})
+		tree.InitDefaultHelpCmd()
+		return tree
+	}
 	// Each invocation is required to produce a hint of its own. A floor across
 	// the whole set is satisfied by any one survivor, so dropping the backticks
 	// from three of four sentences would leave it green.
@@ -304,11 +373,15 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		{"sync", "runs", "list"},
 		{"next"},
 		{"now"},
-		{"playlists", "play", "Empty"},
+		{"play", "Empty"},
+		{"play"},
+		{},
 		{"auth", "status"},
 		{"auth", "token"},
 	} {
 		f := newFixture(t, serves(map[string]string{
+			"/api/v1/status": `{"library": {"playlists": 0, "videos": 0, "unavailable_videos": 0,
+				"enriched_videos": 0, "tracks": 0, "plays": 0}, "last_run": ` + run(1, "failed") + `, "last_ok_run": null}`,
 			"/api/v1/playlists":   `[]`,
 			"/api/v1/videos":      `[]`,
 			"/api/v1/suggestions": `[]`,
@@ -319,8 +392,8 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 					{"position": 1, "video": {"id": "aaaaaaaaaaa", "title": "A", "channel_title": "One",
 						"duration_seconds": 60, "is_unavailable": true}}]}`,
 		}))
-		// `now` reads a socket and `playlists play` runs a player, and both
-		// write their hint before reaching either.
+		// `now` reads a socket and `play` runs a player, and both write their
+		// hint before reaching either.
 		shortStateDir(t)
 		stubMpv(t, 0)
 		got := f.run(args...)
@@ -348,6 +421,24 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 	}
 	for _, one := range found {
 		said[one[1]] = true
+	}
+
+	// A not-found's hints are printed only when a server refuses, so they are
+	// read off the tree, where every one of them is, rather than off a run.
+	annotated := 0
+	var walk func(cmd *cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		for _, hint := range hinted.FindAllStringSubmatch(cmd.Annotations[goclikit.RecoveryHintsAnnotation], -1) {
+			said[hint[1]] = true
+			annotated++
+		}
+		for _, child := range cmd.Commands() {
+			walk(child)
+		}
+	}
+	walk(root())
+	if annotated == 0 {
+		t.Error("no recovery hint on the tree names a command the gate can read")
 	}
 
 	// Find returns the deepest command it matched plus the words left over, and
@@ -386,33 +477,6 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		if err != nil || len(rest) > 0 || found == tree {
 			t.Errorf("a command told the reader to run `ypl %s`, which the tree does not have", hint)
 		}
-	}
-}
-
-// The gate reads a hint by its delimiters, so a flag, a placeholder or a hyphen
-// in the verb does not make one invisible to it.
-func TestTheHintGateReadsEveryShapeOfHint(t *testing.T) {
-	for _, c := range []struct {
-		sentence string
-		want     []string
-	}{
-		{"`ypl status` says what it holds.", []string{"status"}},
-		{"`ypl videos list --json` is the whole library", []string{"videos", "list"}},
-		{"`ypl playlists show <playlist>` names one", []string{"playlists", "show"}},
-		{"`ypl sync runs list -n 5` shows the newest", []string{"sync", "runs", "list"}},
-	} {
-		found := hinted.FindStringSubmatch(c.sentence)
-		if found == nil {
-			t.Errorf("%q matched nothing", c.sentence)
-			continue
-		}
-		if got := words(found[1]); !slices.Equal(got, c.want) {
-			t.Errorf("%q named %v, want %v", c.sentence, got, c.want)
-		}
-	}
-	// A hyphenated verb the tree does not have is the shape the gate is for.
-	if found := hinted.FindStringSubmatch("`ypl playlists refresh-all` re-reads them"); found == nil {
-		t.Error("a hyphenated verb was invisible to the gate")
 	}
 }
 

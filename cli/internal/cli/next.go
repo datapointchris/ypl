@@ -33,7 +33,7 @@ func (a *app) nextCommand() *cobra.Command {
 			}
 			suggestions, err := client.ListSuggestions(cmd.Context(), playlist, limit)
 			if err != nil {
-				return reported(err)
+				return reported(namingPlaylists(cmd.Context(), client, err))
 			}
 			// Render first, decide the exit code after, in both modes. A status
 			// bar is the caller that reads the empty draw off the code, and
@@ -56,6 +56,7 @@ func (a *app) nextCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&playlist, "playlist", "p", "", "Draw from one playlist, by title or id")
+	completeFlag(cmd, "playlist", a.completePlaylists)
 	addLimit(cmd, &limit, api.MaxSuggestions, "How many to draw")
 	addJSON(cmd, &asJSON, "the suggestions")
 	return cmd

@@ -54,7 +54,8 @@ func (a *app) playlistsRenameCommand() *cobra.Command {
 			"because a fragment matching one playlist matches it unambiguously.",
 		Example: "  ypl playlists rename 'Sunday Morning' 'Sunday Mornings'  retitle it\n" +
 			"  ypl playlists rename PLabc123 'Sunday Mornings'          name it by its id instead",
-		Args: usageArgs(cobra.ExactArgs(2)),
+		Args:              usageArgs(cobra.ExactArgs(2)),
+		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -62,7 +63,7 @@ func (a *app) playlistsRenameCommand() *cobra.Command {
 			}
 			renamed, err := client.RenamePlaylist(cmd.Context(), api.Reference(args[0]), api.PlaylistTitle(args[1]))
 			if err != nil {
-				return reported(err)
+				return reported(namingPlaylists(cmd.Context(), client, err))
 			}
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), renamed)
@@ -90,7 +91,8 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 			"not reach a delete.",
 		Example: "  ypl playlists delete 'Sunday Morning'        ask, then delete it\n" +
 			"  ypl playlists delete 'Sunday Morning' --yes  delete it without asking",
-		Args: usageArgs(cobra.ExactArgs(1)),
+		Args:              usageArgs(cobra.ExactArgs(1)),
+		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := api.Reference(args[0])
 			// Checked before anything is read, so a caller who could never have
@@ -114,13 +116,13 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 				// somebody comes to approve destroying a playlist on a command
 				// that could never have done it.
 				if _, err := client.PlaylistItems(cmd.Context(), name); err != nil {
-					return reported(err)
+					return reported(namingPlaylists(cmd.Context(), client, err))
 				}
 				// Read second, so the question names what is about to go rather
 				// than repeating back what was typed.
 				playlist, err := client.GetPlaylist(cmd.Context(), name)
 				if err != nil {
-					return reported(err)
+					return reported(namingPlaylists(cmd.Context(), client, err))
 				}
 				deleting = playlist.Title
 				question := fmt.Sprintf("Delete %s (%s) from YouTube?", playlist.Title, count(playlist.ItemCount, "video"))
@@ -134,7 +136,7 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 				}
 			}
 			if err := client.DeletePlaylist(cmd.Context(), name); err != nil {
-				return reported(err)
+				return reported(namingPlaylists(cmd.Context(), client, err))
 			}
 			nothing(cmd, fmt.Sprintf("Deleted %s.", deleting))
 			return nil

@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/datapointchris/goclilogin"
+	"github.com/datapointchris/goselfupdate/autoupdate"
+	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
 )
@@ -83,7 +86,13 @@ type answered struct {
 	code int
 }
 
-// run invokes the tree with args, taking its streams rather than the process's.
+// run invokes the tree with args the way the binary does, through what Execute
+// wraps it in, taking its streams rather than the process's.
+//
+// goclikit asks cobra which command the line names before it runs, and reads
+// the line off os.Args to do it, so the run sets os.Args as the binary's own
+// would be. Running the tree bare instead skips everything goclikit adds to an
+// error, which is how a hint naming no real command once passed the suite.
 func (f *fixture) run(args ...string) answered {
 	f.t.Helper()
 	root := newRootCommand(f.app)
@@ -92,7 +101,10 @@ func (f *fixture) run(args ...string) answered {
 	root.SetErr(&errOut)
 	root.SetIn(f.stdin)
 	root.SetArgs(args)
-	err := root.Execute()
+	was := os.Args
+	os.Args = append([]string{"ypl"}, args...)
+	err := executeTree(context.Background(), root, autoupdate.Config{Suppress: true})
+	os.Args = was
 	report(&errOut, err)
 	return answered{out: out.String(), err: errOut.String(), code: exitCodeFor(err)}
 }
@@ -236,6 +248,102 @@ func TestPlaylistsListReadsEveryPlaylist(t *testing.T) {
 	got := asJSON[[]api.PlaylistSummary](t, f.run("playlists", "list", "--json"))
 	if len(got) != 1 || got[0].ID != "PLA" || got[0].Title != "Alpha" || got[0].ItemCount != 3 {
 		t.Fatalf("playlists = %+v", got)
+	}
+}
+
+// Tab offers every playlist as something a shell takes unquoted, with the title
+// beside it. Two titles slugging the same, or one slugging to nothing, are
+// offered by id, which reaches exactly one.
+func TestTabOffersEveryPlaylistAsASlugTheServerResolves(t *testing.T) {
+	// The server's own slug for a set of awkward titles, written by its wire
+	// test. An offer differing from it by one hyphen is a 404.
+	raw, err := os.ReadFile("../../../api/handlers/testdata/wire/slugs.json")
+	if err != nil {
+		t.Fatalf("read the server's slugs — run `go test ./handlers -update` in the api module: %v", err)
+	}
+	var pairs []struct{ Title, Slug string }
+	decodeInto(t, string(raw), &pairs)
+	if len(pairs) == 0 {
+		t.Fatal("the server wrote no slugs to agree with")
+	}
+	for _, pair := range pairs {
+		if got := slug(pair.Title); got != pair.Slug {
+			t.Errorf("slugged %q as %q, and the server reaches it by %q", pair.Title, got, pair.Slug)
+		}
+	}
+
+	summary := func(id, title string, videos int) string {
+		return `{"id": "` + id + `", "title": "` + title + `", "description": "", "privacy": "private",
+			"item_count": ` + strconv.Itoa(videos) + `, "unavailable_count": 0, "enriched_count": 0}`
+	}
+	listed := "[" + strings.Join([]string{
+		summary("PLA", "Sunday Morning", 1),
+		summary("PLB", "Björk: Live!", 2),
+		summary("PLC", "Deep", 3),
+		summary("PLD", "DEEP", 4),
+		summary("PLE", "!!!", 5),
+	}, ",") + "]"
+	f := newFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/playlists" {
+			_, _ = w.Write([]byte(listed))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error": "playlist nosuch not found", "code": "not_found"}`))
+	})
+
+	want := "sunday-morning\tSunday Morning, 1 video\n" +
+		"björk-live\tBjörk: Live!, 2 videos\n" +
+		"PLC\tDeep, 3 videos\n" +
+		"PLD\tDEEP, 4 videos\n" +
+		"PLE\t!!!, 5 videos\n" +
+		":4\n"
+	// Every place that names a playlist completes one, found on the tree
+	// rather than listed here, and no Tab anywhere falls back to filenames:
+	// nothing in this tool takes a path.
+	slots := 0
+	var walk func(cmd *cobra.Command)
+	walk = func(cmd *cobra.Command) {
+		path := append([]string{"__complete"}, strings.Fields(cmd.CommandPath())[1:]...)
+		if strings.Contains(cmd.Use, "<playlist>") || strings.Contains(cmd.Use, "[playlist]") {
+			slots++
+			if got := f.run(append(path, "")...); got.out != want {
+				t.Errorf("%s offered\n%s\nwant\n%s", cmd.CommandPath(), got.out, want)
+			}
+		}
+		if cmd.LocalFlags().Lookup("playlist") != nil {
+			slots++
+			if got := f.run(append(path, "--playlist", "")...); got.out != want {
+				t.Errorf("%s --playlist offered\n%s\nwant\n%s", cmd.CommandPath(), got.out, want)
+			}
+		}
+		lines := strings.Split(strings.TrimSpace(f.run(append(path, "")...).out), "\n")
+		directive, _ := strconv.Atoi(strings.TrimPrefix(lines[len(lines)-1], ":"))
+		if cobra.ShellCompDirective(directive)&cobra.ShellCompDirectiveNoFileComp == 0 {
+			t.Errorf("%s offers filenames on Tab", cmd.CommandPath())
+		}
+		for _, child := range cmd.Commands() {
+			walk(child)
+		}
+	}
+	walk(newRootCommand(f.app))
+	if slots == 0 {
+		t.Fatal("found no command naming a playlist")
+	}
+	// What follows a playlist is a new title, which nothing can guess.
+	if got := f.run("__complete", "playlists", "rename", "sunday-morning", ""); got.out != ":4\n" {
+		t.Errorf("after the playlist offered %q, want nothing and no files", got.out)
+	}
+	// A playlist the server does not know is answered with the list Tab offers.
+	if got := f.run("playlists", "show", "nosuch"); !strings.Contains(got.err, "sunday-morning") {
+		t.Errorf("a playlist not found said %q, want the playlists the server holds", got.err)
+	}
+
+	// A keystroke is never answered with an error written into the line.
+	down := newFixture(t, refuses(http.StatusUnauthorized, "invalid_token", "no"))
+	if got := down.run("__complete", "play", ""); got.out != ":1\n" {
+		t.Errorf("with the server refusing, offered %q, want nothing", got.out)
 	}
 }
 

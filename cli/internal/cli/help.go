@@ -62,6 +62,10 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 
 func init() {
 	cobra.AddTemplateFunc("usePad", usePad)
+	// Every list prints in the order the tree adds it, which is the order a
+	// command is reached for: play before next, list before delete.
+	// Alphabetical puts next above play and create above list.
+	cobra.EnableCommandSorting = false
 }
 
 // useUsageTemplate sets the template on root, which every command below it

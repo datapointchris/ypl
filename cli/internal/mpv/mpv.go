@@ -71,7 +71,7 @@ var ErrUnavailable = errors.New("mpv is not installed")
 // nothing playing makes the command wrong about the one thing it is asked.
 var ErrUnreadable = errors.New("what is playing could not be read")
 
-// SocketPath is where `ypl playlists play` opens mpv's IPC socket and `ypl now` looks for
+// SocketPath is where `ypl play` opens mpv's IPC socket and `ypl now` looks for
 // it. It sits with the CLI's other state rather than in the config directory,
 // because it is a socket that exists only while something is playing.
 func SocketPath() string {
@@ -239,7 +239,7 @@ func Read(socketPath string) (State, error) {
 		Duration: seconds(found["duration"]),
 	}
 	// An mpv running with nothing loaded answers every read and holds no path.
-	// It is reachable without anyone asking for it, because `ypl playlists play` runs mpv
+	// It is reachable without anyone asking for it, because `ypl play` runs mpv
 	// with the person's own config and `idle=yes` in it leaves the player alive
 	// after the last video.
 	if state.Path == "" {

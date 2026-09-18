@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
@@ -10,43 +11,34 @@ import (
 	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
 
-func (a *app) playlistsPlayCommand() *cobra.Command {
+func (a *app) playCommand() *cobra.Command {
 	var (
 		audio bool
 		limit int
 		extra []string
 	)
 	cmd := &cobra.Command{
-		Use:     "play <playlist>",
-		Short:   "Play a playlist through mpv",
-		GroupID: groupPlaylistReading,
-		Long: "Runs in the foreground and exits when mpv does.\n" +
+		Use:     "play [playlist]",
+		Short:   "Play a playlist, or a draw of the mixes heard least recently",
+		GroupID: groupPlaying,
+		Long: "Runs in the foreground and exits when mpv does. Tab completes the playlist.\n" +
+			"\n" +
+			"Named, a playlist plays in its own order. With no playlist, it plays a draw of\n" +
+			"up to 100 mixes, made the way `ypl next` makes one: never-played mixes first,\n" +
+			"in a new order each time, then the ones heard least recently.\n" +
 			"\n" +
 			"A video YouTube will not serve is left out. mpv would stop on it, and the\n" +
 			"server already knows which ones those are.\n" +
 			"\n" +
 			"Playback opens mpv's IPC socket, which is what lets `ypl now` say which track\n" +
 			"of a two-hour mix is on.",
-		Example: "  ypl playlists play 'sunday morning'             the whole playlist, in its order\n" +
-			"  ypl playlists play 'sunday morning' --audio     no video window\n" +
-			"  ypl playlists play 'sunday morning' --limit 3   the first three of it",
-		Args: usageArgs(cobra.ExactArgs(1)),
+		Example: "  ypl play sunday-morning             the whole playlist, in its order\n" +
+			"  ypl play                            a draw, least recently heard first\n" +
+			"  ypl play sunday-morning --audio     no video window\n" +
+			"  ypl play sunday-morning --limit 3   the first three of it",
+		Args:              usageArgs(cobra.MaximumNArgs(1)),
+		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The cheapest and most certain refusal runs first. Reaching it
-			// inside mpv.Play would put it after the config load, the keychain
-			// read and a network round trip, so a machine with neither mpv nor
-			// a reachable server reports the wrong one of the two.
-			if err := mpv.Available(); err != nil {
-				return reported(err)
-			}
-			client, err := a.client(cmd.Context())
-			if err != nil {
-				return reported(err)
-			}
-			playlist, err := client.GetPlaylist(cmd.Context(), api.Reference(args[0]))
-			if err != nil {
-				return reported(err)
-			}
 			// An unset --limit is no ceiling. An explicit --limit 0 is a
 			// request for nothing, which is what it means on every other verb
 			// of this binary.
@@ -54,19 +46,35 @@ func (a *app) playlistsPlayCommand() *cobra.Command {
 			if cmd.Flags().Changed("limit") {
 				ceiling = &limit
 			}
-			urls, left := playable(playlist, ceiling)
+			// The cheapest and most certain refusals run first: what was typed,
+			// then whether mpv is here at all. Reaching the second inside
+			// mpv.Play would put it after the config load, the keychain read
+			// and a network round trip, so a machine with neither mpv nor a
+			// reachable server would report the wrong one of the two.
 			switch {
+			case len(args) == 0 && ceiling != nil && *ceiling > api.MaxSuggestions:
+				return goclikit.UsageError(fmt.Errorf("at most %d can be drawn at once, and this asks for %d", api.MaxSuggestions, *ceiling))
 			case ceiling != nil && *ceiling == 0:
 				// Asking for no videos is answered by playing none. It is what
 				// the caller asked for, so it is not a failure.
 				nothing(cmd, "A limit of 0 asks for no videos, so nothing was played.")
 				return nil
-			case len(urls) == 0:
-				nothing(cmd, fmt.Sprintf("%s has nothing playable in it. `ypl playlists show` says what is in it.", playlist.Title))
-				return exitCode(1)
 			}
-			if left > 0 {
-				nothing(cmd, fmt.Sprintf("Leaving out %s YouTube will not serve.", count(left, "video")))
+			if err := mpv.Available(); err != nil {
+				return reported(err)
+			}
+			client, err := a.client(cmd.Context())
+			if err != nil {
+				return reported(err)
+			}
+			var urls mpv.WatchURLs
+			if len(args) == 0 {
+				urls, err = drawn(cmd, client, ceiling)
+			} else {
+				urls, err = listed(cmd, client, args[0], ceiling)
+			}
+			if err != nil {
+				return err
 			}
 
 			arguments := append(mpv.Arguments{}, extra...)
@@ -97,11 +105,61 @@ func (a *app) playlistsPlayCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVarP(&audio, "audio", "a", false, "Play the sound alone, with no video window")
 	cmd.Flags().StringArrayVar(&extra, "mpv", nil, "Pass this argument straight to mpv; repeat it for more than one")
-	addLimit(cmd, &limit, 0, "Play at most this many videos, from the start of the playlist")
+	addLimit(cmd, &limit, 0, "Play at most this many videos, from the start of the playlist or the draw")
 	// No --json. This one takes the terminal and hands it to mpv, and the flag
 	// would then have to decide whether it plays at all, which is a verb's job
-	// and never a rendering flag's. `ypl playlists show --json` is the read.
+	// and never a rendering flag's. `ypl playlists show --json` and
+	// `ypl next --json` are the reads.
 	return cmd
+}
+
+// drawn is a draw of the library made the way `ypl next` makes one, up to
+// ceiling or as much as one draw holds. The server leaves out what YouTube will
+// not serve.
+func drawn(cmd *cobra.Command, client *api.Client, ceiling *int) (mpv.WatchURLs, error) {
+	most := api.MaxSuggestions
+	if ceiling != nil {
+		most = *ceiling
+	}
+	suggestions, err := client.ListSuggestions(cmd.Context(), "", most)
+	if err != nil {
+		return nil, reported(err)
+	}
+	if len(suggestions) == 0 {
+		nothing(cmd, "The library has nothing playable in it. `ypl status` says what the server holds.")
+		return nil, exitCode(1)
+	}
+	urls := make(mpv.WatchURLs, len(suggestions))
+	for i, suggestion := range suggestions {
+		urls[i] = youtube.WatchURL(suggestion.ID)
+	}
+	nothing(cmd, fmt.Sprintf("Playing %s drawn from the library, least recently heard first.", count(int64(len(urls)), "video")))
+	// A draw that came back as large as a draw can be may have left mixes out,
+	// and nothing else on the screen would say so.
+	if len(urls) == api.MaxSuggestions {
+		nothing(cmd, fmt.Sprintf("A draw holds at most %d, so the library may hold more than this.", api.MaxSuggestions))
+	}
+	return urls, nil
+}
+
+// listed is the playlist reference names, in its own order.
+func listed(cmd *cobra.Command, client *api.Client, reference string, ceiling *int) (mpv.WatchURLs, error) {
+	playlist, err := client.GetPlaylist(cmd.Context(), api.Reference(reference))
+	if err != nil {
+		return nil, reported(namingPlaylists(cmd.Context(), client, err))
+	}
+	urls, left := playable(playlist, ceiling)
+	if len(urls) == 0 {
+		nothing(cmd, fmt.Sprintf("%s has nothing playable in it. `ypl playlists show` says what is in it.", playlist.Title))
+		return nil, exitCode(1)
+	}
+	if left > 0 {
+		nothing(cmd, fmt.Sprintf("Leaving out %s YouTube will not serve.", count(left, "video")))
+	}
+	// Named, because a slug or part of a title is what was typed, and this is
+	// the one place that says which playlist it reached.
+	nothing(cmd, fmt.Sprintf("Playing %s, %s.", playlist.Title, count(int64(len(urls)), "video")))
+	return urls, nil
 }
 
 // playable is the watch URLs of a playlist, in its order, and how many videos

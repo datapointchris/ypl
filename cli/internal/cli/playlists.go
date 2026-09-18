@@ -23,7 +23,8 @@ func (a *app) playlistsCommand() *cobra.Command {
 		Short:   "The playlists the server mirrors",
 		GroupID: groupLibrary,
 		Long: "Every playlist on the channel, as the server last read it. A playlist is\n" +
-			"named by its title or by its YouTube id wherever one is named.\n" +
+			"named by its title or by its YouTube id wherever one is named, and Tab\n" +
+			"completes it.\n" +
 			"\n" +
 			"The verbs below that change something change it on YouTube. A new playlist\n" +
 			"is made there private, and a rename and a delete happen there in the request\n" +
@@ -53,7 +54,6 @@ func (a *app) playlistsCommand() *cobra.Command {
 		a.playlistsRenameCommand(),
 		a.playlistsDeleteCommand(),
 		a.playlistsEditCommand(),
-		a.playlistsPlayCommand(),
 	)
 	return cmd
 }
@@ -99,7 +99,8 @@ func (a *app) playlistsShowCommand() *cobra.Command {
 		Short:   "Show one playlist and the videos in it, in order",
 		Example: "  ypl playlists show 'sunday morning'  what is in it, in the order it plays\n" +
 			"  ypl playlists show morning           part of a title is enough for a read",
-		Args: usageArgs(cobra.ExactArgs(1)),
+		Args:              usageArgs(cobra.ExactArgs(1)),
+		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -107,7 +108,7 @@ func (a *app) playlistsShowCommand() *cobra.Command {
 			}
 			playlist, err := client.GetPlaylist(cmd.Context(), api.Reference(args[0]))
 			if err != nil {
-				return reported(err)
+				return reported(namingPlaylists(cmd.Context(), client, err))
 			}
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), playlist)
