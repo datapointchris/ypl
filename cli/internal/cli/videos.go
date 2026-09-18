@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
+	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
 
 func (a *app) videosCommand() *cobra.Command {
@@ -81,8 +82,8 @@ func (a *app) videosListCommand() *cobra.Command {
 func (a *app) videosShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "show <video-id>",
-		Short: "Show one video with its tracklist",
+		Use:   "show <video>",
+		Short: "Show a video's tracklist, by its link or id",
 		Example: "  ypl videos show dQw4w9WgXcQ         what is in this mix, track by track\n" +
 			"  ypl videos show dQw4w9WgXcQ --json  the same, for a script",
 		Args: usageArgs(cobra.ExactArgs(1)),
@@ -91,7 +92,11 @@ func (a *app) videosShowCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			video, err := client.GetVideo(cmd.Context(), args[0])
+			ref := args[0]
+			if id := youtube.VideoID(ref); id != "" {
+				ref = id
+			}
+			video, err := client.GetVideo(cmd.Context(), ref)
 			if err != nil {
 				return reported(err)
 			}

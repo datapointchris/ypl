@@ -422,9 +422,10 @@ func TestVideosShowReadsTheTracklist(t *testing.T) {
 		"description": "A long set",
 		"tracks": [{"position": 1, "start_seconds": 0, "end_seconds": 600, "artist": "Björk",
 			"title": "Track", "raw_text": "Björk - Track", "source": "chapter"}]}`
-	f := newFixture(t, serves(map[string]string{"/api/v1/videos/a": body}))
+	f := newFixture(t, serves(map[string]string{"/api/v1/videos/aaaaaaaaaaa": body}))
 
-	got := asJSON[api.Video](t, f.run("videos", "show", "a", "--json"))
+	// A link copied out of a browser names the video as well as its id does.
+	got := asJSON[api.Video](t, f.run("videos", "show", "https://youtu.be/aaaaaaaaaaa?t=42", "--json"))
 	if len(got.Tracks) != 1 || got.Tracks[0].Title != "Track" || got.Tracks[0].Source != "chapter" {
 		t.Fatalf("tracks = %+v", got.Tracks)
 	}
