@@ -226,8 +226,9 @@ jobs:
         with:
           go-version-file: cli/go.mod
 
-      # The archive name carries the bare version, the OS and the Go arch,
-      # which is the shape the dotfiles installer expands placeholders into.
+      # The archive name is `ypl_<version>_<os>_<arch>`. goselfupdate, which
+      # `ypl update` runs, matches the OS and the Go arch as delimited words in
+      # an asset's name, so the underscores are what make an asset findable.
       # CGO off so the binary runs on a machine without the build host's libc.
       - name: Build and archive
         working-directory: cli
@@ -307,3 +308,10 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: dist/*
           body_path: release-notes.md
+          # A repository has one Latest release however many tag streams it
+          # publishes, and the API defaults every new release to it. The CLI
+          # releases far more often than the Python tool, so without this
+          # `/releases/latest` and the badge on the repository page would answer
+          # `cli/v*` — and README's install line tells a reader to install the
+          # Python package from the newest release tag.
+          make_latest: 'false'
