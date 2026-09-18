@@ -345,9 +345,10 @@ func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 	}
 
 	// A play is taken back by deleting it. Where nobody can answer the
-	// question, nothing is asked of the server. The delete names the play by
-	// the id the read answered with, so the handle typed cannot reach another
-	// play between the two.
+	// question, nothing is asked of the server. Somebody at a terminal is
+	// asked, and only a yes deletes. The delete names the play by the id the
+	// read answered with, so the handle typed cannot reach another play
+	// between the two.
 	f = newFixture(t, answers(map[string]answer{
 		"GET /api/v1/plays/41": {body: stored},
 		"DELETE /api/v1/plays/01920000-0000-7000-8000-000000000000": {status: http.StatusNoContent},
@@ -355,11 +356,20 @@ func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 	if refused := f.run("plays", "delete", "41"); refused.code != 2 || len(f.sent) != 0 {
 		t.Errorf("with nobody to ask, exited %d after %d requests, want 2 and none", refused.code, len(f.sent))
 	}
-	if deleted := f.run("plays", "delete", "41", "--yes"); deleted.code != 0 {
-		t.Fatalf("delete --yes exited %d: %s", deleted.code, deleted.err)
+	f.atTerminal("n\n")
+	if declined := f.run("plays", "delete", "41"); declined.code != 1 || len(f.writes()) != 0 {
+		t.Errorf("answered no, exited %d after %d writes, want 1 and none", declined.code, len(f.writes()))
+	}
+	f.atTerminal("y\n")
+	if deleted := f.run("plays", "delete", "41"); deleted.code != 0 {
+		t.Fatalf("answered yes, exited %d: %s", deleted.code, deleted.err)
 	}
 	if sent := f.onlyWrite(); sent.Method != http.MethodDelete || sent.URL.Path != "/api/v1/plays/01920000-0000-7000-8000-000000000000" {
 		t.Errorf("sent %s %s, want the delete by the play's id", sent.Method, sent.URL.Path)
+	}
+	f.pipe("")
+	if deleted := f.run("plays", "delete", "41", "--yes"); deleted.code != 0 || len(f.writes()) != 2 {
+		t.Errorf("delete --yes exited %d with %d writes in all, want 0 and a second delete: %s", deleted.code, len(f.writes()), deleted.err)
 	}
 
 	// Playback counts a mix as heard once it has played long enough, counting

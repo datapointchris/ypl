@@ -30,7 +30,7 @@ const (
 
 // NewRootCommand returns the ypl command tree.
 func NewRootCommand() *cobra.Command {
-	return newRootCommand(&app{client: newAPIClient, tokens: goclilogin.NewTokenStore})
+	return newRootCommand(&app{client: newAPIClient, tokens: goclilogin.NewTokenStore, terminal: isTerminal})
 }
 
 func newRootCommand(a *app) *cobra.Command {

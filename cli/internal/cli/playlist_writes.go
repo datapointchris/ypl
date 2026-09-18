@@ -99,7 +99,7 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 			// answered is told what they left out rather than told that a write
 			// did not happen.
 			if !yes {
-				if err := confirmable(cmd); err != nil {
+				if err := a.confirmable(cmd); err != nil {
 					return err
 				}
 			}
@@ -126,7 +126,7 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 				}
 				deleting = playlist.Title
 				question := fmt.Sprintf("Delete %s (%s) from YouTube?", playlist.Title, count(playlist.ItemCount, "video"))
-				approved, err := confirm(cmd, question)
+				approved, err := a.confirm(cmd, question)
 				if err != nil {
 					return err
 				}

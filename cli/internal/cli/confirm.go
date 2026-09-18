@@ -29,20 +29,24 @@ const noInput = "no-input"
 // answer is to run it again with --yes. It is also made before anything is
 // asked of the server, so the caller is told what they left out rather than
 // told that a write did not happen.
-func confirm(cmd *cobra.Command, question string) (bool, error) {
-	if err := confirmable(cmd); err != nil {
+func (a *app) confirm(cmd *cobra.Command, question string) (bool, error) {
+	if err := a.confirmable(cmd); err != nil {
 		return false, err
 	}
 	return readConfirmation(cmd.ErrOrStderr(), cmd.InOrStdin(), question)
 }
 
 // confirmable reports whether a prompt could be offered, which is what a verb
-// checks before it reads anything the prompt would name.
-func confirmable(cmd *cobra.Command) error {
-	if interactive(cmd) {
-		return nil
+// checks before it reads anything the prompt would name. The refusal names
+// what stopped it, since at a terminal a sentence blaming the terminal is false.
+func (a *app) confirmable(cmd *cobra.Command) error {
+	switch {
+	case forbidsInput(cmd):
+		return goclikit.UsageError(errors.New("refusing to prompt under --no-input; pass --yes to confirm"))
+	case !a.terminalIn(cmd):
+		return goclikit.UsageError(errors.New("refusing to prompt without an interactive terminal; pass --yes to confirm"))
 	}
-	return goclikit.UsageError(errors.New("refusing to prompt without an interactive terminal; pass --yes to confirm"))
+	return nil
 }
 
 // editable reports whether a verb may open an editor, which it checks before
@@ -51,36 +55,38 @@ func confirmable(cmd *cobra.Command) error {
 // A pipe is not a prompt, so a buffer piped in is read whatever --no-input
 // says. The refusal is for the one case --no-input forbids: a terminal, with
 // nothing else to read a buffer from.
-func editable(cmd *cobra.Command) error {
-	if !terminalIn(cmd) || interactive(cmd) {
-		return nil
+func (a *app) editable(cmd *cobra.Command) error {
+	if forbidsInput(cmd) && a.terminalIn(cmd) {
+		return goclikit.UsageError(errors.New("refusing to open an editor with --no-input; pipe a buffer in instead"))
 	}
-	return goclikit.UsageError(errors.New("refusing to open an editor with --no-input; pipe a buffer in instead"))
+	return nil
 }
 
-// interactive reports whether the command may take the terminal: --no-input
-// never may, and otherwise stdin has to be a terminal.
+// forbidsInput reports whether --no-input was passed.
 //
 // Read off cmd.Flags() rather than the root's, because that resolves the flag
 // wherever it is declared. Reading the root's persistent set finds nothing once
 // the declaration moves down the tree, and a lookup that finds nothing reports
 // false — which is --no-input silently doing nothing.
-func interactive(cmd *cobra.Command) bool {
-	if forbidden, err := cmd.Flags().GetBool(noInput); err == nil && forbidden {
-		return false
-	}
-	return terminalIn(cmd)
+func forbidsInput(cmd *cobra.Command) bool {
+	forbidden, err := cmd.Flags().GetBool(noInput)
+	return err == nil && forbidden
 }
 
 // terminalIn reports whether this command's stdin is a terminal rather than
-// something a caller piped in. A reader a test substituted is not an *os.File,
-// so it reads as piped — which is what makes both gates testable without a pty.
+// something a caller piped in.
 //
-// It is separate from interactive because the two answer different questions. A
-// verb reading a document from stdin wants this one: --no-input says not to
-// take the terminal, and says nothing about a pipe.
-func terminalIn(cmd *cobra.Command) bool {
-	file, ok := cmd.InOrStdin().(*os.File)
+// It is separate from forbidsInput because the two answer different
+// questions. A verb reading a document from stdin wants this one: --no-input
+// says not to take the terminal, and says nothing about a pipe.
+func (a *app) terminalIn(cmd *cobra.Command) bool {
+	return a.terminal(cmd.InOrStdin())
+}
+
+// isTerminal is the binary's answer to whether in is a terminal somebody is
+// at. A reader that is not an *os.File was piped in.
+func isTerminal(in io.Reader) bool {
+	file, ok := in.(*os.File)
 	return ok && term.IsTerminal(int(file.Fd()))
 }
 

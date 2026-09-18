@@ -73,11 +73,18 @@ func TestPlaylistsRenameSendsTheNewTitleToTheNamedPlaylist(t *testing.T) {
 
 // Prompting a caller that cannot answer blocks on a stdin that never closes, so
 // the refusal comes first — before the token, the config or the network is
-// reached — and names the flag that would have answered.
-func TestPlaylistsDeleteRefusesToPromptWhereThereIsNobodyToAsk(t *testing.T) {
-	f := newFixture(t, answers(nil))
+// reached — and names what stopped it and the flag that would have answered.
+// Somebody at a terminal is asked, by the playlist's own title, and only a yes
+// deletes it.
+func TestPlaylistsDeleteAsksWhoeverCanAnswerAndRefusesWhereNobodyCan(t *testing.T) {
+	f := newFixture(t, answers(map[string]answer{
+		"GET /api/v1/playlists/sunday-morning/items": {body: `{"video_ids": ["aaaaaaaaaaa", "bbbbbbbbbbb"]}`},
+		"GET /api/v1/playlists/sunday-morning": {body: `{"id": "PLA", "title": "Sunday Morning", "privacy": "private",
+			"item_count": 2, "enriched_count": 0, "unavailable_count": 0, "synced_ts": null, "items": []}`},
+		"DELETE /api/v1/playlists/sunday-morning": {status: http.StatusNoContent},
+	}))
 
-	got := f.run("playlists", "delete", "Sunday Morning")
+	got := f.run("playlists", "delete", "sunday-morning")
 	if got.code != 2 {
 		t.Fatalf("exited %d, want 2 — running it again with a flag is the answer", got.code)
 	}
@@ -86,6 +93,30 @@ func TestPlaylistsDeleteRefusesToPromptWhereThereIsNobodyToAsk(t *testing.T) {
 	}
 	if len(f.sent) != 0 {
 		t.Fatalf("it asked the server %d times before refusing", len(f.sent))
+	}
+
+	f.atTerminal("")
+	got = f.run("playlists", "delete", "sunday-morning", "--no-input")
+	if got.code != 2 || !strings.Contains(got.err, "--no-input") || len(f.sent) != 0 {
+		t.Fatalf("under --no-input at a terminal, exited %d after %d requests saying %q, want 2, none, and the flag named",
+			got.code, len(f.sent), got.err)
+	}
+
+	f.atTerminal("n\n")
+	got = f.run("playlists", "delete", "sunday-morning")
+	if got.code != 1 || len(f.writes()) != 0 {
+		t.Fatalf("answered no, exited %d after %d writes, want 1 and none", got.code, len(f.writes()))
+	}
+	if !strings.Contains(got.err, "Delete Sunday Morning (2 videos) from YouTube?") {
+		t.Errorf("asked %q, want the playlist named by its title", got.err)
+	}
+
+	f.atTerminal("y\n")
+	if got = f.run("playlists", "delete", "sunday-morning"); got.code != 0 {
+		t.Fatalf("answered yes, exited %d: %s", got.code, got.err)
+	}
+	if sent := f.onlyWrite(); sent.Method != http.MethodDelete || sent.URL.Path != "/api/v1/playlists/sunday-morning" {
+		t.Errorf("sent %s %s, want the delete of the named playlist", sent.Method, sent.URL.Path)
 	}
 }
 

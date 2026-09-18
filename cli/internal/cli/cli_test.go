@@ -38,10 +38,10 @@ type fixture struct {
 	// lose what `auth login` saved before `auth status` looked for it, which is
 	// the opposite of how a keychain behaves.
 	store *goclilogin.TokenStore
-	// stdin is what a verb reading a document reads. It is always set, and
-	// always to something that is not an *os.File, so the tree reads as having
-	// been piped to rather than as holding a terminal — which is what the real
-	// gate asks, and what a suite cannot otherwise answer without a pty.
+	// stdin is what a verb reading a document or an answer reads. It is always
+	// set, and always to something that is not an *os.File, so the binary's own
+	// terminal check reads it as piped. atTerminal is how a test holds a
+	// terminal instead.
 	stdin io.Reader
 }
 
@@ -75,6 +75,7 @@ func newFixture(t *testing.T, answer http.HandlerFunc) *fixture {
 			}
 			return f.store
 		},
+		terminal: isTerminal,
 	}
 	return f
 }
@@ -172,7 +173,16 @@ func (f *fixture) lastAsked() *url.URL {
 }
 
 // pipe is what the next run reads from stdin.
-func (f *fixture) pipe(text string) { f.stdin = strings.NewReader(text) }
+func (f *fixture) pipe(text string) {
+	f.stdin = strings.NewReader(text)
+	f.app.terminal = isTerminal
+}
+
+// atTerminal is the next run holding a terminal, where somebody types typed.
+func (f *fixture) atTerminal(typed string) {
+	f.stdin = strings.NewReader(typed)
+	f.app.terminal = func(io.Reader) bool { return true }
+}
 
 // request is one request the tree made, kept whole.
 type request struct {

@@ -52,7 +52,7 @@ func (a *app) playsDeleteCommand() *cobra.Command {
 			// have answered is told what they left out rather than told that a
 			// delete did not happen.
 			if !yes {
-				if err := confirmable(cmd); err != nil {
+				if err := a.confirmable(cmd); err != nil {
 					return err
 				}
 			}
@@ -69,7 +69,7 @@ func (a *app) playsDeleteCommand() *cobra.Command {
 			}
 			said := fmt.Sprintf("play %d, %s at %s", play.Handle, play.Video.Title, play.PlayedTs)
 			if !yes {
-				approved, err := confirm(cmd, "Delete "+said+"?")
+				approved, err := a.confirm(cmd, "Delete "+said+"?")
 				if err != nil {
 					return err
 				}
