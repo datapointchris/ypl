@@ -37,8 +37,8 @@ func (a *app) playsAddCommand() *cobra.Command {
 		Use:   "add <video>",
 		Short: "Record that a video was listened to",
 		Long: "What `ypl next` reads to stop suggesting the same mix. Written when a listen\n" +
-			"is logged rather than inferred from playback, because `ypl playlists play` hands\n" +
-			"mpv the whole playlist at once and never learns which of it got played.\n" +
+			"is logged rather than inferred from playback, because `ypl play` hands mpv\n" +
+			"the whole playlist at once and never learns which of it got played.\n" +
 			"\n" +
 			"The video is named by its id or by a URL it was copied from. The server takes\n" +
 			"the moment the request arrived as when it was played.",
@@ -141,7 +141,7 @@ func (a *app) playsShowCommand() *cobra.Command {
 		},
 	}
 	addJSON(cmd, &asJSON, "the play")
-	return cmd
+	return goclikit.WithRecoveryHints(cmd, hintPlays)
 }
 
 // printPlays leads with the handle, since that is what `ypl plays show` is

@@ -54,7 +54,7 @@ func (a *app) videosListCommand() *cobra.Command {
 			}
 			videos, err := client.ListVideos(cmd.Context(), filter)
 			if err != nil {
-				return reported(err)
+				return reported(namingPlaylists(cmd.Context(), client, err))
 			}
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), videos)
@@ -72,6 +72,8 @@ func (a *app) videosListCommand() *cobra.Command {
 	addMinutes(cmd, "min-minutes", &minMinutes, "Only videos at least this many minutes long")
 	addMinutes(cmd, "max-minutes", &maxMinutes, "Only videos at most this many minutes long")
 	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order, one of "+strings.Join(api.VideoSorts, ", ")+"; the server decides")
+	completeFlag(cmd, "playlist", a.completePlaylists)
+	completeFlag(cmd, "sort", cobra.FixedCompletions(api.VideoSorts, cobra.ShellCompDirectiveNoFileComp))
 	addJSON(cmd, &asJSON, "the videos")
 	return cmd
 }
@@ -101,7 +103,7 @@ func (a *app) videosShowCommand() *cobra.Command {
 		},
 	}
 	addJSON(cmd, &asJSON, "the video")
-	return cmd
+	return goclikit.WithRecoveryHints(cmd, hintVideos)
 }
 
 // videosSortsCommand puts the vocabulary under the resource whose flag takes

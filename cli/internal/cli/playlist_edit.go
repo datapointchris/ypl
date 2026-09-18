@@ -53,7 +53,8 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 			"YouTube, so `ypl status` is where it shows up as sent.",
 		Example: "  ypl playlists edit 'Sunday Morning'          rearrange it in your editor\n" +
 			"  ypl playlists edit 'Sunday Morning' < order  apply a buffer written elsewhere",
-		Args: usageArgs(cobra.ExactArgs(1)),
+		Args:              usageArgs(cobra.ExactArgs(1)),
+		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := api.Reference(args[0])
 			// Decided from the flag and the terminal alone, so it is decided
@@ -73,11 +74,11 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 			// so it is read second and it is the one that decides the lines.
 			playlist, err := client.GetPlaylist(cmd.Context(), name)
 			if err != nil {
-				return reported(err)
+				return reported(namingPlaylists(cmd.Context(), client, err))
 			}
 			order, err := client.PlaylistOrder(cmd.Context(), name)
 			if err != nil {
-				return reported(err)
+				return reported(namingPlaylists(cmd.Context(), client, err))
 			}
 
 			buffer := editbuffer.Render(playlist.Title, rows(playlist, order.VideoIDs))
@@ -113,7 +114,7 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 			if len(videoIDs) > 0 && !slices.Equal(videoIDs, order.VideoIDs) {
 				replaced, err := client.ReplacePlaylistOrder(cmd.Context(), name, order.Revision, videoIDs)
 				if err != nil {
-					return reported(errors.Join(err, keptAt(text)))
+					return reported(namingPlaylists(cmd.Context(), client, errors.Join(err, keptAt(text))))
 				}
 				result = difference(playlist, replacement{before: order.VideoIDs, after: replaced.VideoIDs})
 			}

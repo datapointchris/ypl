@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -32,7 +33,7 @@ func (a *app) nowCommand() *cobra.Command {
 		Use:     "now",
 		Short:   "What is playing right now, down to the track",
 		GroupID: groupPlaying,
-		Long: "Reads the socket `ypl playlists play` opened. Because the server holds a tracklist with\n" +
+		Long: "Reads the socket `ypl play` opened. Because the server holds a tracklist with\n" +
 			"real timestamps, this reports the track inside a two-hour mix rather than the\n" +
 			"name of the mix.\n" +
 			"\n" +
@@ -42,7 +43,7 @@ func (a *app) nowCommand() *cobra.Command {
 			"  ypl now --json  the same, for a status bar",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			state, err := mpv.Read(mpv.SocketPath())
+			found, err := a.readNow(cmd.Context(), a.client)
 			switch {
 			case errors.Is(err, mpv.ErrNotPlaying):
 				// Render first, decide the exit code after, in both modes. A
@@ -54,44 +55,11 @@ func (a *app) nowCommand() *cobra.Command {
 						return err
 					}
 				}
-				nothing(cmd, "Nothing is playing. `ypl playlists play <playlist>` puts something on.")
+				nothing(cmd, nothingPlaying)
 				return exitCode(1)
 			case err != nil:
-				// A socket that answered and could not be read is not nothing
-				// playing. Reporting it as such would make the command wrong
-				// about the one thing it is asked.
 				return reported(err)
 			}
-
-			found := nowPlaying{
-				VideoID:         youtube.VideoID(state.Path),
-				Title:           state.Title,
-				PositionSeconds: state.Position,
-				DurationSeconds: state.Duration,
-			}
-			// What mpv is playing is only sometimes something the server knows
-			// about. A video that is not in the library still answers, from
-			// mpv's own title, rather than reporting that nothing is on.
-			if found.VideoID != "" {
-				client, err := a.client(cmd.Context())
-				if err != nil {
-					return reported(err)
-				}
-				video, err := client.GetVideo(cmd.Context(), found.VideoID)
-				var refusal *api.Refusal
-				switch {
-				case errors.As(err, &refusal) && refusal.Status == http.StatusNotFound:
-				case err != nil:
-					return reported(err)
-				default:
-					found.Title, found.Channel = video.Title, video.ChannelTitle
-					if video.DurationSeconds != nil {
-						found.DurationSeconds = video.DurationSeconds
-					}
-					found.Track = trackAt(video.Tracks, found.PositionSeconds)
-				}
-			}
-
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), found)
 			}
@@ -101,6 +69,56 @@ func (a *app) nowCommand() *cobra.Command {
 	}
 	addJSON(cmd, &asJSON, "what is playing")
 	return cmd
+}
+
+// nothingPlaying is what `ypl now` and a bare `ypl` say with nothing on.
+const nothingPlaying = "Nothing is playing. `ypl play` puts on a draw of the mixes heard least\n" +
+	"recently, and `ypl play <playlist>` one playlist, which Tab completes."
+
+// readNow is what mpv is playing, with the server's title and the track at
+// mpv's position where the server knows the video. It is mpv.ErrNotPlaying
+// where nothing is.
+//
+// The client is asked for only once mpv has answered, so nothing playing
+// costs no config, no keychain and no request.
+func (a *app) readNow(ctx context.Context, client func(context.Context) (*api.Client, error)) (nowPlaying, error) {
+	state, err := mpv.Read(mpv.SocketPath())
+	if err != nil {
+		// A socket that answered and could not be read is not nothing
+		// playing, and is returned as itself. Reporting it as nothing would
+		// make the command wrong about the one thing it is asked.
+		return nowPlaying{}, err
+	}
+	found := nowPlaying{
+		VideoID:         youtube.VideoID(state.Path),
+		Title:           state.Title,
+		PositionSeconds: state.Position,
+		DurationSeconds: state.Duration,
+	}
+	// What mpv is playing is only sometimes something the server knows
+	// about. A video that is not in the library still answers, from mpv's own
+	// title, rather than reporting that nothing is on.
+	if found.VideoID == "" {
+		return found, nil
+	}
+	reached, err := client(ctx)
+	if err != nil {
+		return nowPlaying{}, err
+	}
+	video, err := reached.GetVideo(ctx, found.VideoID)
+	var refusal *api.Refusal
+	switch {
+	case errors.As(err, &refusal) && refusal.Status == http.StatusNotFound:
+	case err != nil:
+		return nowPlaying{}, err
+	default:
+		found.Title, found.Channel = video.Title, video.ChannelTitle
+		if video.DurationSeconds != nil {
+			found.DurationSeconds = video.DurationSeconds
+		}
+		found.Track = trackAt(video.Tracks, found.PositionSeconds)
+	}
+	return found, nil
 }
 
 // trackAt is the track position falls in, and nil where the tracklist has none

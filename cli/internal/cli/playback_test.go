@@ -103,7 +103,7 @@ func answerAsMpv(connection net.Conn, properties map[string]any) {
 // stubMpv puts a fake mpv first on PATH and returns the file it writes its
 // argument list to. exit is the status it ends with.
 //
-// A stub rather than the real player, because what `ypl playlists play` is
+// A stub rather than the real player, because what `ypl play` is
 // responsible for is the command line it builds — the socket flag, --no-video,
 // every pass-through argument and the URL list in order. Nothing else captures
 // that, and running real mpv would reach YouTube.
@@ -241,7 +241,7 @@ func TestNowExitsOneWithNothingPlaying(t *testing.T) {
 	}
 
 	// An mpv that is running and holds no file answers every property and has
-	// no path. It is reachable without asking: `ypl playlists play` runs mpv
+	// no path. It is reachable without asking: `ypl play` runs mpv
 	// with the person's own config, and `idle=yes` in it leaves the player up
 	// after the last video.
 	playingMpv(t, map[string]any{"duration": 600.0})
@@ -343,7 +343,7 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	f := newFixture(t, serve)
 	shortStateDir(t)
 	argv := stubMpv(t, 0)
-	got := f.run("playlists", "play", "Sunday Morning", "--audio", "--mpv", "--start=30")
+	got := f.run("play", "Sunday Morning", "--audio", "--mpv", "--start=30")
 	if got.code != 0 {
 		t.Fatalf("exited %d: %s%s", got.code, got.out, got.err)
 	}
@@ -368,7 +368,7 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	// from a part of the playlist that was never going to play.
 	f = newFixture(t, serve)
 	argv = stubMpv(t, 0)
-	if got := f.run("playlists", "play", "Sunday Morning", "--limit", "2"); got.code != 0 {
+	if got := f.run("play", "Sunday Morning", "--limit", "2"); got.code != 0 {
 		t.Fatalf("under a limit, exited %d: %s%s", got.code, got.out, got.err)
 	}
 	handed = argvOf(t, argv)
@@ -384,7 +384,7 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	// not a failure.
 	f = newFixture(t, serve)
 	argv = stubMpv(t, 0)
-	none := f.run("playlists", "play", "Sunday Morning", "--limit", "0")
+	none := f.run("play", "Sunday Morning", "--limit", "0")
 	if none.code != 0 {
 		t.Errorf("--limit 0 exited %d, want 0", none.code)
 	}
@@ -396,7 +396,7 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	// one with neither mpv nor a reachable server is told the right one.
 	f = newFixture(t, serve)
 	t.Setenv("PATH", t.TempDir())
-	missing := f.run("playlists", "play", "Sunday Morning")
+	missing := f.run("play", "Sunday Morning")
 	if len(f.sent) != 0 || !strings.Contains(missing.err, "install") {
 		t.Errorf("without mpv asked the server %d times and said %q, want none and what to install", len(f.sent), missing.err)
 	}
@@ -406,12 +406,32 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	// returned.
 	f = newFixture(t, serve)
 	stubMpv(t, 2)
-	failed := f.run("playlists", "play", "Sunday Morning")
+	failed := f.run("play", "Sunday Morning")
 	if failed.code != 1 {
 		t.Errorf("a failed player exited %d, want 1 rather than mpv's own 2", failed.code)
 	}
 	if !strings.Contains(failed.err, "2") {
 		t.Errorf("said %q, want it to name what mpv returned", failed.err)
+	}
+
+	// With no playlist the library plays in the order the server draws it,
+	// asked for as much as one draw holds.
+	f = newFixture(t, serves(map[string]string{"/api/v1/suggestions": `[
+		{"id": "ccccccccccc", "title": "C", "channel_title": "One", "duration_seconds": 60, "play_count": 0, "last_played_ts": null},
+		{"id": "aaaaaaaaaaa", "title": "A", "channel_title": "One", "duration_seconds": 60, "play_count": 1, "last_played_ts": "2026-01-01T00:00:00Z"}]`}))
+	argv = stubMpv(t, 0)
+	if got := f.run("play"); got.code != 0 {
+		t.Fatalf("bare, exited %d: %s%s", got.code, got.out, got.err)
+	}
+	handed = argvOf(t, argv)
+	if played := handed[len(handed)-2:]; !slices.Equal(played, []string{
+		"https://www.youtube.com/watch?v=ccccccccccc",
+		"https://www.youtube.com/watch?v=aaaaaaaaaaa",
+	}) {
+		t.Errorf("bare played %v, want the draw in the server's order", played)
+	}
+	if asked := f.lastAsked().Query().Get("limit"); asked != strconv.Itoa(api.MaxSuggestions) {
+		t.Errorf("drew %s, want as much as one draw holds", asked)
 	}
 }
 
