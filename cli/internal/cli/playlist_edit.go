@@ -38,7 +38,7 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "edit <playlist>",
-		GroupID: groupPlaylistWriting,
+		GroupID: groupChanging,
 		Short:   "Rearrange a playlist in your editor",
 		Long: "Opens one line per video — the id first, then the title — in $VISUAL or\n" +
 			"$EDITOR. Move lines to reorder, delete a line to remove that video, paste a\n" +

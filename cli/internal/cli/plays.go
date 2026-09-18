@@ -27,6 +27,7 @@ func (a *app) playsCommand() *cobra.Command {
 			"by its handle, by its id, or by the last eight characters of that id.",
 		RunE: requireSubcommand,
 	}
+	splitReadingFromChanging(cmd)
 	cmd.AddCommand(a.playsListCommand(), a.playsShowCommand(), a.playsAddCommand(), a.playsDeleteCommand())
 	return cmd
 }
@@ -34,8 +35,9 @@ func (a *app) playsCommand() *cobra.Command {
 func (a *app) playsDeleteCommand() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
-		Use:   "delete <play>",
-		Short: "Take back a play, so its mix ranks as if unheard by it",
+		Use:     "delete <play>",
+		GroupID: groupChanging,
+		Short:   "Take back a play, so its mix ranks as if unheard by it",
 		Long: "Deletes a play the server holds, named by its handle, its id or the last\n" +
 			"eight characters of that id. `ypl next` and a bare `ypl play` then rank the\n" +
 			"mix as though that listen had not happened, which is how a play `ypl play`\n" +
@@ -100,8 +102,9 @@ func (a *app) playsDeleteCommand() *cobra.Command {
 func (a *app) playsAddCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "add <video>",
-		Short: "Record that a video was listened to",
+		Use:     "add <video>",
+		GroupID: groupChanging,
+		Short:   "Record that a video was listened to",
 		Long: "What `ypl next` reads to stop suggesting the same mix. `ypl play` records\n" +
 			"what it plays on its own; this is for a mix heard where it could not see, in\n" +
 			"a browser or on a phone.\n" +
@@ -149,8 +152,9 @@ func (a *app) playsListCommand() *cobra.Command {
 		asJSON bool
 	)
 	cmd := &cobra.Command{
-		Use:   "list [flags]",
-		Short: "List the newest plays",
+		Use:     "list [flags]",
+		GroupID: groupReading,
+		Short:   "List the newest plays",
 		Example: "  ypl plays list                     what has been on lately\n" +
 			"  ypl plays list --limit 100 --json  further back, for a script",
 		Args: usageArgs(cobra.NoArgs),
@@ -186,6 +190,7 @@ func (a *app) playsShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "show <play>",
+		GroupID: groupReading,
 		Short:   "Show one play",
 		Example: "  ypl plays show 41  when this one was played, and what it was",
 		Args:    usageArgs(cobra.ExactArgs(1)),

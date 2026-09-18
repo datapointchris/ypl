@@ -31,6 +31,7 @@ func (a *app) authCommand() *cobra.Command {
 			"over SSH on a machine with no browser of its own.",
 		RunE: requireSubcommand,
 	}
+	splitReadingFromChanging(cmd)
 	cmd.AddCommand(a.authLoginCommand(), a.authLogoutCommand(), a.authStatusCommand(), a.authTokenCommand())
 	return cmd
 }
@@ -48,6 +49,7 @@ func loginConfig() (config.Config, error) {
 func (a *app) authLoginCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "login",
+		GroupID: groupChanging,
 		Short:   "Log in by approving a code in a browser",
 		Example: "  ypl auth login  log this machine in, once per machine",
 		Args:    usageArgs(cobra.NoArgs),
@@ -112,6 +114,7 @@ func (a *app) authLoginCommand() *cobra.Command {
 func (a *app) authLogoutCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "logout",
+		GroupID: groupChanging,
 		Short:   "Remove this machine's stored token",
 		Example: "  ypl auth logout  forget the token, before handing the machine on",
 		Args:    usageArgs(cobra.NoArgs),
@@ -136,8 +139,9 @@ func (a *app) authLogoutCommand() *cobra.Command {
 
 func (a *app) authTokenCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "token",
-		Short: "Print a valid access token to stdout",
+		Use:     "token",
+		GroupID: groupReading,
+		Short:   "Print a valid access token to stdout",
 		Long: "Print an access token, refreshing it first if it has expired. This is for\n" +
 			"driving the API with something else: curl -H \"Authorization: Bearer $(ypl\n" +
 			"auth token)\". It exits non-zero rather than printing nothing when this\n" +
@@ -183,8 +187,9 @@ type authStatus struct {
 func (a *app) authStatusCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "status",
-		Short: "Say whether this machine is logged in",
+		Use:     "status",
+		GroupID: groupReading,
+		Short:   "Say whether this machine is logged in",
 		Example: "  ypl auth status         is this machine logged in, and for how much longer\n" +
 			"  ypl auth status --json  the same, for a prompt or a status bar",
 		Args: usageArgs(cobra.NoArgs),
