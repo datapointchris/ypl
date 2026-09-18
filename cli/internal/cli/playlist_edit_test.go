@@ -161,6 +161,15 @@ func TestARemovalAloneIsNotReportedAsAReordering(t *testing.T) {
 	if result.ItemCount != 2 {
 		t.Errorf("counted %d videos, want what the playlist holds now", result.ItemCount)
 	}
+
+	// The same edit rendered. One removal and two left is the one sentence that
+	// carries a singular and a plural together, so it is where a renderer that
+	// stopped naming one thing singly is caught.
+	f = newFixture(t, answers(editing(heldOrder, answer{body: without})))
+	f.pipe(first + "\n" + third + "\n")
+	if plain := f.run("playlists", "edit", "Sunday Morning"); !strings.Contains(plain.out, "1 video removed. It now holds 2 videos.") {
+		t.Errorf("printed %q, want one video removed and two held", plain.out)
+	}
 }
 
 // The lists are there at every size, so a caller filtering the JSON writes one

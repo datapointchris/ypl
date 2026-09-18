@@ -114,9 +114,15 @@ func TestNowReportsTheTrackAtThePositionMpvIsAt(t *testing.T) {
 
 	// The plain rendering names the track and the video, which is what a status
 	// bar puts on screen.
+	// The whole line, not a substring of it. A position half an hour in and a
+	// mix six hours long put a duration either side of an hour in one sentence,
+	// which is where a clock that stopped carrying the hour is caught.
 	plain := f.run("now")
-	if !strings.Contains(plain.out, "Moby - Second") || !strings.Contains(plain.out, "Six Hours Of House") {
-		t.Errorf("printed %q, want the track and the video", plain.out)
+	if !strings.Contains(plain.out, "Moby - Second") {
+		t.Errorf("printed %q, want the track the position falls in", plain.out)
+	}
+	if !strings.Contains(plain.out, "Six Hours Of House  30:30 / 6:00:00") {
+		t.Errorf("printed %q, want the video and how far into it", plain.out)
 	}
 
 	// The edges of the same question, which one run of the command cannot
