@@ -82,9 +82,28 @@ func TestOpenCreatesAMissingDirectory(t *testing.T) {
 }
 
 func TestOpenAppliesMigrationsAndSeedsTheSources(t *testing.T) {
-	st, _ := open(t)
+	st, path := open(t)
 	if got, want := countSources(t, st), len(trackSources); got != want {
 		t.Fatalf("track sources = %d, want %d", got, want)
+	}
+
+	// Two programs open this store and both migrate on the way in, so the
+	// migration is serialized by a lock beside the database. Opening a second
+	// store on the same path while the first is live is what a seed command run
+	// beside a starting server does, and it has to find the schema whole rather
+	// than half applied.
+	beside, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("open a second store on the same path: %v", err)
+	}
+	defer func() { _ = beside.Close() }()
+	if got, want := countSources(t, beside), len(trackSources); got != want {
+		t.Fatalf("the second open sees %d track sources, want %d", got, want)
+	}
+	// The lock is released rather than held for the life of the store, or the
+	// second open above would block until the first one closed.
+	if _, err := os.Stat(path + ".migrate.lock"); err != nil {
+		t.Errorf("the migration lock file is not beside the database: %v", err)
 	}
 }
 

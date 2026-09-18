@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/pressly/goose/v3"
+	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 
 	"github.com/datapointchris/ypl/api/store/generated"
@@ -218,7 +219,14 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	st := &Store{db: db, Queries: generated.New(db)}
-	if err := migrate(ctx, db); err != nil {
+	unlock, err := lockMigrations(path)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	err = migrate(ctx, db)
+	unlock()
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -415,6 +423,35 @@ func (tx *Tx) ReplaceBase(ctx context.Context, playlistID string, items []BaseIt
 		return fmt.Errorf("release the refused write of %s: %w", playlistID, err)
 	}
 	return nil
+}
+
+// lockMigrations takes an exclusive lock held for as long as migrations run,
+// and returns the function that releases it.
+//
+// Two programs open this store — the server and each command under
+// `api/cmd/` — and both migrate on the way in. goose offers a session lock for
+// Postgres and none for SQLite, so without this each runs `Up` against the same
+// file and a second one arriving mid-create fails on a schema that is half
+// applied. The window is the first open of an empty database, which is exactly
+// the moment a seed command is most likely to be run beside a starting server.
+//
+// The lock is a file beside the database rather than a row in it, because the
+// thing being serialized is the creation of the tables a row would live in.
+// flock is advisory and released by the kernel if the holder dies, so a crash
+// mid-migration leaves no lock to clear by hand.
+func lockMigrations(path string) (func(), error) {
+	file, err := os.OpenFile(path+".migrate.lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open the migration lock: %w", err)
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("take the migration lock: %w", err)
+	}
+	return func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {
