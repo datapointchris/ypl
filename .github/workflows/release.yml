@@ -147,10 +147,10 @@ jobs:
 
   # The Go CLI is a nested module with its own version, tagged `cli/v1.2.3` so
   # it never collides with the Python tool's `v*` namespace. The two releases
-  # are independent: pyproject's path_filters exclude `cli/**` and `.github/**`,
-  # and svu's --log.directory confines this one to commits touching `cli/`. The
-  # workflow exclusion is what stops a change to this file releasing the Python
-  # tool, whatever conventional type its commit carries.
+  # are independent: pyproject's path_filters name only the paths that are the
+  # Python package, and svu's --log.directory confines this one to commits
+  # touching `cli/`. Neither reaches this file, so a change here releases
+  # neither tool, whatever conventional type its commit carries.
   #
   # svu rather than python-semantic-release's Go sibling, because
   # go-semantic-release hardcodes the tag prefix to `v` and parses candidate
