@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
-	"github.com/datapointchris/ypl/cli/internal/editbuffer"
+	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
 
 // defaultPlays is how many plays a bare list reads. The collection pages over
@@ -37,8 +37,8 @@ func (a *app) playsAddCommand() *cobra.Command {
 		Use:   "add <video>",
 		Short: "Record that a video was listened to",
 		Long: "What `ypl next` reads to stop suggesting the same mix. Written when a listen\n" +
-			"is logged rather than inferred from playback, because `ypl play` hands mpv the\n" +
-			"whole playlist at once and never learns which of it got played.\n" +
+			"is logged rather than inferred from playback, because `ypl playlists play` hands\n" +
+			"mpv the whole playlist at once and never learns which of it got played.\n" +
 			"\n" +
 			"The video is named by its id or by a URL it was copied from. The server takes\n" +
 			"the moment the request arrived as when it was played.",
@@ -46,7 +46,7 @@ func (a *app) playsAddCommand() *cobra.Command {
 			"  ypl plays add 'https://youtu.be/dQw4w9WgXcQ?t=42'     log one from a link",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			videoID := editbuffer.VideoID(args[0])
+			videoID := youtube.VideoID(args[0])
 			if videoID == "" {
 				return goclikit.UsageError(fmt.Errorf("%q is not a video id or a YouTube address", args[0]))
 			}
@@ -62,7 +62,7 @@ func (a *app) playsAddCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("make an id for the play: %w", err)
 			}
-			play, err := client.CreatePlay(cmd.Context(), id.String(), videoID)
+			play, err := client.CreatePlay(cmd.Context(), api.PlayID(id.String()), api.VideoID(videoID))
 			if err != nil {
 				return reported(err)
 			}

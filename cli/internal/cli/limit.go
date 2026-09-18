@@ -77,8 +77,8 @@ func addMinutes(cmd *cobra.Command, name string, n *int64, help string) {
 	cmd.Flags().Var(minutes{n: n}, name, help)
 }
 
-// addLimit binds --limit/-n to n, refusing anything below one and anything
-// above most. A most of 0 is a read that pages, which has no ceiling.
+// addLimit binds --limit/-n to n, refusing a negative count and anything above
+// most. A most of 0 is a read that pages, which has no ceiling.
 func addLimit(cmd *cobra.Command, n *int, most int, help string) {
 	cmd.Flags().VarP(rowCount{n: n, most: most}, "limit", "n", help)
 }

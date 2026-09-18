@@ -90,43 +90,6 @@ func TestParseKeepsADuplicate(t *testing.T) {
 	}
 }
 
-func TestVideoIDReadsEveryShapeOfAddressAndRefusesTheRest(t *testing.T) {
-	const id = "dQw4w9WgXcQ"
-	for _, c := range []struct {
-		token string
-		want  string
-	}{
-		{id, id},
-		{"  " + id + "  ", id},
-		{"https://www.youtube.com/watch?v=" + id, id},
-		{"https://www.youtube.com/watch?v=" + id + "&list=PLabc&t=42s", id},
-		{"https://m.youtube.com/watch?v=" + id, id},
-		{"https://music.youtube.com/watch?v=" + id, id},
-		{"WWW.YOUTUBE.COM/watch?v=" + id, id},
-		{"https://youtu.be/" + id, id},
-		{"https://youtu.be/" + id + "?t=42", id},
-		{"youtu.be/" + id, id},
-		{"https://www.youtube.com/shorts/" + id, id},
-		{"https://www.youtube.com/embed/" + id, id},
-		{"https://www.youtube.com/live/" + id, id},
-		{"https://www.youtube.com/v/" + id, id},
-		{"", ""},
-		{"short", ""},
-		{"this is not an id at all", ""},
-		{"https://vimeo.com/123456789", ""},
-		// The host decides, not the shape of what follows it. Somewhere else's
-		// address in YouTube's shape is somewhere else's video.
-		{"https://example.com/watch?v=" + id, ""},
-		{"https://notyoutube.com/shorts/" + id, ""},
-		{"https://www.youtube.com/playlist?list=PLabc", ""},
-		{"https://www.youtube.com/", ""},
-	} {
-		if got := VideoID(c.token); got != c.want {
-			t.Errorf("VideoID(%q) = %q, want %q", c.token, got, c.want)
-		}
-	}
-}
-
 // Open is one of the CLI's two subprocess doors, and what it depends on is a
 // binary this package does not implement. So the editor is a real one: which
 // variable is read, the variable being split into arguments, the file it is

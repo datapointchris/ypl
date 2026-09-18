@@ -7,9 +7,10 @@ import (
 
 	"github.com/datapointchris/ypl/cli/internal/api"
 	"github.com/datapointchris/ypl/cli/internal/mpv"
+	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
 
-func (a *app) playCommand() *cobra.Command {
+func (a *app) playlistsPlayCommand() *cobra.Command {
 	var (
 		audio bool
 		limit int
@@ -18,21 +19,26 @@ func (a *app) playCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "play <playlist>",
 		Short:   "Play a playlist through mpv",
-		GroupID: groupPlaying,
-		Long: "Runs in the foreground and exits when mpv does, with mpv's own exit code.\n" +
-			"The videos are handed to mpv as arguments rather than as a playlist file, so a\n" +
-			"playlist the server holds plays without anything being written here first.\n" +
+		GroupID: groupPlaylistReading,
+		Long: "Runs in the foreground and exits when mpv does.\n" +
 			"\n" +
 			"A video YouTube will not serve is left out. mpv would stop on it, and the\n" +
 			"server already knows which ones those are.\n" +
 			"\n" +
 			"Playback opens mpv's IPC socket, which is what lets `ypl now` say which track\n" +
 			"of a two-hour mix is on.",
-		Example: "  ypl play 'sunday morning'             the whole playlist, in its order\n" +
-			"  ypl play 'sunday morning' --audio     no video window\n" +
-			"  ypl play 'sunday morning' --limit 3   the first three of it",
+		Example: "  ypl playlists play 'sunday morning'             the whole playlist, in its order\n" +
+			"  ypl playlists play 'sunday morning' --audio     no video window\n" +
+			"  ypl playlists play 'sunday morning' --limit 3   the first three of it",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The cheapest and most certain refusal runs first. Reaching it
+			// inside mpv.Play would put it after the config load, the keychain
+			// read and a network round trip, so a machine with neither mpv nor
+			// a reachable server reports the wrong one of the two.
+			if err := mpv.Available(); err != nil {
+				return reported(err)
+			}
 			client, err := a.client(cmd.Context())
 			if err != nil {
 				return reported(err)
@@ -41,8 +47,21 @@ func (a *app) playCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			urls, left := playable(playlist, limit)
-			if len(urls) == 0 {
+			// An unset --limit is no ceiling. An explicit --limit 0 is a
+			// request for nothing, which is what it means on every other verb
+			// of this binary.
+			var ceiling *int
+			if cmd.Flags().Changed("limit") {
+				ceiling = &limit
+			}
+			urls, left := playable(playlist, ceiling)
+			switch {
+			case ceiling != nil && *ceiling == 0:
+				// Asking for no videos is answered by playing none. It is what
+				// the caller asked for, so it is not a failure.
+				nothing(cmd, "A limit of 0 asks for no videos, so nothing was played.")
+				return nil
+			case len(urls) == 0:
 				nothing(cmd, fmt.Sprintf("%s has nothing playable in it. `ypl playlists show` says what is in it.", playlist.Title))
 				return exitCode(1)
 			}
@@ -50,7 +69,7 @@ func (a *app) playCommand() *cobra.Command {
 				nothing(cmd, fmt.Sprintf("Leaving out %s YouTube will not serve.", count(left, "video")))
 			}
 
-			arguments := append([]string{}, extra...)
+			arguments := append(mpv.Arguments{}, extra...)
 			if audio {
 				arguments = append(arguments, "--no-video")
 			}
@@ -61,15 +80,17 @@ func (a *app) playCommand() *cobra.Command {
 				nothing(cmd, fmt.Sprintf("%s is too long for a unix socket, so `ypl now` will not see this.", socket))
 				socket = ""
 			}
-			code, err := mpv.Play(cmd.Context(), socket, arguments, urls)
+			outcome, err := mpv.Play(cmd.Context(), socket, arguments, urls)
 			if err != nil {
 				return reported(err)
 			}
-			// mpv's own exit code, so a player that failed is a command that
-			// failed. It carries no message of its own, because mpv has already
-			// written whatever it had to say to the terminal it was holding.
-			if code != 0 {
-				return exitCode(code)
+			// A player that failed is a command that failed, which is exit 1.
+			// mpv's own status is said rather than returned: it spends 2 on a
+			// file it cannot open and this binary spends 2 on an invocation it
+			// would not accept.
+			if outcome.Failed {
+				nothing(cmd, outcome.Says)
+				return exitCode(1)
 			}
 			return nil
 		},
@@ -84,24 +105,24 @@ func (a *app) playCommand() *cobra.Command {
 }
 
 // playable is the watch URLs of a playlist, in its order, and how many videos
-// were left out because YouTube will not serve them. A limit of zero is every
-// video, since a limit is a ceiling rather than a count to reach.
+// were left out because YouTube will not serve them. A nil limit is no ceiling;
+// a limit of zero is a request for no videos.
 //
 // The limit is applied before the unavailable ones are counted, so the count
 // reports what was dropped from the part that would have played rather than
 // from the whole playlist.
-func playable(playlist api.Playlist, limit int) ([]string, int64) {
-	urls := []string{}
+func playable(playlist api.Playlist, limit *int) (mpv.WatchURLs, int64) {
+	urls := mpv.WatchURLs{}
 	var left int64
 	for _, item := range playlist.Items {
-		if limit > 0 && len(urls) == limit {
+		if limit != nil && len(urls) == *limit {
 			break
 		}
 		if item.Video.IsUnavailable {
 			left++
 			continue
 		}
-		urls = append(urls, watchURL(item.Video.ID))
+		urls = append(urls, youtube.WatchURL(item.Video.ID))
 	}
 	return urls, left
 }

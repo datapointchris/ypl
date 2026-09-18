@@ -32,11 +32,17 @@ type Suggestion struct {
 	LastPlayedTs    *string `json:"last_played_ts"`
 }
 
+// PlayID is the id a play is stored under, made by the client.
+type PlayID string
+
+// VideoID is the video a play is about.
+type VideoID string
+
 // newPlay is the body of POST /api/v1/plays. The id is the client's to make, so
 // a play sent twice — a retry, a command run again — is stored once.
 type newPlay struct {
-	ID      string `json:"id"`
-	VideoID string `json:"video_id"`
+	ID      PlayID  `json:"id"`
+	VideoID VideoID `json:"video_id"`
 }
 
 // CreatePlay records that videoID was listened to, under id. The server takes
@@ -46,7 +52,7 @@ type newPlay struct {
 // made by the caller rather than here so that a caller retrying a play it is
 // not sure landed sends the same one, and gets the stored play back instead of
 // a second row.
-func (c *Client) CreatePlay(ctx context.Context, id, videoID string) (Play, error) {
+func (c *Client) CreatePlay(ctx context.Context, id PlayID, videoID VideoID) (Play, error) {
 	var play Play
 	err := c.Post(ctx, "/api/v1/plays", newPlay{ID: id, VideoID: videoID}, &play)
 	return play, err

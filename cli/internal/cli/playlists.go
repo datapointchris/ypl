@@ -53,6 +53,7 @@ func (a *app) playlistsCommand() *cobra.Command {
 		a.playlistsRenameCommand(),
 		a.playlistsDeleteCommand(),
 		a.playlistsEditCommand(),
+		a.playlistsPlayCommand(),
 	)
 	return cmd
 }

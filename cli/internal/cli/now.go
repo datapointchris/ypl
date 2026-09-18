@@ -8,14 +8,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
-	"github.com/datapointchris/ypl/cli/internal/editbuffer"
 	"github.com/datapointchris/ypl/cli/internal/mpv"
+	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
-
-// asked is what `ypl now` reads from mpv. time-pos is what puts a position
-// inside a tracklist, and the other two are what a video the server has never
-// heard of is reported by.
-var asked = []string{"path", "time-pos", "duration", "media-title"}
 
 // nowPlaying is what `ypl now` answers.
 type nowPlaying struct {
@@ -37,29 +32,42 @@ func (a *app) nowCommand() *cobra.Command {
 		Use:     "now",
 		Short:   "What is playing right now, down to the track",
 		GroupID: groupPlaying,
-		Long: "Reads the socket `ypl play` opened. Because the server holds a tracklist with\n" +
+		Long: "Reads the socket `ypl playlists play` opened. Because the server holds a tracklist with\n" +
 			"real timestamps, this reports the track inside a two-hour mix rather than the\n" +
 			"name of the mix.\n" +
 			"\n" +
-			"Exits 1 when nothing is playing, so a status bar can run it unguarded.",
+			"Exits 1 with nothing playing, after writing an empty answer, so a status bar\n" +
+			"can run it unguarded in either mode.",
 		Example: "  ypl now         what is on, and how far in\n" +
 			"  ypl now --json  the same, for a status bar",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			state, err := mpv.Properties(mpv.SocketPath(), asked)
-			if errors.Is(err, mpv.ErrNotPlaying) {
-				nothing(cmd, "Nothing is playing. `ypl play <playlist>` puts something on.")
+			state, err := mpv.Read(mpv.SocketPath())
+			switch {
+			case errors.Is(err, mpv.ErrNotPlaying):
+				// Render first, decide the exit code after, in both modes. A
+				// status bar reads the empty answer off the code, and --json is
+				// the rendering it parses, so writing nothing here would hand
+				// the only caller that depends on it a parse error.
+				if asJSON {
+					if err := emitJSON(cmd.OutOrStdout(), nowPlaying{}); err != nil {
+						return err
+					}
+				}
+				nothing(cmd, "Nothing is playing. `ypl playlists play <playlist>` puts something on.")
 				return exitCode(1)
-			}
-			if err != nil {
+			case err != nil:
+				// A socket that answered and could not be read is not nothing
+				// playing. Reporting it as such would make the command wrong
+				// about the one thing it is asked.
 				return reported(err)
 			}
 
 			found := nowPlaying{
-				VideoID:         editbuffer.VideoID(asText(state["path"])),
-				Title:           asText(state["media-title"]),
-				PositionSeconds: asSeconds(state["time-pos"]),
-				DurationSeconds: asSeconds(state["duration"]),
+				VideoID:         youtube.VideoID(state.Path),
+				Title:           state.Title,
+				PositionSeconds: state.Position,
+				DurationSeconds: state.Duration,
 			}
 			// What mpv is playing is only sometimes something the server knows
 			// about. A video that is not in the library still answers, from
@@ -98,30 +106,37 @@ func (a *app) nowCommand() *cobra.Command {
 // trackAt is the track position falls in, and nil where the tracklist has none
 // that holds it.
 //
-// A track with no start is skipped rather than matched: its place in the
-// tracklist is known and the moment it begins is not, so nothing can say
-// whether the player is inside it.
+// The latest-starting track that holds the position wins, rather than the first
+// one found. A track whose start the store does not carry sits between two that
+// do, and taking the first would leave the track before it bounded by nothing
+// and reported for every later position. Scanning for the latest needs no
+// assumption about the order the tracks arrive in either.
+//
+// A track with no start is never the answer. Its place in the tracklist is
+// known and the moment it begins is not, so nothing can say whether the player
+// is inside it.
 func trackAt(tracks []api.Track, position *int64) *api.Track {
 	if position == nil {
 		return nil
 	}
+	found := -1
 	for i, track := range tracks {
 		if track.StartSeconds == nil || *track.StartSeconds > *position {
 			continue
 		}
-		// The end is what the next track's start says where a tracklist carries
-		// no end of its own, and the last track runs to the end of the video.
+		// An end the tracklist carries is where the track stops, so a position
+		// on it belongs to whatever comes next.
 		if track.EndSeconds != nil && *track.EndSeconds <= *position {
 			continue
 		}
-		if track.EndSeconds == nil && i+1 < len(tracks) {
-			if next := tracks[i+1].StartSeconds; next != nil && *next <= *position {
-				continue
-			}
+		if found < 0 || *track.StartSeconds > *tracks[found].StartSeconds {
+			found = i
 		}
-		return &tracks[i]
 	}
-	return nil
+	if found < 0 {
+		return nil
+	}
+	return &tracks[found]
 }
 
 func printNow(cmd *cobra.Command, found nowPlaying) {
@@ -140,22 +155,4 @@ func printNow(cmd *cobra.Command, found nowPlaying) {
 	if found.Track == nil && found.VideoID != "" {
 		nothing(cmd, "No track for this position. `ypl videos show <video>` says whether its tracklist has been read.")
 	}
-}
-
-// asText is a property mpv answered with as a string, and "" for one it did not
-// answer at all.
-func asText(value any) string {
-	text, _ := value.(string)
-	return text
-}
-
-// asSeconds is a property mpv answered with as whole seconds. mpv sends a
-// position as a float, and nothing here shows anything finer than a second.
-func asSeconds(value any) *int64 {
-	seconds, ok := value.(float64)
-	if !ok {
-		return nil
-	}
-	whole := int64(seconds)
-	return &whole
 }
