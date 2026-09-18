@@ -1,7 +1,8 @@
 # ypl
 
-Organize YouTube playlists of long DJ mixes. `README.md` says what the parts are and how the sync
-works; this file covers what someone changing the code has to hold in mind.
+Organize YouTube playlists of long DJ mixes. `README.md` says what the parts are, and
+`api/README.md` how the server and its sync work; this file covers what someone changing the code
+has to hold in mind.
 
 ## Every way out of a process is named
 

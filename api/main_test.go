@@ -249,7 +249,7 @@ func TestTheShutdownGraceOutlastsAPlaylistWrite(t *testing.T) {
 	if shutdownGrace <= handlers.WriteDuration || shutdownGrace <= reconcile.WriteDuration {
 		t.Fatalf("shutdownGrace %v, want longer than a playlist write's %v and a push write's %v", shutdownGrace, handlers.WriteDuration, reconcile.WriteDuration)
 	}
-	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
+	readme, err := os.ReadFile("README.md")
 	if err != nil {
 		t.Fatalf("read the README: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestSyncIntervalDefaultsToAnHourAndRefusesAnythingButAPositiveDuration(t *t
 }
 
 func TestTheREADMEStatesTheEnrichmentDefaults(t *testing.T) {
-	readme, err := os.ReadFile(filepath.Join("..", "README.md"))
+	readme, err := os.ReadFile("README.md")
 	if err != nil {
 		t.Fatal(err)
 	}

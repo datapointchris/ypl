@@ -238,10 +238,10 @@ func TestARequestNoRouteAnswersIsRefusedInTheEnvelope(t *testing.T) {
 	}
 }
 
-// readme is the repository's README.
+// readme is the server's README, which holds its route table.
 func readme(t *testing.T) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	data, err := os.ReadFile(filepath.Join("..", "README.md"))
 	if err != nil {
 		t.Fatalf("read the README: %v", err)
 	}
