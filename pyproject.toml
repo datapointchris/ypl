@@ -109,14 +109,21 @@ build_command = """
     uv lock --upgrade-package ypl
     git add uv.lock
 """
-# The Go API and CLI in api/ and cli/ are not part of this package, and neither
-# are the workflows that build and release them. A commit that changes only
-# those files is not a change to it, and without the filter a feat(api) would
-# cut a minor release of it.
+# This repository holds a Go API and a Go CLI beside the Python package, and
+# only the paths below are the package. A commit touching nothing else is not a
+# change to it, and without the filter a feat(api) would cut a minor release.
+#
+# An allow-list rather than a deny-list rooted at `.`: under a deny-list every
+# directory nobody has excluded yet is inside the package's release scope, so a
+# new one releases the package by default and the mistake is only visible as a
+# version published for code that did not move.
+#
+# `README.md` is here because `readme = "README.md"` makes it packaged metadata.
+# `tests/**` is not, because the package does not ship it.
 commit_parser = "conventional-monorepo"
 
 [tool.semantic_release.commit_parser_options]
-path_filters = [".", "!api/**", "!cli/**", "!.github/**", "!Taskfile.yml", "!.golangci.yml", "!.sqlfluff"]
+path_filters = ["src/**", "pyproject.toml", "uv.lock", "README.md"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
