@@ -23,8 +23,8 @@ anything back to YouTube is a separate, deliberate, queued act.
 
 The server in `api/` keeps the channel's playlists mirrored through the Data API, reads a tracklist
 for each mix with `yt-dlp`, and answers the HTTP API the Go client speaks. Its reference — the
-quota a run spends, the settings it reads, how it deploys, and every route — is
-[`api/README.md`](api/README.md), beside the code it describes.
+quota a run spends, the settings it reads, and every route — is [`api/README.md`](api/README.md),
+beside the code it describes.
 
 ## The command-line client
 

@@ -10,6 +10,14 @@ documentation says how to get one. Each request is a page of up to 50 playlists 
 costs 1 unit, so reading every playlist costs one unit per page of playlists plus one per page of
 each playlist's items, with an empty playlist still taking one.
 
+The server reads its settings from the environment, and refuses to start on one it cannot use.
+`YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` name the OAuth client, and `YOUTUBE_REFRESH_TOKEN`
+is the channel's refresh token. All three are required. The server listens on `PORT`, 8080 when
+unset. It keeps its store at `DATABASE_PATH`, or at `ypl/api.db` under `$XDG_DATA_HOME` when that
+is unset. The image sets `DATABASE_PATH` to `/var/db/ypl/ypl.db`, in a directory for the host to
+mount, since a store inside the container goes with the container. It also sets `TZ` to UTC, the
+zone the log lines are written in.
+
 The server edits playlists through the Data API as well. Creating, renaming or deleting a playlist,
 and inserting, moving or deleting an item, costs 50 units a request. A rename reads the playlist
 first, for 1 unit more.
