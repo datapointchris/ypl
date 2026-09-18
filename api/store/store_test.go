@@ -329,18 +329,44 @@ func TestAReadTransactionRefusesAWriteAndLeavesItsConnectionWritable(t *testing.
 	}
 }
 
-func TestPlaysTakeHandlesInOrderAndARepeatTakesNone(t *testing.T) {
+// A play takes the next handle past every handle a deleted play held, and a
+// repeated id takes none. A binary older than deleted_plays numbers handles
+// from plays alone, so while one runs it can give a deleted play's handle out
+// again, and the play that took it is still deleted once this code is back.
+func TestPlaysTakeHandlesPastEveryDeletedOneAndARepeatTakesNone(t *testing.T) {
 	ctx := context.Background()
 	st, _ := open(t)
 	if err := st.Queries.ImportVideo(ctx, video("v1")); err != nil {
 		t.Fatalf("import video: %v", err)
 	}
-	for _, id := range []string{"p1", "p2", "p1", "p3"} {
+	insert := func(id string) {
+		t.Helper()
 		if _, err := st.Queries.InsertPlay(ctx, generated.InsertPlayParams{PlayID: id, VideoID: "v1", PlayedTs: "2026-09-01T10:00:00Z"}); err != nil {
 			t.Fatalf("insert %s: %v", id, err)
 		}
 	}
-	for id, want := range map[string]int64{"p1": 1, "p2": 2, "p3": 3} {
+	remove := func(id string) {
+		t.Helper()
+		if err := st.Queries.KeepDeletedPlay(ctx, id); err != nil {
+			t.Fatalf("keep deleted play %s: %v", id, err)
+		}
+		if err := st.Queries.DeletePlay(ctx, id); err != nil {
+			t.Fatalf("delete %s: %v", id, err)
+		}
+	}
+	for _, id := range []string{"p1", "p2", "p1", "p3"} {
+		insert(id)
+	}
+	remove("p3")
+	insert("p4")
+	remove("p4")
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO plays (play_id, handle, video_id, played_ts) SELECT 'p5', max(handle) + 1, 'v1', '2026-09-01T10:00:00Z' FROM plays`); err != nil {
+		t.Fatalf("insert p5 as an older binary numbers it: %v", err)
+	}
+	remove("p5")
+	insert("p6")
+	for id, want := range map[string]int64{"p1": 1, "p2": 2, "p6": 5} {
 		if got, err := st.Queries.GetPlay(ctx, id); err != nil || got.Handle != want {
 			t.Errorf("%s handle = %d, %v, want %d", id, got.Handle, err, want)
 		}
