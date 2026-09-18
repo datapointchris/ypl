@@ -108,7 +108,8 @@ playing, so a status bar can run it unguarded in either mode.
 played for 20 minutes, or half its length when that is shorter, it tells the server. That is what
 `ypl next` reads to stop suggesting the same mix. A seek forward is not listening, so it does not
 count. `ypl plays add <video>` records a mix heard somewhere `ypl play` could not see, by id or by a
-link it was copied from.
+link it was copied from. `ypl plays delete <play>` takes one back, asking first, and the play's
+handle is never given to another.
 
 Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
 nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
