@@ -200,7 +200,7 @@ func TestAReadThatFindsNoTracklistKeepsTheTracksAVideoHolds(t *testing.T) {
 	ctx := context.Background()
 	err := f.st.InTx(ctx, func(tx *store.Tx) error {
 		return tx.ReplaceTracks(ctx, "vheld", []generated.InsertTrackParams{
-			{Position: 1, Title: "By hand", RawText: "By hand", Source: "manual"},
+			{Position: 1, Title: "Read before", RawText: "0:00 Read before", Source: "description"},
 		})
 	})
 	if err != nil {
@@ -218,8 +218,8 @@ func TestAReadThatFindsNoTracklistKeepsTheTracksAVideoHolds(t *testing.T) {
 		t.Fatalf("storeVideo = %d, %v, want no track stored", stored, err)
 	}
 	tracks, err := f.st.Queries.ListTracks(ctx, "vheld")
-	if err != nil || len(tracks) != 1 || tracks[0].Title != "By hand" {
-		t.Fatalf("tracks of vheld = %+v, %v, want the hand-entered one kept", tracks, err)
+	if err != nil || len(tracks) != 1 || tracks[0].Title != "Read before" {
+		t.Fatalf("tracks of vheld = %+v, %v, want the one it held kept", tracks, err)
 	}
 }
 

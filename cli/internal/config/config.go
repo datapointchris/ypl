@@ -99,8 +99,8 @@ var declared = []declaration{
 }
 
 // file is the part of the config file this CLI reads. A key it does not name is
-// ignored rather than refused, so the settings of anything else sharing the file
-// are left alone.
+// ignored rather than refused, so a file written for a newer ypl still loads in
+// an older one.
 type file struct {
 	APIBase  string `toml:"api_base"`
 	Issuer   string `toml:"issuer"`

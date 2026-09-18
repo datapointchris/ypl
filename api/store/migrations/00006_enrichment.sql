@@ -3,9 +3,7 @@
 -- attempts counts the reads of a video that stored no tracklist, and retry_ts
 -- is when the video is read again. A NULL retry_ts stops the reading, which
 -- takes either YouTube answering that no signed-out read will return the video
--- or enough attempts. An import of a Python mirror decides per failure which of
--- those its recorded message says, since the mirror read a rate limit as a
--- video closed for good.
+-- or enough attempts.
 ALTER TABLE enrich_failures ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1 CHECK (attempts > 0);
 ALTER TABLE enrich_failures ADD COLUMN retry_ts TEXT CHECK (
     retry_ts GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'

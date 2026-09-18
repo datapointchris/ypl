@@ -5,9 +5,10 @@ ON CONFLICT (source) DO UPDATE SET
     label = excluded.label,
     description = excluded.description;
 
--- name: ImportVideo :exec
--- Writes every column, so it is only for a copy of a whole row. A caller holding
--- some of a video's columns would overwrite the rest.
+-- name: SeedVideo :exec
+-- Writes every column of a video, which is how a test sets one up. Nothing the
+-- server runs calls it: a caller holding some of a video's columns would
+-- overwrite the rest.
 INSERT INTO videos (
     video_id, title, channel_title, duration_seconds, description, upload_date, is_unavailable, enriched_ts
 )
