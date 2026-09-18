@@ -162,10 +162,10 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       previous: ${{ steps.resolve.outputs.previous }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: cli/go.mod
       - run: go install github.com/caarlos0/svu/v3@v3.4.1
@@ -177,15 +177,26 @@ jobs:
       # svu only prints a version, and prints the current one unchanged when
       # nothing under cli/ is releasable. That equality is what gates the two
       # jobs below.
+      #
+      # svu exits 1 when no tag matches --tag.pattern, so it cannot name the
+      # first release: there is no version for it to bump. That case is decided
+      # here instead, at cli/v0.1.0 — the version svu itself starts a repo at.
+      # The condition is the absent tag rather than a failed svu, because
+      # treating any svu failure as a first release turns a broken run into a
+      # published one.
       - name: Resolve the next version
         id: resolve
         run: |
           previous=$(git tag --list 'cli/v*' --sort=-version:refname | head -1)
-          next=$(svu next --tag.pattern 'cli/v*' --tag.prefix 'cli/v' --log.directory cli --v0)
           echo "previous=${previous}" >>"$GITHUB_OUTPUT"
-          if [ "$next" = "$previous" ]; then
-            echo "No releasable commits under cli/ since ${previous:-the first commit}"
-            exit 0
+          if [ -z "$previous" ]; then
+            next='cli/v0.1.0'
+          else
+            next=$(svu next --tag.pattern 'cli/v*' --tag.prefix 'cli/v' --log.directory cli --v0)
+            if [ "$next" = "$previous" ]; then
+              echo "No releasable commits under cli/ since ${previous}"
+              exit 0
+            fi
           fi
           echo "Releasing ${next} (previous: ${previous:-none})"
           echo "tag=${next}" >>"$GITHUB_OUTPUT"
@@ -203,8 +214,8 @@ jobs:
         goarch: [amd64, arm64]
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: cli/go.mod
 
@@ -242,7 +253,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
