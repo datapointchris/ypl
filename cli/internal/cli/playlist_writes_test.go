@@ -95,13 +95,6 @@ func TestPlaylistsDeleteAsksWhoeverCanAnswerAndRefusesWhereNobodyCan(t *testing.
 		t.Fatalf("it asked the server %d times before refusing", len(f.sent))
 	}
 
-	f.atTerminal("")
-	got = f.run("playlists", "delete", "sunday-morning", "--no-input")
-	if got.code != 2 || !strings.Contains(got.err, "--no-input") || len(f.sent) != 0 {
-		t.Fatalf("under --no-input at a terminal, exited %d after %d requests saying %q, want 2, none, and the flag named",
-			got.code, len(f.sent), got.err)
-	}
-
 	f.atTerminal("n\n")
 	got = f.run("playlists", "delete", "sunday-morning")
 	if got.code != 1 || len(f.writes()) != 0 {

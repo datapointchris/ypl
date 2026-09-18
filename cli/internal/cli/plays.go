@@ -93,9 +93,7 @@ func (a *app) playsDeleteCommand() *cobra.Command {
 		},
 	}
 	addYes(cmd, &yes, "delete it")
-	// Declared here rather than on plays, because this is the one play verb
-	// that asks anything.
-	cmd.Flags().Bool(noInput, false, "Never prompt; without --yes the delete refuses instead")
+	addNoInput(cmd, "refuse rather than ask, unless --yes answers")
 	return goclikit.WithRecoveryHints(cmd, hintPlays)
 }
 

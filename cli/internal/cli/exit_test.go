@@ -51,6 +51,34 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 			t.Errorf("%v said %q, want it to name %q", args, got.err, meant)
 		}
 	}
+
+	// --no-input sits on the verbs that would take the terminal and on no
+	// other, and each of them refuses under it before asking anything. The
+	// refusal is matched rather than the flag's name, because cobra's own
+	// "unknown flag" names it too and also exits 2.
+	takesTerminal := map[string][]string{
+		"ypl playlists delete": {"playlists", "delete", "sunday-morning"},
+		"ypl playlists edit":   {"playlists", "edit", "sunday-morning"},
+		"ypl plays delete":     {"plays", "delete", "41"},
+	}
+	declaring := binding(newRootCommand(&app{}), noInput, nil)
+	if len(declaring) != len(takesTerminal) {
+		t.Errorf("--no-input is on %v, want exactly the verbs that take the terminal", declaring)
+	}
+	for _, path := range declaring {
+		if _, ok := takesTerminal[strings.Join(append([]string{"ypl"}, path...), " ")]; !ok {
+			t.Errorf("--no-input is on %v, which takes no terminal", path)
+		}
+	}
+	for path, args := range takesTerminal {
+		terminal := newFixture(t, serves(nil))
+		terminal.atTerminal("y\n")
+		got := terminal.run(append(args, "--no-input")...)
+		if got.code != 2 || !strings.Contains(got.err, "refusing to") || len(terminal.asked) != 0 {
+			t.Errorf("%s --no-input at a terminal exited %d after %d requests saying %q, want 2, none, and a refusal",
+				path, got.code, len(terminal.asked), got.err)
+		}
+	}
 }
 
 // A caller can mean no rows — `tail -n 0` and `head -n 0` both print nothing —
@@ -238,22 +266,22 @@ func TestAnAnswerThatIsNotTheServersStillCarriesItsStatus(t *testing.T) {
 	}
 }
 
-// jsonCapable walks the assembled tree for every leaf binding --json, so a
+// binding walks the assembled tree for every command declaring flag, so a
 // command added later is covered without anyone remembering to list it.
-func jsonCapable(cmd *cobra.Command, path []string) [][]string {
+func binding(cmd *cobra.Command, flag string, path []string) [][]string {
 	var found [][]string
 	here := path
 	if cmd.Name() != "ypl" {
 		here = append(append([]string{}, path...), cmd.Name())
 	}
-	if cmd.Flags().Lookup("json") != nil {
+	if cmd.Flags().Lookup(flag) != nil {
 		found = append(found, here)
 	}
 	for _, child := range cmd.Commands() {
 		if child.Name() == "help" || child.Name() == "completion" {
 			continue
 		}
-		found = append(found, jsonCapable(child, here)...)
+		found = append(found, binding(child, flag, here)...)
 	}
 	return found
 }
@@ -271,7 +299,7 @@ func TestTheRenderingNeverDecidesTheExitCode(t *testing.T) {
 		"/api/v1/sync/runs":   `{"data": [], "has_more": false}`,
 		"/api/v1/status":      `{"library": {}, "last_run": null, "last_ok_run": null}`,
 	}
-	commands := jsonCapable(newRootCommand(&app{}), nil)
+	commands := binding(newRootCommand(&app{}), "json", nil)
 	if len(commands) < 8 {
 		t.Fatalf("found %d commands taking --json, want every leaf that binds it", len(commands))
 	}

@@ -126,6 +126,7 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 		},
 	}
 	addJSON(cmd, &asJSON, "what the edit changed")
+	addNoInput(cmd, "refuse rather than open an editor, unless a buffer is piped in")
 	return cmd
 }
 

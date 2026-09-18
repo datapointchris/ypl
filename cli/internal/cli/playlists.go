@@ -25,17 +25,6 @@ func (a *app) playlistsCommand() *cobra.Command {
 			"holds, and the next sync run pushes that order to YouTube.",
 		RunE: requireSubcommand,
 	}
-	// Declared on the namespaces whose verbs read it rather than on the root.
-	// Here those are delete and edit, and `ypl plays delete` declares its own.
-	// On the root it prints under Global Flags for every command in the tree,
-	// including the ones that never prompt.
-	//
-	// Read back off the flag set rather than bound to a variable here, because a
-	// variable at this scope is process-wide state and every command in the tree
-	// would share one copy of it.
-	cmd.PersistentFlags().Bool(noInput, false,
-		"Never prompt; a verb that would have asked for confirmation refuses instead")
-
 	splitReadingFromChanging(cmd)
 	cmd.AddCommand(
 		a.playlistsListCommand(),
