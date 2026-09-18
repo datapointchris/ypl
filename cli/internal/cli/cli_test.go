@@ -336,7 +336,7 @@ func TestTabOffersEveryPlaylistAsASlugTheServerResolves(t *testing.T) {
 		t.Errorf("after the playlist offered %q, want nothing and no files", got.out)
 	}
 	// A playlist the server does not know is answered with the list Tab offers.
-	if got := f.run("play", "nosuch"); !strings.Contains(got.err, "sunday-morning") {
+	if got := f.run("playlists", "show", "nosuch"); !strings.Contains(got.err, "sunday-morning") {
 		t.Errorf("a playlist not found said %q, want the playlists the server holds", got.err)
 	}
 
