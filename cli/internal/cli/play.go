@@ -43,7 +43,7 @@ func (a *app) playlistsPlayCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			playlist, err := client.GetPlaylist(cmd.Context(), args[0])
+			playlist, err := client.GetPlaylist(cmd.Context(), api.Reference(args[0]))
 			if err != nil {
 				return reported(err)
 			}

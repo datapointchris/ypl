@@ -53,9 +53,7 @@ type newPlay struct {
 // not sure landed sends the same one, and gets the stored play back instead of
 // a second row.
 func (c *Client) CreatePlay(ctx context.Context, id PlayID, videoID VideoID) (Play, error) {
-	var play Play
-	err := c.Post(ctx, "/api/v1/plays", newPlay{ID: id, VideoID: videoID}, &play)
-	return play, err
+	return post[Play](ctx, c, "/api/v1/plays", newPlay{ID: id, VideoID: videoID})
 }
 
 // ListPlays is the newest limit plays, newest first, reading as many pages as
