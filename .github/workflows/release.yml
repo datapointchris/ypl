@@ -9,8 +9,9 @@ on:
 permissions:
   contents: read
 
-# Two pushes to main inside one run's window would otherwise race, and the later
-# run fails pushing its version bump onto a ref that has already moved.
+# Two pushes to main inside one run's window would otherwise race: both resolve
+# the same next CLI version from the same newest tag, and the later run fails
+# creating a tag that already exists.
 # Never cancel-in-progress: a canceled release can leave a tag with no release.
 concurrency:
   group: release-${{ github.ref }}
@@ -26,9 +27,7 @@ jobs:
     uses: ./.github/workflows/validate.yml
 
   # Whether this push touched the server. Publishing `:latest` restarts whatever
-  # watches it, so a commit to the CLI or the Python tool must not move it. The
-  # Python release beside it is already scoped the same way, by pyproject's
-  # path_filters.
+  # watches it, so a commit to the CLI alone must not move it.
   changes:
     name: Read what the push changed
     runs-on: ubuntu-latest
@@ -146,34 +145,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  release:
-    needs: validate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: python-semantic-release/python-semantic-release@9a026e9303981c866c3425723009becb2437c757 # v10.6.2
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          # The GitHub release body is the changelog. python-semantic-release
-          # builds those notes from the same commits, and by a path independent
-          # of the changelog file, so no CHANGELOG.md is written or tracked.
-          changelog: "false"
-
-  # The Go CLI is a nested module with its own version, tagged `cli/v1.2.3` so
-  # it never collides with the Python tool's `v*` namespace. The two releases
-  # are independent: pyproject's path_filters name only the paths that are the
-  # Python package, and svu's --log.directory confines this one to commits
-  # touching `cli/`. Neither reaches this file, so a change here releases
-  # neither tool, whatever conventional type its commit carries.
+  # The Go CLI is a nested module with its own version, tagged `cli/v1.2.3`.
+  # The repository's bare `v*` tags belong to the single-user tool it replaced,
+  # so the prefix keeps the CLI's line from being read against them. svu's
+  # --log.directory confines the release to commits touching `cli/`, so a
+  # change to the server or to this file releases nothing, whatever
+  # conventional type its commit carries.
   #
-  # svu rather than python-semantic-release's Go sibling, because
-  # go-semantic-release hardcodes the tag prefix to `v` and parses candidate
-  # tags as bare semver — it can neither write `cli/v0.2.0` nor read the
-  # `cli/v0.1.0` it would bump from. Monorepo support there is closed wontfix.
+  # svu rather than go-semantic-release, which hardcodes the tag prefix to `v`
+  # and parses candidate tags as bare semver — it can neither write
+  # `cli/v0.2.0` nor read the `cli/v0.1.0` it would bump from. Monorepo support
+  # there is closed wontfix.
   version:
     name: Resolve the CLI version
     needs: validate
@@ -295,9 +277,8 @@ jobs:
       - name: Generate checksums
         run: cd dist && sha256sum -- *.tar.gz > checksums.txt
 
-      # Not `generate_release_notes`, which lists merged PRs since the last
-      # published release — and the last published release here is usually the
-      # Python tool's, so it would list every PR since that instead.
+      # Not `generate_release_notes`, which lists every merged PR since the last
+      # published release, the ones that only touched the server included.
       - name: Build release notes
         env:
           TAG: ${{ needs.version.outputs.tag }}
@@ -326,10 +307,3 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: dist/*
           body_path: release-notes.md
-          # A repository has one Latest release however many tag streams it
-          # publishes, and the API defaults every new release to it. The CLI
-          # releases far more often than the Python tool, so without this
-          # `/releases/latest` and the badge on the repository page would answer
-          # `cli/v*` — and README's install line tells a reader to install the
-          # Python package from the newest release tag.
-          make_latest: 'false'
