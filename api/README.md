@@ -3,9 +3,8 @@
 The server keeps the channel's playlists mirrored, reads a tracklist for each mix, and answers the
 HTTP API the CLI speaks. The repository's own [README](../README.md) says what the other parts are.
 
-The server reads playlists through the Data API, where the Python tool reads them with `yt-dlp`. It
-has no browser to read cookies from, and a private playlist read through `yt-dlp` needs a
-signed-in session. The Data API signs in with an OAuth refresh token, and `api/youtube`'s package
+The server reads playlists through the Data API rather than through `yt-dlp`. It has no browser to
+read cookies from, and a private playlist read through `yt-dlp` needs a signed-in session. The Data API signs in with an OAuth refresh token, and `api/youtube`'s package
 documentation says how to get one. Each request is a page of up to 50 playlists or 50 items and
 costs 1 unit, so reading every playlist costs one unit per page of playlists plus one per page of
 each playlist's items, with an empty playlist still taking one.

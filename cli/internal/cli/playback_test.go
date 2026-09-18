@@ -129,9 +129,8 @@ func stubMpv(t *testing.T, exit int) string {
 
 // playingVideo carries the matrix the tracklist can arrive in: two tracks the
 // store placed with an end, one it placed without, and one it could not place
-// at all. start_seconds is nullable in the store and the Python mirror types it
-// `int | None`, so the unplaceable track is a real shape rather than a
-// hypothetical.
+// at all. start_seconds is nullable in the store, so the unplaceable track is a
+// real shape rather than a hypothetical.
 const playingVideo = `{"id": "dQw4w9WgXcQ", "title": "Six Hours Of House", "channel_title": "One",
 	"duration_seconds": 21600, "upload_date": null, "is_unavailable": false, "enriched_ts": "2026-01-01T00:00:00Z",
 	"track_count": 4, "artists": ["Bjork"], "playlists": [], "description": null, "tracks": [

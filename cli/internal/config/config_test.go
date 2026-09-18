@@ -92,10 +92,10 @@ func TestTheClientIDFallsBackToOneNamingThisMachine(t *testing.T) {
 	}
 }
 
-// The Python tool keeps its own settings in this file until it is retired, and
-// a key this CLI does not know is that tool's rather than a mistake.
+// A key this CLI does not know is left alone rather than refused, so a file
+// written for a newer ypl still loads in an older one.
 func TestAKeyThisCLIDoesNotReadIsLeftAlone(t *testing.T) {
-	withFile(t, "api_base = \"https://a.test\"\ncookies_from_browser = \"firefox\"\nenrich_batch_size = 50\n")
+	withFile(t, "api_base = \"https://a.test\"\nplayer = \"mpv\"\nretries = 3\n")
 
 	if got := load(t).APIBase(); got != "https://a.test" {
 		t.Fatalf("api_base = %q beside keys this CLI does not read", got)
