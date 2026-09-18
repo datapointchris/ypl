@@ -246,10 +246,11 @@ It opens mpv's IPC socket, which is what lets `ypl now` report the track inside 
 rather than the name of the mix. `ypl now` writes its answer and then exits 1 when nothing is
 playing, so a status bar can run it unguarded in either mode.
 
-`ypl plays add <video>` records that something was listened to, by id or by a link it was copied
-from. That is what `ypl next` reads to stop suggesting the same mix. It is written when a listen is
-logged rather than inferred from playback, because `ypl play` hands mpv the whole playlist at once
-and never learns which of it got played.
+`ypl play` records what it plays. It reads mpv's socket while the player runs, and once a mix has
+played for 20 minutes, or half its length when that is shorter, it tells the server. That is what
+`ypl next` reads to stop suggesting the same mix. A seek forward is not listening, so it does not
+count. `ypl plays add <video>` records a mix heard somewhere `ypl play` could not see, by id or by a
+link it was copied from.
 
 Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
 nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
