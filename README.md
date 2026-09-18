@@ -110,6 +110,11 @@ punctuation removed, so `deep house` and `Deep / House!` both reach the same pla
 matching the whole of what was sent beats one merely holding it. A name matching two playlists is
 refused naming each, rather than answered with one of them.
 
+Part of a title reaches a playlist, its videos and its suggestions. It reaches nothing else: a
+rename, a delete, and both the read and the write of an order take the whole title or the id. The
+order is read as narrowly as it is written because that read is what an edit is made from, and a
+reference the write would refuse buys an editing session that is then thrown away.
+
 `GET /api/v1/videos` narrows by `playlist`, `min_seconds`, `max_seconds` and `artist`, which
 matches part of an artist's name ignoring case and accents. `sort` is one of `longest`, `shortest`,
 `newest`, `oldest`, `title` or `random`. The first is the order when `sort` is absent.
@@ -219,13 +224,10 @@ of, rather than by a sentence saying nothing was found.
 asks for it, and so does `ypl playlists delete`, which asks first and needs `--yes` where there is
 nobody to ask. `--no-input` forbids the question everywhere and takes that path from a terminal.
 
-`ypl playlists edit` opens the playlist in `$VISUAL` or `$EDITOR`, one line per video with the id
-first — move lines to reorder, delete a line to remove that video, paste a URL or an id to add one,
-and save an empty buffer to abort. It is the one changing verb that does not reach YouTube: it sets
-the order the server holds, and the next sync run pushes that order. A buffer piped in is read
-instead of the editor being opened, so an order written elsewhere applies the same way. Where the
-server refuses the edit, the buffer is kept in a file and the refusal names it, because by then the
-editor has closed and that file is the only copy of the rearranging.
+`ypl playlists edit` is the one changing verb that does not reach YouTube: it sets the order the
+server holds, and the next sync run pushes that order. Where an edit is refused, the buffer is kept
+in a file and the refusal names it, because by then the editor has closed and that file is the only
+copy of the rearranging.
 
 Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
 nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
