@@ -116,7 +116,13 @@ const (
 // and the title as written first so that Deep House and Deep-House each stay
 // reachable by their own text although they slug alike.
 //
-// Holding what was sent is the last resort and is offered to the reads alone.
+// Holding what was sent is the last resort. Which verbs are offered it is one
+// list: the reads of a playlist, its videos and its suggestions resolve
+// loosely, and a rename, a delete, the read of an order and the write of one
+// resolve exactly. The order is read exactly because the edit it seeds is
+// written exactly, and a read a write refuses buys an editing session that is
+// then thrown away.
+//
 // The ambiguity refusal below is what makes loose matching safe, and it fires
 // only on two matches — a single *wrong* match is unambiguous, so it resolves
 // cleanly to a playlist nobody named. That costs a read another read, and it
@@ -148,11 +154,10 @@ func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string
 		holding := playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
 			return strings.Contains(slug(row.Title), slug(ref))
 		})
-		// A verb that changes a playlist is told which titles hold what it sent,
-		// rather than that nothing does. Both are refusals and only one of them
-		// is true: the playlist is there, and the reference is not precise
-		// enough for a verb that cannot be undone. Saying it names nothing sends
-		// the caller looking for a playlist they are already looking at.
+		// An exact resolution that found nothing is told which titles hold what
+		// it sent, rather than only that nothing answered to it. Somebody who
+		// shortened a title is otherwise sent looking for a playlist they are
+		// already looking at.
 		if how == exactly && len(holding) > 0 {
 			return "", referenceError{name: name, value: ref, nearby: titlesOf(holding)}
 		}
