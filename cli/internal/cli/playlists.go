@@ -10,24 +10,59 @@ import (
 	"github.com/datapointchris/ypl/cli/internal/api"
 )
 
+// The playlist verbs are split by whether they change the channel, so the half
+// that writes to YouTube is visible without reading each Short.
+const (
+	groupPlaylistReading = "playlist-reading"
+	groupPlaylistWriting = "playlist-writing"
+)
+
 func (a *app) playlistsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "playlists",
 		Short:   "The playlists the server mirrors",
-		GroupID: groupReading,
+		GroupID: groupLibrary,
 		Long: "Every playlist on the channel, as the server last read it. A playlist is\n" +
-			"named by its title or by its YouTube id wherever one is named.",
+			"named by its title or by its YouTube id wherever one is named.\n" +
+			"\n" +
+			"The verbs below that change something change it on YouTube. A new playlist\n" +
+			"is made there private, and a rename and a delete happen there in the request\n" +
+			"that asks for them. An edit is the exception: it changes the order the server\n" +
+			"holds, and the next sync run pushes that order to YouTube.",
 		RunE: requireSubcommand,
 	}
-	cmd.AddCommand(a.playlistsListCommand(), a.playlistsShowCommand())
+	// Declared here rather than on the root, because delete and edit are the
+	// only commands that read it and both are under this one. On the root it
+	// prints under Global Flags for every command in the tree, including the
+	// ones that never prompt.
+	//
+	// Read back off the flag set rather than bound to a variable here, because a
+	// variable at this scope is process-wide state and every command in the tree
+	// would share one copy of it.
+	cmd.PersistentFlags().Bool(noInput, false,
+		"Never prompt; a verb that would have asked for confirmation refuses instead")
+
+	cmd.AddGroup(
+		&cobra.Group{ID: groupPlaylistReading, Title: "Reading:"},
+		&cobra.Group{ID: groupPlaylistWriting, Title: "Changing:"},
+	)
+	cmd.AddCommand(
+		a.playlistsListCommand(),
+		a.playlistsShowCommand(),
+		a.playlistsCreateCommand(),
+		a.playlistsRenameCommand(),
+		a.playlistsDeleteCommand(),
+		a.playlistsEditCommand(),
+	)
 	return cmd
 }
 
 func (a *app) playlistsListCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List every playlist with what it holds",
+		Use:     "list",
+		GroupID: groupPlaylistReading,
+		Short:   "List every playlist with what it holds",
 		Example: "  ypl playlists list         what is on the channel, and how much of it is read\n" +
 			"  ypl playlists list --json  the same, for a script",
 		Args: usageArgs(cobra.NoArgs),
@@ -58,8 +93,9 @@ func (a *app) playlistsListCommand() *cobra.Command {
 func (a *app) playlistsShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "show <playlist>",
-		Short: "Show one playlist and the videos in it, in order",
+		Use:     "show <playlist>",
+		GroupID: groupPlaylistReading,
+		Short:   "Show one playlist and the videos in it, in order",
 		Example: "  ypl playlists show 'sunday morning'  what is in it, in the order it plays\n" +
 			"  ypl playlists show morning           part of a title is enough for a read",
 		Args: usageArgs(cobra.ExactArgs(1)),
@@ -68,7 +104,7 @@ func (a *app) playlistsShowCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			playlist, err := client.GetPlaylist(cmd.Context(), args[0])
+			playlist, err := client.GetPlaylist(cmd.Context(), api.Reference(args[0]))
 			if err != nil {
 				return reported(err)
 			}

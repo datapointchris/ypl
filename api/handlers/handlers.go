@@ -168,11 +168,24 @@ func newCollator() *collate.Collator {
 type referenceError struct {
 	name, value string
 	candidates  []string
+	// nearby names the rows a reference that reached nothing exactly is a
+	// fragment of, so the answer carries what to send instead of only that
+	// nothing answered to what was sent.
+	nearby []string
 }
 
+// The sentence for nearby says what the store can see and no more. A reference
+// matching no row exactly and sitting inside one title is a fragment of that
+// title; it is also a reference to a row deleted moments ago whose id happens
+// to read as one. Nothing here can tell those apart, so the sentence names the
+// title it found and leaves the caller to recognize their own reference.
 func (e referenceError) Error() string {
-	if len(e.candidates) > 0 {
+	switch {
+	case len(e.candidates) > 0:
 		return fmt.Sprintf("%s %q names more than one: %s", e.name, e.value, strings.Join(e.candidates, ", "))
+	case len(e.nearby) > 0:
+		return fmt.Sprintf("%[1]s %[2]q names none exactly, and is inside %[3]s; a %[1]s is named by its whole title or its id, never by part of one",
+			e.name, e.value, strings.Join(e.nearby, ", "))
 	}
 	return fmt.Sprintf("%s %q names nothing the store holds", e.name, e.value)
 }
@@ -188,12 +201,17 @@ func paramRow(err error, param referenceError) error {
 
 // writeItemError answers a failed read of the resource the path names: its row
 // not being there is a 404 naming what, a reference naming more than one row a
-// 400, and anything else a 500.
+// 400, and anything else a 500. A reference sitting inside a title is a 404
+// too, and keeps its own sentence for the title it names. The status is the
+// same because the condition is: nothing answers to what was sent, whether the
+// caller shortened a title or named a row that has gone.
 func (h *Handlers) writeItemError(w http.ResponseWriter, r *http.Request, err error, what string) {
 	var ref referenceError
 	switch {
 	case errors.As(err, &ref) && len(ref.candidates) > 0:
 		wire.Refuse(w, http.StatusBadRequest, wire.CodeAmbiguousReference, "%s", ref.Error())
+	case errors.As(err, &ref) && len(ref.nearby) > 0:
+		wire.Refuse(w, http.StatusNotFound, wire.CodeNotFound, "%s", ref.Error())
 	case errors.Is(err, sql.ErrNoRows), errors.As(err, &ref):
 		wire.Refuse(w, http.StatusNotFound, wire.CodeNotFound, "%s not found", what)
 	default:

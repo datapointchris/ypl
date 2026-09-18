@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -103,17 +104,29 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 	}
 }
 
-// The order document is its own shape and carries the ETag an edit names, so it
-// is read separately from the resources above.
+// The order is read separately from the resources above because its revision is
+// a header rather than a field, so the document alone cannot carry it. The field
+// that is in the document is checked here against the type an edit is built
+// from.
 func TestThePlaylistOrderDecodesFromTheServersDocument(t *testing.T) {
 	_, body := keysIn(t, "playlist-items")
-	var order struct {
-		VideoIDs []string `json:"video_ids"`
-	}
+	var order Order
 	if err := json.Unmarshal(body, &order); err != nil {
 		t.Fatalf("the order document does not decode: %v", err)
 	}
 	if len(order.VideoIDs) == 0 {
 		t.Fatal("the order document carries no video ids, so it proves nothing about the field")
+	}
+	// Asserted on the send rather than the read. The document carries no
+	// revision key, so decoding leaves the field empty whatever tag it has, and
+	// the check would hold under the tag it exists to forbid. Sending is where
+	// the tag bites: this same value is the PUT body, the server decodes it with
+	// DisallowUnknownFields, and a revision in it refuses every edit with 400.
+	sent, err := json.Marshal(Order{VideoIDs: []string{"a"}, Revision: "3"})
+	if err != nil {
+		t.Fatalf("the order does not encode: %v", err)
+	}
+	if bytes.Contains(sent, []byte("revision")) {
+		t.Errorf("an edit sends %s, and the revision is only ever a header", sent)
 	}
 }

@@ -19,7 +19,7 @@ func (a *app) playsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "plays",
 		Short:   "What has been listened to",
-		GroupID: groupReading,
+		GroupID: groupLibrary,
 		Long: "Every listen the server has been told about, newest first. A play is named\n" +
 			"by its handle, by its id, or by the last eight characters of that id.",
 		RunE: requireSubcommand,

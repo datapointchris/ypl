@@ -16,7 +16,7 @@ func (a *app) videosCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "videos",
 		Short:   "The mixes across every playlist",
-		GroupID: groupReading,
+		GroupID: groupLibrary,
 		Long: "Every available video some playlist holds, with the artists its tracklist\n" +
 			"names and the playlists it is in. This is the library as one set, rather\n" +
 			"than a playlist at a time.",

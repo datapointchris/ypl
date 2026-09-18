@@ -116,7 +116,13 @@ const (
 // and the title as written first so that Deep House and Deep-House each stay
 // reachable by their own text although they slug alike.
 //
-// Holding what was sent is the last resort and is offered to the reads alone.
+// Holding what was sent is the last resort. Which verbs are offered it is one
+// list: the reads of a playlist, its videos and its suggestions resolve
+// loosely, and a rename, a delete, the read of an order and the write of one
+// resolve exactly. The order is read exactly because the edit it seeds is
+// written exactly, and a read a write refuses buys an editing session that is
+// then thrown away.
+//
 // The ambiguity refusal below is what makes loose matching safe, and it fires
 // only on two matches — a single *wrong* match is unambiguous, so it resolves
 // cleanly to a playlist nobody named. That costs a read another read, and it
@@ -144,10 +150,20 @@ func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string
 			return slug(row.Title) == slug(ref)
 		})
 	}
-	if len(found) == 0 && how == loosely && slug(ref) != "" {
-		found = playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
+	if len(found) == 0 && slug(ref) != "" {
+		holding := playlistsTitled(rows, func(row generated.ListPlaylistReferencesRow) bool {
 			return strings.Contains(slug(row.Title), slug(ref))
 		})
+		// An exact resolution that found nothing is told which titles hold what
+		// it sent, rather than only that nothing answered to it. Somebody who
+		// shortened a title is otherwise sent looking for a playlist they are
+		// already looking at.
+		if how == exactly && len(holding) > 0 {
+			return "", referenceError{name: name, value: ref, nearby: titlesOf(holding)}
+		}
+		if how == loosely {
+			found = holding
+		}
 	}
 	switch len(found) {
 	case 0:
@@ -155,11 +171,17 @@ func resolvePlaylist(ctx context.Context, q *generated.Queries, name, ref string
 	case 1:
 		return found[0].PlaylistID, nil
 	}
-	candidates := make([]string, len(found))
-	for i, row := range found {
-		candidates[i] = fmt.Sprintf("%q (%s)", row.Title, row.PlaylistID)
+	return "", referenceError{name: name, value: ref, candidates: titlesOf(found)}
+}
+
+// titlesOf names each row the way a refusal names it: the title somebody typed
+// part of, and the id that reaches it whatever the title is.
+func titlesOf(rows []generated.ListPlaylistReferencesRow) []string {
+	named := make([]string, len(rows))
+	for i, row := range rows {
+		named[i] = fmt.Sprintf("%q (%s)", row.Title, row.PlaylistID)
 	}
-	return "", referenceError{name: name, value: ref, candidates: candidates}
+	return named
 }
 
 // playlistsTitled is every row of rows that matches.

@@ -20,7 +20,7 @@ var version = "dev"
 // The help sections, named for what someone is trying to do rather than for
 // what the commands are.
 const (
-	groupReading = "reading"
+	groupLibrary = "library"
 	groupPlaying = "playing"
 	groupServer  = "server"
 	groupSetup   = "setup"
@@ -44,8 +44,8 @@ func newRootCommand(a *app) *cobra.Command {
 			"A playlist is named by its title as readily as by its YouTube id, and the\n" +
 			"title's case, spacing and punctuation do not have to be reproduced — `ypl\n" +
 			"playlists show 'sunday morning'` finds Sunday Morning. A read takes part of\n" +
-			"a title too; a rename or a delete does not, because a fragment matching one\n" +
-			"playlist matches it unambiguously.\n" +
+			"a title too; a verb that changes something does not, because a fragment\n" +
+			"matching one playlist matches it unambiguously.\n" +
 			"\n" +
 			"Run any partial command with no arguments or --help to see what comes next.",
 		Example: "  ypl config example > \"$(ypl config path)\"  first run: write the file, then fill it in\n" +
@@ -73,7 +73,7 @@ func newRootCommand(a *app) *cobra.Command {
 	}
 
 	root.AddGroup(
-		&cobra.Group{ID: groupReading, Title: "Reading:"},
+		&cobra.Group{ID: groupLibrary, Title: "The library:"},
 		&cobra.Group{ID: groupPlaying, Title: "Playing:"},
 		&cobra.Group{ID: groupServer, Title: "The server:"},
 		&cobra.Group{ID: groupSetup, Title: "Setting up:"},

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -262,7 +263,9 @@ func TestAFragmentOfATitleReachesNoVerbThatDestroys(t *testing.T) {
 	}
 	refused(t, f.do(http.MethodDelete, "/api/v1/playlists/lph", ""), http.StatusNotFound, wire.CodeNotFound)
 	refused(t, f.do(http.MethodPatch, "/api/v1/playlists/lph", `{"title": "Renamed"}`), http.StatusNotFound, wire.CodeNotFound)
-	refused(t, f.do(http.MethodPut, "/api/v1/playlists/lph/items", `{"video_ids": []}`), http.StatusPreconditionRequired, wire.CodePreconditionRequired)
+	// With a revision the order really is at, so the refusal is the reference
+	// being refused rather than the precondition being left out.
+	refused(t, f.editItems("lph", []string{}, f.etag(t, "PLA")), http.StatusNotFound, wire.CodeNotFound)
 
 	if got := decode[wirePlaylist](t, f.get("/api/v1/playlists/PLA"), http.StatusOK); got.Title != "Alpha" {
 		t.Fatalf("Alpha is %+v after three refused writes", got)
@@ -272,9 +275,42 @@ func TestAFragmentOfATitleReachesNoVerbThatDestroys(t *testing.T) {
 	}
 }
 
-// Retrying a delete whose answer was lost is ordinary, and the second one used
-// to be a clean 404. A dead id that happens to sit inside another title would
-// make it delete that one instead.
+// Somebody who shortened a title is otherwise sent looking for a playlist they
+// are already looking at, so the refusal names the title holding what they
+// sent and the id that reaches it. It says nothing about which verb refused:
+// the same sentence answers a read of an order, and nothing is being changed
+// there.
+func TestTheRefusalOfAFragmentNamesTheTitleItIsInside(t *testing.T) {
+	f := newFixture(t)
+	f.withLibrary(t)
+
+	for _, rec := range []*httptest.ResponseRecorder{
+		f.do(http.MethodDelete, "/api/v1/playlists/lph", ""),
+		f.do(http.MethodPatch, "/api/v1/playlists/lph", `{"title": "Renamed"}`),
+		f.get("/api/v1/playlists/lph/items"),
+	} {
+		body := decode[wireRefusal](t, rec, http.StatusNotFound)
+		if !strings.Contains(body.Error, "Alpha") || !strings.Contains(body.Error, "PLA") {
+			t.Errorf("refused with %q, want the title holding the fragment and its id", body.Error)
+		}
+		if strings.Contains(body.Error, "changed") {
+			t.Errorf("refused with %q, and a read of an order gets this sentence too", body.Error)
+		}
+	}
+
+	// A reference that really does name nothing keeps the sentence that says so.
+	body := decode[wireRefusal](t, f.do(http.MethodDelete, "/api/v1/playlists/nothing-like-this", ""), http.StatusNotFound)
+	if !strings.Contains(body.Error, "not found") {
+		t.Errorf("refused with %q, want it to say the playlist is not there", body.Error)
+	}
+}
+
+// Retrying a delete whose answer was lost is ordinary. A dead id that happens
+// to sit inside another title would make it delete that one instead, and the
+// refusal it gets is indistinguishable from a shortened title — three letters
+// either way. So the answer a retry branches on stays 404 not_found, and the
+// sentence leads with nothing answering to what was sent rather than with the
+// playlist the substring reached.
 func TestARetriedDeleteOfAGonePlaylistTakesNothingElse(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
@@ -283,7 +319,11 @@ func TestARetriedDeleteOfAGonePlaylistTakesNothingElse(t *testing.T) {
 	if rec := f.do(http.MethodDelete, "/api/v1/playlists/PLA", ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("the first delete answered %d, want 204", rec.Code)
 	}
-	refused(t, f.do(http.MethodDelete, "/api/v1/playlists/PLA", ""), http.StatusNotFound, wire.CodeNotFound)
+	retried := f.do(http.MethodDelete, "/api/v1/playlists/PLA", "")
+	refused(t, retried, http.StatusNotFound, wire.CodeNotFound)
+	if body := decode[wireRefusal](t, retried, http.StatusNotFound); !strings.HasPrefix(body.Error, `playlist "PLA" names none`) {
+		t.Errorf("the retry was refused with %q, want it to open on nothing answering to PLA", body.Error)
+	}
 	if got := decode[wirePlaylist](t, f.get("/api/v1/playlists/PLX"), http.StatusOK); got.Title != "My PLA Favorites" {
 		t.Fatalf("the retry took %+v as well", got)
 	}
