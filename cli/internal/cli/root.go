@@ -19,13 +19,16 @@ import (
 // version is set at build time with -ldflags.
 var version = "dev"
 
-// The help sections, named for what someone is trying to do rather than for
-// what the commands are.
+// The root's help sections. Playing comes first because it is what the tool
+// is for, and each library namespace has a section of its own, so its
+// commands are not interleaved with another's.
 const (
-	groupLibrary = "library"
-	groupPlaying = "playing"
-	groupServer  = "server"
-	groupSetup   = "setup"
+	groupPlaying   = "playing"
+	groupPlaylists = "playlists"
+	groupVideos    = "videos"
+	groupPlays     = "plays"
+	groupServer    = "server"
+	groupSetup     = "setup"
 )
 
 // Within a namespace whose verbs both read and change something, the verbs
@@ -39,8 +42,8 @@ const (
 // splitReadingFromChanging gives cmd the two sections its verbs go under.
 func splitReadingFromChanging(cmd *cobra.Command) {
 	cmd.AddGroup(
-		&cobra.Group{ID: groupReading, Title: "Reading:"},
-		&cobra.Group{ID: groupChanging, Title: "Changing:"},
+		&cobra.Group{ID: groupReading, Title: "Reading commands:"},
+		&cobra.Group{ID: groupChanging, Title: "Changing commands:"},
 	)
 }
 
@@ -92,7 +95,7 @@ func newRootCommand(a *app) *cobra.Command {
 		},
 	}
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return goclikit.UsageError(err) })
-	useUsageTemplate(root)
+	useHelp(root)
 
 	// Cobra's automatic version flag claims -v, which is the counted verbosity
 	// flag everywhere else. Leave --version long-only rather than teach one
@@ -103,11 +106,16 @@ func newRootCommand(a *app) *cobra.Command {
 	}
 
 	root.AddGroup(
-		&cobra.Group{ID: groupPlaying, Title: "Playing:"},
-		&cobra.Group{ID: groupLibrary, Title: "The library:"},
-		&cobra.Group{ID: groupServer, Title: "The server:"},
-		&cobra.Group{ID: groupSetup, Title: "Setting up:"},
+		&cobra.Group{ID: groupPlaying, Title: "Playing commands:"},
+		&cobra.Group{ID: groupPlaylists, Title: "Playlist commands:"},
+		&cobra.Group{ID: groupVideos, Title: "Video commands:"},
+		&cobra.Group{ID: groupPlays, Title: "Listening history commands:"},
+		&cobra.Group{ID: groupServer, Title: "Server commands:"},
+		&cobra.Group{ID: groupSetup, Title: "Setup commands:"},
 	)
+	// Tab is how a playlist is named without quoting it, so the command that
+	// sets Tab up is listed with the rest of the setup.
+	root.SetCompletionCommandGroupID(groupSetup)
 	root.AddCommand(
 		a.playCommand(),
 		a.nowCommand(),

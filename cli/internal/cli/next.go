@@ -16,7 +16,7 @@ func (a *app) nextCommand() *cobra.Command {
 		asJSON   bool
 	)
 	cmd := &cobra.Command{
-		Use:     "next [flags]",
+		Use:     "next",
 		Short:   "What to put on next",
 		GroupID: groupPlaying,
 		Long: "The mixes least recently listened to, never-played ones first. Videos last\n" +

@@ -14,7 +14,7 @@ func (a *app) playlistsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "playlists",
 		Short:   "The playlists the server mirrors",
-		GroupID: groupLibrary,
+		GroupID: groupPlaylists,
 		Long: "Every playlist on the channel, as the server last read it. A playlist is\n" +
 			"named by its title or by its YouTube id wherever one is named, and Tab\n" +
 			"completes it.\n" +

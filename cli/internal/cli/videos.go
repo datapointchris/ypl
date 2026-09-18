@@ -17,7 +17,7 @@ func (a *app) videosCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "videos",
 		Short:   "The mixes across every playlist",
-		GroupID: groupLibrary,
+		GroupID: groupVideos,
 		Long: "Every available video some playlist holds, with the artists its tracklist\n" +
 			"names and the playlists it is in. This is the library as one set, rather\n" +
 			"than a playlist at a time.",
@@ -35,7 +35,7 @@ func (a *app) videosListCommand() *cobra.Command {
 		asJSON     bool
 	)
 	cmd := &cobra.Command{
-		Use:   "list [flags]",
+		Use:   "list",
 		Short: "List the library, narrowed and ordered",
 		Example: "  ypl videos list --artist bjork                               every mix whose tracklist names them\n" +
 			"  ypl videos list --playlist 'sunday morning' --sort longest  the longest in one playlist\n" +

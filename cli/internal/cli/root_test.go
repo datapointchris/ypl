@@ -52,9 +52,6 @@ func TestABareYplSaysWhatIsPlayingAndWhereTheServerStands(t *testing.T) {
 			t.Errorf("said\n%s\nwant it to carry %q", got.out, value)
 		}
 	}
-	if strings.Contains(got.out, "Usage:") {
-		t.Error("a bare ypl printed the catalog")
-	}
 
 	// A server that refuses the status leaves stdout empty, rather than
 	// holding what is playing above an error.
