@@ -239,7 +239,7 @@ jobs:
           tar -czf "../dist/ypl_${version_num}_${GOOS}_${GOARCH}.tar.gz" -C ../dist ypl
           rm ../dist/ypl
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ypl-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*.tar.gz
@@ -257,7 +257,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: ypl-*
           path: dist
