@@ -392,6 +392,15 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 		t.Error("--limit 0 started a player, and it asked for no videos")
 	}
 
+	// A machine without mpv is told so before anything reaches the server, so
+	// one with neither mpv nor a reachable server is told the right one.
+	f = newFixture(t, serve)
+	t.Setenv("PATH", t.TempDir())
+	missing := f.run("playlists", "play", "Sunday Morning")
+	if len(f.sent) != 0 || !strings.Contains(missing.err, "install") {
+		t.Errorf("without mpv asked the server %d times and said %q, want none and what to install", len(f.sent), missing.err)
+	}
+
 	// mpv spends 2 on a file it cannot open and this binary spends 2 on an
 	// invocation it would not accept, so mpv's status is said rather than
 	// returned.
