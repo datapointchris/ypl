@@ -28,8 +28,8 @@ import (
 var migrations embed.FS
 
 // trackSources is the vocabulary tracks.source draws from, upserted on every
-// open. It holds the Python tool's seed, so every track a Python mirror can hold
-// has its source here, and comment, which only the server reads.
+// open. A read produces chapter, description and comment. llm and manual name
+// tracks written by other means, which nothing in the server writes yet.
 var trackSources = []generated.UpsertTrackSourceParams{
 	{Source: "chapter", Label: "Chapter", Description: "A chapter of the video, whose start and end are numbers rather than text anything parsed. yt-dlp reports a chapter YouTube marked and one it derived from the description alike"},
 	{Source: "description", Label: "Description", Description: "Parsed from the video description"},

@@ -193,9 +193,8 @@ func TestAReadStoresWhatItReportsAndItsTracklist(t *testing.T) {
 	}
 }
 
-// A read that makes no tracklist leaves the tracks a video already holds, which
-// an import of a Python mirror is where most of them come from, and the queue
-// passes over a video holding any.
+// A read that makes no tracklist leaves the tracks a video already holds, and
+// the queue passes over a video holding any.
 func TestAReadThatFindsNoTracklistKeepsTheTracksAVideoHolds(t *testing.T) {
 	f := newFixture(t, "vheld")
 	ctx := context.Background()
