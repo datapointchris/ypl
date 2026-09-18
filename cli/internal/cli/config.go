@@ -12,11 +12,10 @@ import (
 func newConfigCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "config",
-		Short:   "What this machine has been told about the server",
+		Short:   "Where this machine finds the server",
 		GroupID: groupSetup,
-		Long: "ypl needs the server's address and the identity provider that signs its\n" +
-			"tokens. Neither is built into the binary, since each names one\n" +
-			"installation.",
+		Long: "The server's address and its identity provider, from the config file or\n" +
+			"YPL_API_BASE and YPL_OIDC_ISSUER.",
 		RunE: requireSubcommand,
 	}
 	cmd.AddCommand(newConfigShowCommand(), newConfigPathCommand(), newConfigExampleCommand())
@@ -25,14 +24,10 @@ func newConfigCommand() *cobra.Command {
 
 func newConfigExampleCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "example",
-		Short: "Print a config file to fill in",
-		Long: "Print the annotated config file, so a fresh machine has something to copy\n" +
-			"rather than a format to reconstruct. It writes nothing; `ypl config path`\n" +
-			"says where to put it.",
-		Example: "  ypl config example                        see what the file holds\n" +
-			"  ypl config example > \"$(ypl config path)\"  write it, on a machine with none",
-		Args: usageArgs(cobra.NoArgs),
+		Use:     "example",
+		Short:   "Print a config file to fill in",
+		Example: "  ypl config example > \"$(ypl config path)\"  write it, then fill it in",
+		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, _ = fmt.Fprint(cmd.OutOrStdout(), config.Example())
 			return nil
@@ -60,8 +55,8 @@ func newConfigShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "show",
-		Short: "Show every resolved setting and where it came from",
-		Example: "  ypl config show         what this machine resolved, and from which layer\n" +
+		Short: "Show each setting and where it came from",
+		Example: "  ypl config show         each setting, and whether a file or a variable set it\n" +
 			"  ypl config show --json  the same, for a script",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -96,8 +91,8 @@ func newConfigShowCommand() *cobra.Command {
 func newConfigPathCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "path",
-		Short:   "Print the config file's path, whether or not it is there",
-		Example: "  ypl config path  where to put the file, on a machine with none",
+		Short:   "Print the config file's path",
+		Example: "  ypl config path  where the file goes, whether or not it exists",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := config.Path()

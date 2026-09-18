@@ -23,12 +23,10 @@ const loginTimeout = 15 * time.Minute
 func (a *app) authCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "auth",
-		Short:   "Log this machine in and out of the server",
+		Short:   "Log this machine in to the server",
 		GroupID: groupSetup,
-		Long: "Authenticate with the identity provider using the OAuth 2.0 device\n" +
-			"authorization grant. The CLI prints a code and a URL; approving it in a\n" +
-			"browser on any device logs this machine in, which is what makes this work\n" +
-			"over SSH on a machine with no browser of its own.",
+		Long: "Logging in prints a code and a link. Approve it in a browser on any device,\n" +
+			"so it works over SSH too.",
 		RunE: requireSubcommand,
 	}
 	splitReadingFromChanging(cmd)
@@ -115,7 +113,7 @@ func (a *app) authLogoutCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "logout",
 		GroupID: groupChanging,
-		Short:   "Remove this machine's stored token",
+		Short:   "Log out, forgetting this machine's token",
 		Example: "  ypl auth logout  forget the token, before handing the machine on",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -141,13 +139,13 @@ func (a *app) authTokenCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "token",
 		GroupID: groupReading,
-		Short:   "Print a valid access token to stdout",
-		Long: "Print an access token, refreshing it first if it has expired. This is for\n" +
-			"driving the API with something else: curl -H \"Authorization: Bearer $(ypl\n" +
-			"auth token)\". It exits non-zero rather than printing nothing when this\n" +
-			"machine is not logged in.",
-		Example: "  ypl auth token  drive the API with something else: curl -H \"Authorization: Bearer $(ypl auth token)\"",
-		Args:    usageArgs(cobra.NoArgs),
+		Short:   "Print an access token for calling the API directly",
+		Long:    "Exits 1 when this machine is not logged in.",
+		Example: "  # the server's status, read with curl rather than ypl\n" +
+			"  base=$(ypl config show --json |\n" +
+			"    jq -r '.settings[] | select(.key == \"api_base\").value')\n" +
+			"  curl -s -H \"Authorization: Bearer $(ypl auth token)\" \"$base/api/v1/status\"",
+		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loginConfig()
 			if err != nil {
@@ -189,7 +187,7 @@ func (a *app) authStatusCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "status",
 		GroupID: groupReading,
-		Short:   "Say whether this machine is logged in",
+		Short:   "Show whether this machine is logged in",
 		Example: "  ypl auth status         is this machine logged in, and for how much longer\n" +
 			"  ypl auth status --json  the same, for a prompt or a status bar",
 		Args: usageArgs(cobra.NoArgs),

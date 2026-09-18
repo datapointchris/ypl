@@ -55,28 +55,19 @@ func NewRootCommand() *cobra.Command {
 func newRootCommand(a *app) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "ypl",
-		Short: "The ypl command-line client",
-		Long: "ypl plays YouTube playlists of long DJ mixes, over a server that keeps the\n" +
-			"playlists mirrored and reads a tracklist for each mix.\n" +
-			"\n" +
-			"What you do while listening sits at the top: play, now, next. The library is\n" +
-			"noun then verb, so moving from reading a playlist to acting on it changes\n" +
-			"only the final word. Every read takes --json.\n" +
-			"\n" +
-			"Tab completes a playlist wherever one is named, as its title slugged — `ypl\n" +
-			"play sunday-morning` plays Sunday Morning. The title works as well, and its\n" +
-			"case, spacing and punctuation do not have to be reproduced. A read takes part\n" +
-			"of a title too; a verb that changes something does not, because a fragment\n" +
-			"matching one playlist matches it unambiguously.\n" +
-			"\n" +
-			"A bare `ypl` says what is playing and where the server stands. Run any other\n" +
-			"partial command with no arguments or --help to see what comes next.",
-		Example: "  ypl play <Tab>                             pick a playlist and play it\n" +
-			"  ypl play                                   play a draw, least recently heard first\n" +
-			"  ypl now                                    which track of the mix is on\n" +
-			"  ypl playlists list                         every playlist, and how much of it is read\n" +
-			"  ypl config example > \"$(ypl config path)\"  first run: write the file, then fill it in\n" +
-			"  ypl auth login                             log this machine in, once",
+		Short: "Play and organize YouTube playlists of long DJ mixes",
+		Long: "`ypl` on its own shows what is playing and how the server's last sync went.\n" +
+			"A command is a noun, then a verb, so reading a playlist and changing one differ\n" +
+			"only in the last word. A namespace on its own, like `ypl playlists`, lists the\n" +
+			"commands under it. Name a playlist by its title, its slug from Tab, or its id.\n" +
+			"A read also takes part of a title, and a change does not. Every list and show\n" +
+			"takes --json.",
+		Example: "  ypl play <Tab>                     play a playlist\n" +
+			"  ypl play                           play what you have heard least lately\n" +
+			"  ypl now                            which track is playing\n" +
+			"  ypl videos list --min-minutes 180  videos three hours long or more\n" +
+			"  ypl plays list                     what you have listened to\n" +
+			"  ypl server status                  what the server holds, and its last sync",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -103,6 +94,7 @@ func newRootCommand(a *app) *cobra.Command {
 	root.InitDefaultVersionFlag()
 	if flag := root.Flags().Lookup("version"); flag != nil {
 		flag.Shorthand = ""
+		flag.Usage = "Print which release of ypl this is"
 	}
 
 	root.AddGroup(

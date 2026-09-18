@@ -25,24 +25,14 @@ func (a *app) playCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:     "play [playlist]",
-		Short:   "Play a playlist, or a draw of the mixes heard least recently",
+		Short:   "Play a playlist in mpv, or what you have heard least lately",
 		GroupID: groupPlaying,
-		Long: "Runs in the foreground and exits when mpv does. Tab completes the playlist.\n" +
-			"\n" +
-			"Named, a playlist plays in its own order. With no playlist, it plays a draw of\n" +
-			"up to 100 mixes, made the way `ypl next` makes one: never-played mixes first,\n" +
-			"in a new order each time, then the ones heard least recently.\n" +
-			"\n" +
-			"A video YouTube will not serve is left out. mpv would stop on it, and the\n" +
-			"server already knows which ones those are.\n" +
-			"\n" +
-			"Playback opens mpv's IPC socket, which is what lets `ypl now` say which track\n" +
-			"of a two-hour mix is on. It is also how a play is recorded: once a mix has\n" +
-			"played for 20 minutes, or half its length when that is shorter, the server is\n" +
-			"told, and `ypl next` stops offering it first. A seek forward is not listening,\n" +
-			"so it does not count toward that.",
+		Long: "A playlist plays in its order, skipping videos YouTube will not serve. With no\n" +
+			fmt.Sprintf("playlist, up to %d videos play: never-played first, then the least recently\n", api.MaxSuggestions) +
+			fmt.Sprintf("heard. A video counts as played after %d minutes, or half its length if that\n", int(heardAfter.Minutes())) +
+			"is shorter.",
 		Example: "  ypl play sunday-morning             the whole playlist, in its order\n" +
-			"  ypl play                            a draw, least recently heard first\n" +
+			"  ypl play                            what you have heard least lately\n" +
 			"  ypl play sunday-morning --audio     no video window\n" +
 			"  ypl play sunday-morning --limit 3   the first three of it",
 		Args:              usageArgs(cobra.MaximumNArgs(1)),
@@ -62,7 +52,7 @@ func (a *app) playCommand() *cobra.Command {
 			// reachable server would report the wrong one of the two.
 			switch {
 			case len(args) == 0 && ceiling != nil && *ceiling > api.MaxSuggestions:
-				return goclikit.UsageError(fmt.Errorf("at most %d can be drawn at once, and this asks for %d", api.MaxSuggestions, *ceiling))
+				return goclikit.UsageError(fmt.Errorf("with no playlist, at most %d videos play at once, and this asks for %d", api.MaxSuggestions, *ceiling))
 			case ceiling != nil && *ceiling == 0:
 				// Asking for no videos is answered by playing none. It is what
 				// the caller asked for, so it is not a failure.
@@ -149,7 +139,7 @@ func (a *app) playCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVarP(&audio, "audio", "a", false, "Play the sound alone, with no video window")
 	cmd.Flags().StringArrayVar(&extra, "mpv", nil, "Pass this argument straight to mpv; repeat it for more than one")
-	addLimit(cmd, &limit, 0, "Play at most this many videos, from the start of the playlist or the draw")
+	addLimit(cmd, &limit, 0, "Play at most this many videos")
 	// No --json. This one takes the terminal and hands it to mpv, and the flag
 	// would then have to decide whether it plays at all, which is a verb's job
 	// and never a rendering flag's. `ypl playlists show --json` and
@@ -193,11 +183,11 @@ func drawn(cmd *cobra.Command, client *api.Client, ceiling *int) (mpv.WatchURLs,
 	for i, suggestion := range suggestions {
 		urls[i] = youtube.WatchURL(suggestion.ID)
 	}
-	nothing(cmd, fmt.Sprintf("Playing %s drawn from the library, least recently heard first.", count(int64(len(urls)), "video")))
+	nothing(cmd, fmt.Sprintf("Playing %s from the library, least recently heard first.", count(int64(len(urls)), "video")))
 	// A draw that came back as large as a draw can be may have left mixes out,
 	// and nothing else on the screen would say so.
 	if len(urls) == api.MaxSuggestions {
-		nothing(cmd, fmt.Sprintf("A draw holds at most %d, so the library may hold more than this.", api.MaxSuggestions))
+		nothing(cmd, fmt.Sprintf("At most %d play at once, so the library may hold more than this.", api.MaxSuggestions))
 	}
 	return urls, nil
 }

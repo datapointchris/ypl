@@ -31,14 +31,9 @@ func (a *app) nowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "now",
-		Short:   "What is playing right now, down to the track",
+		Short:   "Show the video and the track playing now",
 		GroupID: groupPlaying,
-		Long: "Reads the socket `ypl play` opened. Because the server holds a tracklist with\n" +
-			"real timestamps, this reports the track inside a two-hour mix rather than the\n" +
-			"name of the mix.\n" +
-			"\n" +
-			"Exits 1 with nothing playing, after writing an empty answer, so a status bar\n" +
-			"can run it unguarded in either mode.",
+		Long:    "Exits 1 when nothing is playing.",
 		Example: "  ypl now         what is on, and how far in\n" +
 			"  ypl now --json  the same, for a status bar",
 		Args: usageArgs(cobra.NoArgs),
@@ -72,8 +67,8 @@ func (a *app) nowCommand() *cobra.Command {
 }
 
 // nothingPlaying is what `ypl now` and a bare `ypl` say with nothing on.
-const nothingPlaying = "Nothing is playing. `ypl play` puts on a draw of the mixes heard least\n" +
-	"recently, and `ypl play <playlist>` one playlist, which Tab completes."
+const nothingPlaying = "Nothing is playing. `ypl play` plays what you have heard least lately,\n" +
+	"and `ypl play <playlist>` one playlist, which Tab completes."
 
 // readNow is what mpv is playing, with the server's title and the track at
 // mpv's position where the server knows the video. It is mpv.ErrNotPlaying

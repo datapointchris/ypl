@@ -13,16 +13,11 @@ import (
 func (a *app) playlistsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "playlists",
-		Short:   "The playlists the server mirrors",
+		Short:   "The playlists on the channel",
 		GroupID: groupPlaylists,
-		Long: "Every playlist on the channel, as the server last read it. A playlist is\n" +
-			"named by its title or by its YouTube id wherever one is named, and Tab\n" +
-			"completes it.\n" +
-			"\n" +
-			"The verbs below that change something change it on YouTube. A new playlist\n" +
-			"is made there private, and a rename and a delete happen there in the request\n" +
-			"that asks for them. An edit is the exception: it changes the order the server\n" +
-			"holds, and the next sync run pushes that order to YouTube.",
+		Long: "Name a playlist by its title, its slug from Tab, or its id.\n" +
+			"`show` also takes part of a title; a change takes the whole of it.\n" +
+			"A change happens on YouTube at once, except an edit, which the next sync pushes.",
 		RunE: requireSubcommand,
 	}
 	splitReadingFromChanging(cmd)
@@ -42,8 +37,10 @@ func (a *app) playlistsListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list",
 		GroupID: groupReading,
-		Short:   "List every playlist with what it holds",
-		Example: "  ypl playlists list         what is on the channel, and how much of it is read\n" +
+		Short:   "List every playlist and its video count",
+		Long: "READ counts the videos the server has read for a tracklist.\n" +
+			"UNAVAILABLE counts the videos YouTube will not serve, deleted or made private.",
+		Example: "  ypl playlists list         every playlist\n" +
 			"  ypl playlists list --json  the same, for a script",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -75,9 +72,9 @@ func (a *app) playlistsShowCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "show <playlist>",
 		GroupID: groupReading,
-		Short:   "Show one playlist and the videos in it, in order",
-		Example: "  ypl playlists show 'sunday morning'  what is in it, in the order it plays\n" +
-			"  ypl playlists show morning           part of a title is enough for a read",
+		Short:   "Show a playlist's videos, in order",
+		Example: "  ypl playlists show sunday-morning  its videos, in the order they play\n" +
+			"  ypl playlists show morning         part of a title is enough",
 		Args:              usageArgs(cobra.ExactArgs(1)),
 		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -114,7 +111,7 @@ func printPlaylists(out io.Writer, playlists []api.PlaylistSummary) {
 			playlist.ID,
 		}
 	}
-	table(out, []string{"TITLE", "VIDEOS", "READ", "GONE", "PRIVACY", "ID"}, rows)
+	table(out, []string{"TITLE", "VIDEOS", "READ", "UNAVAILABLE", "PRIVACY", "ID"}, rows)
 }
 
 func printPlaylist(out io.Writer, playlist api.Playlist) {
@@ -122,7 +119,7 @@ func printPlaylist(out io.Writer, playlist api.Playlist) {
 	if playlist.Description != "" {
 		_, _ = fmt.Fprintln(out, playlist.Description)
 	}
-	_, _ = fmt.Fprintf(out, "%s, %d with a tracklist, %d unavailable, %s\n\n",
+	_, _ = fmt.Fprintf(out, "%s, %d read for a tracklist, %d unavailable, %s\n\n",
 		count(playlist.ItemCount, "video"), playlist.EnrichedCount, playlist.UnavailableCount, playlist.Privacy)
 
 	rows := make([][]string, len(playlist.Items))
@@ -148,7 +145,7 @@ func state(video api.VideoSummary) string {
 	case video.IsUnavailable:
 		return "unavailable"
 	case video.EnrichedTs == nil:
-		return "unread"
+		return "not read yet"
 	}
 	return ""
 }

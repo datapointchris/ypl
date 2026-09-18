@@ -47,15 +47,15 @@ func (a *app) glance(cmd *cobra.Command) error {
 		_, _ = fmt.Fprintln(out, nothingPlaying)
 	}
 	library := status.Library
-	_, _ = fmt.Fprintf(out, "\n%s, %s, %d with a tracklist.\n",
+	_, _ = fmt.Fprintf(out, "\n%s, %s, %d read for a tracklist.\n",
 		count(library.Playlists, "playlist"), count(library.Videos, "video"), library.EnrichedVideos)
 	switch run := status.LastRun; {
 	case run == nil:
 		_, _ = fmt.Fprintln(out, "The server has not synced yet.")
 	case run.Outcome == "ok":
-		_, _ = fmt.Fprintf(out, "Last synced %s.\n", run.FinishedTs)
+		_, _ = fmt.Fprintf(out, "Last sync %s, ok.\n", run.FinishedTs)
 	default:
-		_, _ = fmt.Fprintf(out, "The last sync, at %s, ended %s. `ypl server status` says what it hit.\n", run.FinishedTs, run.Outcome)
+		_, _ = fmt.Fprintf(out, "Last sync %s, %s. `ypl server status` says what it hit.\n", run.FinishedTs, run.Outcome)
 	}
 	_, _ = fmt.Fprintln(out, "\n`ypl help` lists every command.")
 	return nil

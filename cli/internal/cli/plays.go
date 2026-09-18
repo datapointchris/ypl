@@ -21,10 +21,10 @@ const defaultPlays = 20
 func (a *app) playsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "plays",
-		Short:   "What has been listened to",
+		Short:   "What you have listened to",
 		GroupID: groupPlays,
-		Long: "Every listen the server has been told about, newest first. A play is named\n" +
-			"by its handle, by its id, or by the last eight characters of that id.",
+		Long: "`ypl play` records a video once it has played long enough.\n" +
+			"Name a play by the number in the PLAY column of `ypl plays list`.",
 		RunE: requireSubcommand,
 	}
 	splitReadingFromChanging(cmd)
@@ -37,16 +37,10 @@ func (a *app) playsDeleteCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "delete <play>",
 		GroupID: groupChanging,
-		Short:   "Take back a play, so its mix ranks as if unheard by it",
-		Long: "Deletes a play the server holds, named by its handle, its id or the last\n" +
-			"eight characters of that id. `ypl next` and a bare `ypl play` then rank the\n" +
-			"mix as though that listen had not happened, which is how a play `ypl play`\n" +
-			"recorded wrongly is taken back.\n" +
-			"\n" +
-			"It asks first, and needs --yes where there is nobody to ask. A play already\n" +
-			"deleted is reported as such, and the command succeeds. The handle is never\n" +
-			"given to another play, so a handle from an old listing finds nothing rather\n" +
-			"than a different listen.",
+		Short:   "Delete a play recorded by mistake",
+		Long: "Name the play by the number in the PLAY column of `ypl plays list`.\n" +
+			"It asks first; --yes answers for it. The video then ranks as if that play\n" +
+			"never happened.",
 		Example: "  ypl plays delete 41        ask, then delete it\n" +
 			"  ypl plays delete 41 --yes  delete it without asking",
 		Args: usageArgs(cobra.ExactArgs(1)),
@@ -102,15 +96,11 @@ func (a *app) playsAddCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "add <video>",
 		GroupID: groupChanging,
-		Short:   "Record that a video was listened to",
-		Long: "What `ypl next` reads to stop suggesting the same mix. `ypl play` records\n" +
-			"what it plays on its own; this is for a mix heard where it could not see, in\n" +
-			"a browser or on a phone.\n" +
-			"\n" +
-			"The video is named by its id or by a URL it was copied from. The server takes\n" +
-			"the moment the request arrived as when it was played.",
-		Example: "  ypl plays add dQw4w9WgXcQ                             log one by id\n" +
-			"  ypl plays add 'https://youtu.be/dQw4w9WgXcQ?t=42'     log one from a link",
+		Short:   "Record a video heard somewhere else, by its link or id",
+		Long: "`ypl play` records what it plays. This is for a video heard in a browser or on\n" +
+			"a phone, and records it as heard now.",
+		Example: "  ypl plays add dQw4w9WgXcQ                             record one by id\n" +
+			"  ypl plays add 'https://youtu.be/dQw4w9WgXcQ?t=42'     record one from a link",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			videoID := youtube.VideoID(args[0])
@@ -152,7 +142,7 @@ func (a *app) playsListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list",
 		GroupID: groupReading,
-		Short:   "List the newest plays",
+		Short:   "List recent plays, newest first",
 		Example: "  ypl plays list                     what has been on lately\n" +
 			"  ypl plays list --limit 100 --json  further back, for a script",
 		Args: usageArgs(cobra.NoArgs),

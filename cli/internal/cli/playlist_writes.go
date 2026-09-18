@@ -8,18 +8,20 @@ import (
 	"github.com/datapointchris/ypl/cli/internal/api"
 )
 
+// wholeName is how a verb that changes a playlist is told which one. The server
+// resolves a change exactly, so part of a title that a read would take names
+// nothing here.
+const wholeName = "Name the playlist by its whole title, its slug from Tab, or its id;\n" +
+	"part of a title is not enough."
+
 func (a *app) playlistsCreateCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "create <title>",
 		GroupID: groupChanging,
-		Short:   "Make a new playlist on the channel",
-		Long: "Creates the playlist on YouTube, private, and stores it. It is made in this\n" +
-			"request rather than by the next sync run, so the id it comes back with is\n" +
-			"YouTube's own.\n" +
-			"\n" +
-			"It is empty. `ypl playlists edit` is what puts videos in one.",
-		Example: "  ypl playlists create 'Sunday Morning'         a new empty playlist, private on YouTube\n" +
+		Short:   "Create an empty private playlist",
+		Long:    "`ypl playlists edit` puts videos in it.",
+		Example: "  ypl playlists create 'Sunday Morning'         a new empty playlist\n" +
 			"  ypl playlists create 'Sunday Morning' --json  the same, for a script",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -48,12 +50,10 @@ func (a *app) playlistsRenameCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rename <playlist> <title>",
 		GroupID: groupChanging,
-		Short:   "Retitle a playlist, on YouTube and here",
-		Long: "Renames it on YouTube in this request. The playlist is named by its id, its\n" +
-			"whole title, or that title slugged — part of a title does not reach a rename,\n" +
-			"because a fragment matching one playlist matches it unambiguously.",
+		Short:   "Rename a playlist on YouTube",
+		Long:    wholeName,
 		Example: "  ypl playlists rename 'Sunday Morning' 'Sunday Mornings'  retitle it\n" +
-			"  ypl playlists rename PLabc123 'Sunday Mornings'          name it by its id instead",
+			"  ypl playlists rename PLabc123 'Sunday Mornings'          by its id",
 		Args:              usageArgs(cobra.ExactArgs(2)),
 		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -81,14 +81,8 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "delete <playlist>",
 		GroupID: groupChanging,
-		Short:   "Delete a playlist from the channel",
-		Long: "Deletes it on YouTube in this request, and from the server with everything it\n" +
-			"held. Nothing here can put it back: the videos are still in the library, and\n" +
-			"the playlist that gathered them is gone.\n" +
-			"\n" +
-			"It asks first, and needs --yes where there is nobody to ask. The playlist is\n" +
-			"named by its id, its whole title, or that title slugged — part of a title does\n" +
-			"not reach a delete.",
+		Short:   "Delete a playlist from YouTube",
+		Long:    "It cannot be undone. It asks first; --yes answers for it.\n" + wholeName,
 		Example: "  ypl playlists delete 'Sunday Morning'        ask, then delete it\n" +
 			"  ypl playlists delete 'Sunday Morning' --yes  delete it without asking",
 		Args:              usageArgs(cobra.ExactArgs(1)),
