@@ -64,13 +64,31 @@ jobs:
             echo "server=true" >>"$GITHUB_OUTPUT"
             exit 0
           fi
+          # The image is built from api/ minus what api/.dockerignore leaves out,
+          # so a path it leaves out changes no image, and publishing for one
+          # restarts the server for nothing. Each pattern is excluded as a glob
+          # under api/, and again with /** because a Docker pattern naming a
+          # directory takes its contents with it and a pathspec does not. A
+          # negated pattern takes a file back into the context, which an
+          # exclusion cannot say, so one fails the run rather than skipping a
+          # publish the build needed.
+          excluded=()
+          while IFS= read -r pattern || [ -n "$pattern" ]; do
+            case $pattern in
+            '' | '#'*) continue ;;
+            '!'*)
+              echo "::error file=api/.dockerignore::a negated pattern cannot be read as a path filter: $pattern"
+              exit 1
+              ;;
+            esac
+            pattern=${pattern#/}
+            pattern=${pattern%/}
+            excluded+=(":(exclude,glob)api/$pattern" ":(exclude,glob)api/$pattern/**")
+          done <api/.dockerignore
           # --no-renames because rename detection prints only the destination, so
-          # a file moved out of api/ would read as untouched. Held in a variable
-          # rather than piped: `grep -q` closes the pipe on its first match, and
-          # under `pipefail` the pipeline would take git's SIGPIPE status and
-          # invert the answer.
-          changed=$(git diff --no-renames --name-only "$base" "$AFTER")
-          if grep -qE '^(api/|\.github/workflows/release\.yml$)' <<<"$changed"; then
+          # a file moved out of api/ would read as untouched.
+          changed=$(git diff --no-renames --name-only "$base" "$AFTER" -- api/ .github/workflows/release.yml "${excluded[@]}")
+          if [ -n "$changed" ]; then
             echo "server=true" >>"$GITHUB_OUTPUT"
           else
             echo "server=false" >>"$GITHUB_OUTPUT"
