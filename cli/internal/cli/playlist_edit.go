@@ -50,7 +50,7 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 			"stdin instead when something is piped in.\n" +
 			"\n" +
 			"This changes the order the server holds. The next sync run pushes it to\n" +
-			"YouTube, so `ypl status` is where it shows up as sent.",
+			"YouTube, so `ypl server status` is where it shows up as sent.",
 		Example: "  ypl playlists edit 'Sunday Morning'          rearrange it in your editor\n" +
 			"  ypl playlists edit 'Sunday Morning' < order  apply a buffer written elsewhere",
 		Args:              usageArgs(cobra.ExactArgs(1)),
@@ -294,7 +294,7 @@ func reportEdit(cmd *cobra.Command, result edited) {
 	// happened, one of which did not.
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s — %s. It now holds %s.\n",
 		result.Title, strings.Join(said, ", "), count(int64(result.ItemCount), "video"))
-	nothing(cmd, "The next sync run pushes it to YouTube. `ypl status` says when that was.")
+	nothing(cmd, "The next sync run pushes it to YouTube. `ypl server status` says when that was.")
 }
 
 // keptAt writes the edited buffer somewhere it can be read back from, and is the

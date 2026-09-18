@@ -58,7 +58,7 @@ sha256sum --ignore-missing -c checksums.txt && tar -xzf ypl_*_"${platform}".tar.
 
 ypl config example > "$(ypl config path)"   # fill in api_base and issuer
 ypl auth login                              # approve the code in a browser
-ypl status                                  # what the server holds
+ypl server status                           # what the server holds
 ```
 
 `ypl --help` is the command surface, grouped by what someone is trying to do. It is not repeated

@@ -52,6 +52,20 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		}
 	}
 
+	// A command that moved is answered with the line that replaced it, whether
+	// it is run or its help is asked for.
+	for now, args := range map[string][]string{
+		"ypl server status":     {"status"},
+		"ypl server syncs list": {"sync", "runs", "list", "--limit", "5"},
+	} {
+		if got := f.run(args...); got.code != 2 || !strings.Contains(got.err, now) {
+			t.Errorf("%v exited %d saying %q, want 2 and `%s`", args, got.code, got.err, now)
+		}
+		if got := f.run("help", args[0]); !strings.Contains(got.out, now) {
+			t.Errorf("`ypl help %s` said %q, want `%s`", args[0], got.out, now)
+		}
+	}
+
 	// --no-input sits on the verbs that would take the terminal and on no
 	// other, and each of them refuses under it before asking anything. The
 	// refusal is matched rather than the flag's name, because cobra's own
@@ -240,7 +254,7 @@ func TestNothingReachesStdoutWhenACommandRefuses(t *testing.T) {
 	for _, args := range [][]string{
 		{"playlists", "list", "--json"},
 		{"videos", "list", "--json"},
-		{"status", "--json"},
+		{"server", "status", "--json"},
 	} {
 		got := f.run(args...)
 		if got.out != "" {
@@ -257,7 +271,7 @@ func TestAnAnswerThatIsNotTheServersStillCarriesItsStatus(t *testing.T) {
 		_, _ = w.Write([]byte("<html>502 Bad Gateway</html>"))
 	})
 
-	got := f.run("status")
+	got := f.run("server", "status")
 	if got.code != 1 {
 		t.Fatalf("exited %d, want 1", got.code)
 	}
@@ -319,7 +333,7 @@ func TestAReadWithNothingInItSaysSoAndNamesWhatToRunNext(t *testing.T) {
 		{"playlists", "list"},
 		{"videos", "list", "--artist", "nobody"},
 		{"plays", "list"},
-		{"sync", "runs", "list"},
+		{"server", "syncs", "list"},
 	} {
 		f := newFixture(t, serves(map[string]string{
 			"/api/v1/playlists": `[]`,
@@ -398,7 +412,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		{"playlists", "list"},
 		{"videos", "list", "--artist", "nobody"},
 		{"plays", "list"},
-		{"sync", "runs", "list"},
+		{"server", "syncs", "list"},
 		{"next"},
 		{"now"},
 		{"play", "Empty"},
@@ -479,18 +493,25 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 	// prompts, writes to YouTube, or answers completely and so has nothing to
 	// suggest next.
 	writesNoHintHere := map[string]bool{
-		"ypl auth login": true, "ypl auth logout": true, "ypl auth refresh": true,
-		"ypl config edit": true, "ypl config example": true, "ypl config path": true,
+		"ypl auth login": true, "ypl auth logout": true,
+		"ypl config example": true, "ypl config path": true,
 		"ypl config show": true, "ypl help": true, "ypl update": true,
 		"ypl playlists create": true, "ypl playlists delete": true, "ypl playlists edit": true,
 		"ypl playlists rename": true, "ypl playlists show": true,
-		"ypl plays add": true, "ypl plays delete": true, "ypl plays show": true, "ypl status": true,
-		"ypl sync run": true, "ypl sync runs show": true, "ypl videos show": true,
-		"ypl videos sorts": true,
+		"ypl plays add": true, "ypl plays delete": true, "ypl plays show": true,
+		"ypl server status": true, "ypl videos show": true, "ypl videos sorts": true,
 	}
-	for _, leaf := range leaves(root()) {
+	grown := leaves(root())
+	for _, leaf := range grown {
 		if !exercised[leaf] && !writesNoHintHere[leaf] {
 			t.Errorf("%s is in the tree and no run here reads the hint it writes", leaf)
+		}
+	}
+	// An exemption for a command the tree does not have would exempt it the
+	// day somebody adds it, before anyone has read what it suggests.
+	for leaf := range writesNoHintHere {
+		if !slices.Contains(grown, leaf) {
+			t.Errorf("%s is exempted and the tree has no such command", leaf)
 		}
 	}
 
@@ -500,9 +521,10 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 			t.Errorf("a command told the reader to run `ypl %s`, which names no command at all", hint)
 			continue
 		}
+		// A hidden command is one that moved, and running it only refuses.
 		tree := root()
 		found, rest, err := tree.Find(named)
-		if err != nil || len(rest) > 0 || found == tree {
+		if err != nil || len(rest) > 0 || found == tree || found.Hidden {
 			t.Errorf("a command told the reader to run `ypl %s`, which the tree does not have", hint)
 		}
 	}
@@ -519,14 +541,17 @@ func TestTheRejectedTokenHintIsAmongTheCheckedOnes(t *testing.T) {
 }
 
 // leaves is every command in the tree that runs something, named as cobra spells
-// a command path. A namespace is not one: it only shows help.
+// a command path. A namespace is not one: it only shows help. Neither is a
+// hidden command, which is one that moved and only refuses.
 func leaves(cmd *cobra.Command) []string {
 	if len(cmd.Commands()) == 0 {
 		return []string{cmd.CommandPath()}
 	}
 	found := []string{}
 	for _, child := range cmd.Commands() {
-		found = append(found, leaves(child)...)
+		if !child.Hidden {
+			found = append(found, leaves(child)...)
+		}
 	}
 	return found
 }

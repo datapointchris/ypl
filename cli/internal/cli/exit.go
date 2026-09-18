@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
@@ -25,6 +26,28 @@ func requireSubcommand(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	}
 	return goclikit.UnknownCommand(cmd, args[0])
+}
+
+// moved is a hidden command answering name with the command line to type
+// instead. Whatever it is given, it refuses as a usage mistake, so a habit or
+// a script meets the command's place rather than a bare "unknown command".
+// `ypl help <name>` is answered with the same line, since a usage line for
+// name would describe a command that refuses to run.
+func moved(name, to string) *cobra.Command {
+	says := fmt.Sprintf("`ypl %s` is now `%s`", name, to)
+	cmd := &cobra.Command{
+		Use:                name,
+		Short:              "Now " + to,
+		Hidden:             true,
+		DisableFlagParsing: true,
+		RunE: func(*cobra.Command, []string) error {
+			return goclikit.UsageError(errors.New(says))
+		},
+	}
+	cmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), says+".")
+	})
+	return cmd
 }
 
 // usageArgs is validate, with what it refuses marked as a usage mistake.

@@ -59,7 +59,7 @@ func (a *app) playlistsListCommand() *cobra.Command {
 				return emitJSON(cmd.OutOrStdout(), playlists)
 			}
 			if len(playlists) == 0 {
-				nothing(cmd, "The server holds no playlists. `ypl status` says when it last synced.")
+				nothing(cmd, "The server holds no playlists. `ypl server status` says when it last synced.")
 				return nil
 			}
 			printPlaylists(cmd.OutOrStdout(), playlists)

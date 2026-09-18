@@ -55,7 +55,7 @@ func (a *app) glance(cmd *cobra.Command) error {
 	case run.Outcome == "ok":
 		_, _ = fmt.Fprintf(out, "Last synced %s.\n", run.FinishedTs)
 	default:
-		_, _ = fmt.Fprintf(out, "The last sync, at %s, ended %s. `ypl status` says what it hit.\n", run.FinishedTs, run.Outcome)
+		_, _ = fmt.Fprintf(out, "The last sync, at %s, ended %s. `ypl server status` says what it hit.\n", run.FinishedTs, run.Outcome)
 	}
 	_, _ = fmt.Fprintln(out, "\n`ypl help` lists every command.")
 	return nil

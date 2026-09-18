@@ -526,7 +526,7 @@ func TestStatusReadsTheLibraryAndTheLatestRuns(t *testing.T) {
 		"tracks": 5, "plays": 4}, "last_run": ` + run(2, "partial") + `, "last_ok_run": ` + run(1, "ok") + `}`
 	f := newFixture(t, serves(map[string]string{"/api/v1/status": body}))
 
-	got := asJSON[api.Status](t, f.run("status", "--json"))
+	got := asJSON[api.Status](t, f.run("server", "status", "--json"))
 	switch {
 	case got.Library.Videos != 6 || got.Library.Tracks != 5:
 		t.Fatalf("library = %+v", got.Library)
@@ -546,15 +546,21 @@ func run(id int, outcome string) string {
 }
 
 func TestSyncRunsListReadsTheNewestRuns(t *testing.T) {
-	body := `{"data": [` + run(2, "ok") + `], "has_more": false}`
+	failed := strings.Replace(run(3, "partial"), `"failures": []`,
+		`"failures": [{"stage": "push", "playlist_id": "PLA", "video_id": null, "error": "quota spent"}]`, 1)
+	body := `{"data": [` + failed + `, ` + run(2, "ok") + `], "has_more": false}`
 	f := newFixture(t, serves(map[string]string{"/api/v1/sync/runs": body}))
 
-	got := asJSON[[]api.SyncRun](t, f.run("sync", "runs", "list", "--json"))
-	if len(got) != 1 || got[0].TracksFound != 12 {
+	got := asJSON[[]api.SyncRun](t, f.run("server", "syncs", "list", "--json"))
+	if len(got) != 2 || got[1].TracksFound != 12 {
 		t.Fatalf("runs = %+v", got)
 	}
 	if asked := f.lastAsked().Query().Get("limit"); asked != "20" {
 		t.Errorf("asked for %q rows, want the default of 20", asked)
+	}
+	// The table counts a sync's failures, and what each one was follows it.
+	if plain := f.run("server", "syncs", "list"); !strings.Contains(plain.out, "PLA: quota spent") {
+		t.Errorf("wrote %q, want the failure named under the table", plain.out)
 	}
 }
 
@@ -568,7 +574,7 @@ func TestATruncatedListSaysSoAndNamesTheFlagThatWidensIt(t *testing.T) {
 		body string
 	}{
 		{[]string{"plays", "list", "--limit", "1"}, "/api/v1/plays", `{"data": [` + play(1) + `], "has_more": true}`},
-		{[]string{"sync", "runs", "list", "--limit", "1"}, "/api/v1/sync/runs", `{"data": [` + run(2, "ok") + `], "has_more": true}`},
+		{[]string{"server", "syncs", "list", "--limit", "1"}, "/api/v1/sync/runs", `{"data": [` + run(2, "ok") + `], "has_more": true}`},
 	} {
 		f := newFixture(t, serves(map[string]string{c.path: c.body}))
 		got := f.run(c.args...)
@@ -634,7 +640,7 @@ func TestAnEmptyCollectionIsAnEmptyListAndNeverNull(t *testing.T) {
 		{"videos", "list", "--json"},
 		{"next", "--json"},
 		{"plays", "list", "--json"},
-		{"sync", "runs", "list", "--json"},
+		{"server", "syncs", "list", "--json"},
 	} {
 		got := f.run(args...)
 		if trimmed := strings.TrimSpace(got.out); trimmed != "[]" {

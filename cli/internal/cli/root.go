@@ -115,11 +115,12 @@ func newRootCommand(a *app) *cobra.Command {
 		a.playlistsCommand(),
 		a.videosCommand(),
 		a.playsCommand(),
-		a.statusCommand(),
-		a.syncCommand(),
+		a.serverCommand(),
 		a.authCommand(),
 		newConfigCommand(),
 		newUpdateCommand(),
+		moved("status", "ypl server status"),
+		moved("sync", "ypl server syncs list"),
 	)
 	noFiles(root)
 	return root

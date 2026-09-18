@@ -186,7 +186,7 @@ func drawn(cmd *cobra.Command, client *api.Client, ceiling *int) (mpv.WatchURLs,
 		return nil, reported(err)
 	}
 	if len(suggestions) == 0 {
-		nothing(cmd, "The library has nothing playable in it. `ypl status` says what the server holds.")
+		nothing(cmd, "The library has nothing playable in it. `ypl server status` says what the server holds.")
 		return nil, exitCode(1)
 	}
 	urls := make(mpv.WatchURLs, len(suggestions))

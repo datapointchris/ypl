@@ -49,7 +49,7 @@ func (a *app) nextCommand() *cobra.Command {
 				}
 			}
 			if len(suggestions) == 0 {
-				nothing(cmd, "Nothing to play. Check `ypl status` for what the server holds.")
+				nothing(cmd, "Nothing to play. Check `ypl server status` for what the server holds.")
 				return exitCode(1)
 			}
 			return nil
