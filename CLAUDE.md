@@ -39,9 +39,8 @@ combination, and the tracklist of a mix is in one or the other. So reading track
 yt-dlp. Nothing safer gives the same answer: there is no API to ask, and parsing the watch page
 directly would be the same scraping with none of yt-dlp's maintenance behind it.
 
-It is a third-party binary the server executes, it makes its own network requests, and it is
-installed by the host rather than pinned by this repo. A read is therefore treated as untrusted
-input and given as little of the host as possible:
+It is a third-party binary the server executes, and it makes its own network requests. A read is
+therefore treated as untrusted input and given as little of the host as possible:
 
 - **`--ignore-config` and `--no-plugin-dirs`.** These are separate settings, and either one left
   on would let whatever is installed beside yt-dlp change what a read does. A plugin can replace

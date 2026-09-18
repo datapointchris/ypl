@@ -11,7 +11,7 @@
 //	go run ./cmd/reset-enrichment            # what is held back, and why
 //	go run ./cmd/reset-enrichment -clear     # put all of it back in the queue
 //
-// It reads the same database the server does, at YPL_DB_PATH or the default
+// It reads the same database the server does, at DATABASE_PATH or the default
 // path. Clearing forgets how many reads each video has had, so a video put back
 // is read again from the first retry wait.
 //
