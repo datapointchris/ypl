@@ -263,7 +263,13 @@ func TestAFragmentOfATitleReachesNoVerbThatDestroys(t *testing.T) {
 	}
 	refused(t, f.do(http.MethodDelete, "/api/v1/playlists/lph", ""), http.StatusNotFound, wire.CodeNotFound)
 	refused(t, f.do(http.MethodPatch, "/api/v1/playlists/lph", `{"title": "Renamed"}`), http.StatusNotFound, wire.CodeNotFound)
-	refused(t, f.do(http.MethodPut, "/api/v1/playlists/lph/items", `{"video_ids": []}`), http.StatusPreconditionRequired, wire.CodePreconditionRequired)
+	// With a revision the order really is at, so the refusal is the reference
+	// being refused rather than the precondition being left out.
+	refused(t, f.editItems("lph", []string{}, f.etag(t, "PLA")), http.StatusNotFound, wire.CodeNotFound)
+	// The read that seeds an edit answers the ETag only that edit spends, so a
+	// reference it took and the edit refused would buy an editing session that
+	// is then thrown away.
+	refused(t, f.get("/api/v1/playlists/lph/items"), http.StatusNotFound, wire.CodeNotFound)
 
 	if got := decode[wirePlaylist](t, f.get("/api/v1/playlists/PLA"), http.StatusOK); got.Title != "Alpha" {
 		t.Fatalf("Alpha is %+v after three refused writes", got)

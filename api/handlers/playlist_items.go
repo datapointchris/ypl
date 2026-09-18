@@ -40,13 +40,18 @@ func (videos unavailableVideos) Error() string {
 
 // showPlaylistItems answers the server's order of a stored playlist, with the
 // order's revision as the ETag an edit names in If-Match.
+//
+// It resolves as narrowly as the edit it seeds. The ETag it answers with is
+// only ever spent on the PUT below, so a reference this read takes and that PUT
+// refuses buys the caller an editing session it then throws away. Both methods
+// of one resource answering the same reference is what stops that.
 func (h *Handlers) showPlaylistItems(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	ref := r.PathValue("id")
 	var order playlistOrder
 	var revision int64
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
-		id, err := resolvePlaylist(ctx, q, "playlist", ref, loosely)
+		id, err := resolvePlaylist(ctx, q, "playlist", ref, exactly)
 		if err != nil {
 			return err
 		}
