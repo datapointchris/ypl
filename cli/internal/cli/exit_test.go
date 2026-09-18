@@ -68,8 +68,9 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 
 	// --no-input sits on the verbs that would take the terminal and on no
 	// other, and each of them refuses under it before asking anything. The
-	// refusal is matched rather than the flag's name, because cobra's own
-	// "unknown flag" names it too and also exits 2.
+	// refusal has to name the flag and be a refusal: cobra's own "unknown flag"
+	// names it too and also exits 2, and a refusal blaming the terminal would
+	// send somebody at one looking for the wrong cause.
 	takesTerminal := map[string][]string{
 		"ypl playlists delete": {"playlists", "delete", "sunday-morning"},
 		"ypl playlists edit":   {"playlists", "edit", "sunday-morning"},
@@ -88,8 +89,9 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		terminal := newFixture(t, serves(nil))
 		terminal.atTerminal("y\n")
 		got := terminal.run(append(args, "--no-input")...)
-		if got.code != 2 || !strings.Contains(got.err, "refusing to") || len(terminal.asked) != 0 {
-			t.Errorf("%s --no-input at a terminal exited %d after %d requests saying %q, want 2, none, and a refusal",
+		refused := strings.Contains(got.err, "refusing to") && strings.Contains(got.err, "--no-input")
+		if got.code != 2 || !refused || len(terminal.asked) != 0 {
+			t.Errorf("%s --no-input at a terminal exited %d after %d requests saying %q, want 2, none, and a refusal naming the flag",
 				path, got.code, len(terminal.asked), got.err)
 		}
 	}
