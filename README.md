@@ -4,7 +4,7 @@ Organize and play YouTube playlists of long DJ mixes.
 
 Most of the library this was built for is mixed sets — one video holding twenty to forty tracks by
 different artists. YouTube already carries those tracklists as chapter markers, timestamped
-description lines or a pinned comment, so ypl reads them and keeps them where they can be searched,
+description lines or one of its top comments, so ypl reads them and keeps them where they can be searched,
 compared and rearranged.
 
 ypl is two programs. A server keeps the channel's playlists mirrored and reads a tracklist for each
@@ -22,8 +22,8 @@ beside the code it describes.
 
 `cli/` holds no database and reads nothing from YouTube. Every answer comes from the server.
 
-It installs from this repository's `cli/v*` releases, which carry a binary for Linux and macOS on
-amd64 and arm64 with a checksum file beside them. `ypl update` moves an installed binary to the
+It installs from this repository's `cli/v*` releases, which carry a binary for each platform the
+release builds, with a checksum file beside them. `ypl update` moves an installed binary to the
 newest release, and a daily check says when one is out.
 
 Nothing about a deployment is built into the binary. The server's address and the identity provider
@@ -46,9 +46,16 @@ mode-600 file on a host that has none, and it is refreshed under a lock so two c
 cannot spend the same refresh token twice. The client id is `ypl-cli-<machine>`, one per machine, so
 a token can be revoked for one machine without touching the others.
 
-A first run is three commands:
+A first run installs the newest `cli/v*` release, checks it against its checksums, and then tells it
+where the server is:
 
 ```bash
+tag=$(gh release list --repo datapointchris/ypl --json tagName \
+  --jq '[.[] | select(.tagName | startswith("cli/"))][0].tagName')
+platform="$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
+gh release download "$tag" --repo datapointchris/ypl --pattern "ypl_*_${platform}.tar.gz" --pattern checksums.txt
+sha256sum --ignore-missing -c checksums.txt && tar -xzf ypl_*_"${platform}".tar.gz ypl && install ypl ~/.local/bin/
+
 ypl config example > "$(ypl config path)"   # fill in api_base and issuer
 ypl auth login                              # approve the code in a browser
 ypl status                                  # what the server holds
