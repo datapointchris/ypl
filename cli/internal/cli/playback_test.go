@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net"
@@ -10,10 +11,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
 	"github.com/datapointchris/ypl/cli/internal/mpv"
@@ -150,7 +154,16 @@ func TestNowReportsTheTrackAtThePositionMpvIsAt(t *testing.T) {
 		"time-pos":    1830.4,
 		"duration":    21600.0,
 		"media-title": "whatever mpv called it",
+		"speed":       1.5,
+		"pid":         4242.0,
 	})
+
+	// The recorder tells its own player from another by the pid and bounds a
+	// move by the speed, so both have to arrive decoded, or nothing is counted.
+	if state, err := mpv.Read(mpv.SocketPath()); err != nil || state.PID == nil || *state.PID != 4242 ||
+		state.Speed == nil || *state.Speed != 1.5 {
+		t.Errorf("read the player as %+v (%v), want its pid and its speed", state, err)
+	}
 
 	got := asJSON[nowPlaying](t, f.run("now", "--json"))
 	switch {
@@ -330,56 +343,103 @@ func TestAListenIsRecordedOnceUnderAnIdTheClientMade(t *testing.T) {
 		t.Errorf("exited %d after %d requests, want 2 and none", refused.code, len(f.sent))
 	}
 
-	// Playback counts a mix as heard once it has played long enough, and only
-	// ground covered at the speed of playing counts toward that. The server
-	// refuses the first play it is sent, so the retry is under the same id.
-	calls := 0
+	// Playback counts a mix as heard once it has played long enough, counting
+	// only ground covered at the speed of playing, and only on the player this
+	// playback started. The server refuses some plays: one once, one until
+	// playback ends, and one always.
+	var ending atomic.Bool
+	refusedOnce := false
 	f = newFixture(t, func(w http.ResponseWriter, _ *http.Request) {
-		calls++
+		var asked struct {
+			VideoID string `json:"video_id"`
+		}
+		_ = json.Unmarshal([]byte(f.sent[len(f.sent)-1].Body), &asked)
+		refuse := false
+		switch asked.VideoID {
+		case "aaaaaaaaaaa":
+			refuse, refusedOnce = !refusedOnce, true
+		case "xxxxxxxxxxx":
+			refuse = !ending.Load()
+		case "yyyyyyyyyyy":
+			refuse = true
+		}
 		w.Header().Set("Content-Type", "application/json")
-		if calls == 1 {
+		if refuse {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error": "down", "code": "unavailable"}`))
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"id": "x", "handle": 1, "played_ts": "2026-09-18T00:00:00Z",
-			"video": {"id": "v", "title": "Heard", "channel_title": "One"}}`))
+			"video": {"id": "` + asked.VideoID + `", "title": "` + asked.VideoID + `", "channel_title": "One"}}`))
 	})
 	client, err := f.app.client(context.Background())
 	if err != nil {
 		t.Fatalf("the fixture's client: %v", err)
 	}
+
+	mine, theirs := int64(7), int64(99)
+	clock := time.Unix(0, 0)
 	var script []mpv.State
-	played := func(videoID string, from, to, length int64) {
-		for at := from; at <= to; at += int64(listenEvery / time.Second) {
-			position, duration := at, length
-			script = append(script, mpv.State{Path: youtube.WatchURL(videoID), Position: &position, Duration: &duration})
+	var answeredAt []time.Time
+	read := func(videoID string, pid int64, speed float64, length, position int64, after time.Duration) {
+		clock = clock.Add(after)
+		state := mpv.State{Path: youtube.WatchURL(videoID), Position: &position, Duration: &length, Speed: &speed, PID: &pid}
+		script, answeredAt = append(script, state), append(answeredAt, clock)
+	}
+	played := func(videoID string, pid int64, speed float64, length, from, to int64) {
+		for position := from; position <= to; position += int64(float64(readEvery/time.Second) * speed) {
+			read(videoID, pid, speed, length, position, readEvery)
 		}
 	}
-	played("aaaaaaaaaaa", 0, 1300, 7200) // a two-hour mix, played past twenty minutes
-	played("bbbbbbbbbbb", 0, 20, 7200)   // one skimmed: a moment, a seek, a moment
-	played("bbbbbbbbbbb", 6000, 6020, 7200)
-	played("ccccccccccc", 0, 310, 600) // a ten-minute one, played past half
+	played("aaaaaaaaaaa", mine, 1, 7200, 0, 600) // a two-hour mix, past twenty minutes,
+	read("aaaaaaaaaaa", mine, 1, 7200, 630, 30*time.Second)
+	played("aaaaaaaaaaa", mine, 1, 7200, 640, 1200)  // reaching the bar only with the late read
+	played("bbbbbbbbbbb", mine, 1, 7200, 0, 20)      // skimmed: a moment, a seek,
+	played("bbbbbbbbbbb", mine, 1, 7200, 6000, 6020) // and a moment
+	played("ccccccccccc", mine, 1, 600, 0, 310)      // ten minutes, played past half
+	played("rrrrrrrrrrr", mine, 1, 7200, 0, 1190)    // rewound just short of the bar,
+	played("rrrrrrrrrrr", mine, 1, 7200, 0, 10)      // then played on past it
+	played("ddddddddddd", mine, 2, 7200, 0, 1240)    // at double speed
+	played("ooooooooooo", theirs, 1, 7200, 0, 1300)  // another player's, on the same socket
+	played("xxxxxxxxxxx", mine, 1, 7200, 0, 1210)    // refused until playback ends
+	played("yyyyyyyyyyy", mine, 1, 7200, 0, 1210)    // refused always
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ticks := make(chan time.Time)
 	next := 0
-	read := func() (mpv.State, error) {
-		state := script[next]
+	answer := func() (mpv.State, error) {
+		if next == len(script) {
+			return mpv.State{}, mpv.ErrNotPlaying
+		}
 		next++
-		return state, nil
+		return script[next-1], nil
 	}
-	recording := make(chan listened, 1)
-	go func() { recording <- recordListens(ctx, client, read, ticks) }()
-	for range script {
+	recording := make(chan delivered, 1)
+	go func() {
+		recording <- recordListens(ctx, client, fromPlayer(answer, func() int64 { return mine }), ticks,
+			func() time.Time { return answeredAt[next-1] })
+	}()
+	// One tick past the script reads nothing playing and sends nothing, and
+	// its arrival means the last scripted read is fully handled. So the play
+	// still refused at that point is the one the last attempt has to send.
+	for range len(script) + 1 {
 		ticks <- time.Now()
 	}
+	ending.Store(true)
 	cancel()
-	heard := <-recording
+	result := <-recording
 
-	if len(heard.recorded) != 2 || len(heard.unsent) != 0 {
-		t.Errorf("recorded %d and could not send %v, want the two played long enough", len(heard.recorded), heard.unsent)
+	storedVideos := make([]string, len(result.stored))
+	for i, play := range result.stored {
+		storedVideos[i] = play.Video.ID
+	}
+	slices.Sort(storedVideos)
+	if want := []string{"aaaaaaaaaaa", "ccccccccccc", "ddddddddddd", "rrrrrrrrrrr", "xxxxxxxxxxx"}; !slices.Equal(storedVideos, want) {
+		t.Errorf("stored plays of %v, want %v", storedVideos, want)
+	}
+	if len(result.unsent) != 1 || result.unsent[0].videoID != "yyyyyyyyyyy" {
+		t.Errorf("left %+v unsent, want the one the server always refused", result.unsent)
 	}
 	sentFor := map[string][]string{}
 	for _, one := range f.writes() {
@@ -388,16 +448,32 @@ func TestAListenIsRecordedOnceUnderAnIdTheClientMade(t *testing.T) {
 			VideoID string `json:"video_id"`
 		}
 		decodeInto(t, one.Body, &body)
+		if id, err := uuid.Parse(body.ID); err != nil || id.Version() != 7 {
+			t.Errorf("sent id %q, which the server refuses unless it is a version 7 UUID", body.ID)
+		}
 		sentFor[body.VideoID] = append(sentFor[body.VideoID], body.ID)
 	}
-	if ids := sentFor["aaaaaaaaaaa"]; len(ids) != 2 || ids[0] != ids[1] {
-		t.Errorf("sent the refused play under %v, want it sent twice under one id", ids)
+	for videoID, ids := range sentFor {
+		if len(slices.Compact(slices.Clone(ids))) != 1 {
+			t.Errorf("sent %s under %v, want every attempt under one id", videoID, ids)
+		}
 	}
-	if len(sentFor["ccccccccccc"]) != 1 {
-		t.Errorf("sent the short mix %d times, want once at half its length", len(sentFor["ccccccccccc"]))
+	for _, never := range []string{"bbbbbbbbbbb", "ooooooooooo"} {
+		if ids, sent := sentFor[never]; sent {
+			t.Errorf("counted %s as heard, under %v", never, ids)
+		}
 	}
-	if ids, sent := sentFor["bbbbbbbbbbb"]; sent {
-		t.Errorf("counted a skimmed mix as heard, under %v", ids)
+	if len(sentFor["aaaaaaaaaaa"]) != 2 || len(sentFor["xxxxxxxxxxx"]) < 2 {
+		t.Errorf("sent the refused plays %d and %d times, want each sent again", len(sentFor["aaaaaaaaaaa"]), len(sentFor["xxxxxxxxxxx"]))
+	}
+
+	// What went unsent is named with the command that records it.
+	var said bytes.Buffer
+	told := &cobra.Command{}
+	told.SetErr(&said)
+	reportPlays(told, result)
+	if !strings.Contains(said.String(), "Recorded 5 plays") || !strings.Contains(said.String(), "`ypl plays add yyyyyyyyyyy`") {
+		t.Errorf("reported %q, want the five stored and the command recording the sixth", said.String())
 	}
 }
 
@@ -486,6 +562,24 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	}
 	if !strings.Contains(failed.err, "2") {
 		t.Errorf("said %q, want it to name what mpv returned", failed.err)
+	}
+
+	// Ctrl-C reaches this process as well as mpv. It is caught for as long as
+	// the player runs, so what comes after the player still happens, and the
+	// command answers with the shell's code for an interrupt. Uncaught, it
+	// ends the test binary here.
+	f = newFixture(t, serve)
+	still := t.TempDir()
+	if err := os.WriteFile(filepath.Join(still, "mpv"), []byte("#!/bin/sh\n/bin/sleep 1\n"), 0o700); err != nil {
+		t.Fatalf("write the stub: %v", err)
+	}
+	t.Setenv("PATH", still+string(os.PathListSeparator)+os.Getenv("PATH"))
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+	}()
+	if stopped := f.run("play", "Sunday Morning"); stopped.code != 130 {
+		t.Errorf("an interrupted playback exited %d, want 130: %s", stopped.code, stopped.err)
 	}
 
 	// With no playlist the library plays in the order the server draws it,

@@ -30,14 +30,11 @@ The CLI, on every workstation:
 mpv makes its own network requests, as yt-dlp does. What crosses to it is the watch URLs, the
 socket path, `--no-video` under `--audio`, and whatever `--mpv` was given — no credential, no token,
 no part of the store. mpv opens the socket itself, from the flag `ypl play` passes it. `ypl play`
-reads it every ten seconds while mpv runs, which is how a listen is recorded, and `ypl now` and a
-bare `ypl` read it when asked. The only thing any of them writes there is `get_property`, which is
-how mpv's IPC is asked anything and changes nothing about what is playing.
-
-A listen is counted from how far mpv's position moved between two reads, so a seek is not
-listening. Once a mix has played for 20 minutes, or half its length when that is shorter,
-`ypl play` posts a play through the server door while mpv is still running, under an id it made at
-that moment, so a retry is stored once.
+reads it while mpv runs, which is how `cli/internal/cli/listen.go` records a play, and `ypl now`
+and a bare `ypl` read it when asked. The only thing any of them writes there is `get_property`,
+which is how mpv's IPC is asked anything and changes nothing about what is playing. A play is
+posted through the server door while mpv is still running, under an id made once, so a retry is
+stored once.
 
 `api/ytdlp.Reader.Video` is the only place in the server that starts a process. In the CLI there
 are three, `ypl auth login`, `ypl playlists edit` and `ypl play`, and the first hands its

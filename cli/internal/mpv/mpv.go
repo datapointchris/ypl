@@ -11,9 +11,9 @@
 // for itself. mpv's exit codes overlap ypl's and mean different things at the
 // values they share, and mpv's property replies are untyped.
 //
-// Every playback opens mpv's JSON IPC socket, which is what makes `ypl now`
-// able to say which track of a two-hour mix is playing. It costs one argument
-// and nothing when unused.
+// Every playback opens mpv's JSON IPC socket. It is how `ypl play` records
+// what it played, and how `ypl now` and a bare `ypl` say which track of a
+// two-hour mix is playing. It costs one argument.
 package mpv
 
 import (
@@ -71,9 +71,10 @@ var ErrUnavailable = errors.New("mpv is not installed")
 // nothing playing makes the command wrong about the one thing it is asked.
 var ErrUnreadable = errors.New("what is playing could not be read")
 
-// SocketPath is where `ypl play` opens mpv's IPC socket and `ypl now` looks for
-// it. It sits with the CLI's other state rather than in the config directory,
-// because it is a socket that exists only while something is playing.
+// SocketPath is where `ypl play` opens mpv's IPC socket, and where its own
+// recorder, `ypl now` and a bare `ypl` look for it. It sits with the CLI's
+// other state rather than in the config directory, because it is a socket that
+// exists only while something is playing.
 func SocketPath() string {
 	return filepath.Join(goclilogin.StateDir("ypl"), "mpv.sock")
 }
@@ -117,6 +118,11 @@ type State struct {
 	Position *int64
 	// Duration is how long mpv believes the video is, in whole seconds.
 	Duration *int64
+	// Speed is how fast mpv is playing, 1 at normal speed.
+	Speed *float64
+	// PID is the process id of the mpv answering, which tells one player on
+	// the socket from another that took the same path.
+	PID *int64
 }
 
 // Play hands urls to mpv and waits for it.
@@ -124,8 +130,12 @@ type State struct {
 // The URLs are arguments rather than a playlist file, so nothing is written to
 // disk to play a playlist the server already holds.
 //
-// A socketPath of "" plays without the IPC socket, which costs only `ypl now`.
-func Play(ctx context.Context, socketPath string, extra Arguments, urls WatchURLs) (Outcome, error) {
+// A socketPath of "" plays without the IPC socket, which costs everything that
+// reads it: no play is recorded, and `ypl now` and a bare `ypl` see nothing.
+//
+// started is handed the player's process id once it is running, so a reader of
+// the socket can tell this player from another that took the same path.
+func Play(ctx context.Context, socketPath string, extra Arguments, urls WatchURLs, started func(pid int)) (Outcome, error) {
 	found, err := exec.LookPath(binary)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("%w — install it to play a playlist: %w", ErrUnavailable, err)
@@ -146,8 +156,11 @@ func Play(ctx context.Context, socketPath string, extra Arguments, urls WatchURL
 	player := exec.CommandContext(ctx, found, arguments...)
 	player.Stdin, player.Stdout, player.Stderr = os.Stdin, os.Stdout, os.Stderr
 	player.WaitDelay = stopDelay
-	err = player.Run()
-	return ended(ctx, err)
+	if err := player.Start(); err != nil {
+		return ended(ctx, err)
+	}
+	started(player.Process.Pid)
+	return ended(ctx, player.Wait())
 }
 
 // ended is how mpv finished, said in this tool's words.
@@ -173,7 +186,7 @@ func ended(ctx context.Context, err error) (Outcome, error) {
 }
 
 // asked is the properties a read wants, and the order they are asked in.
-var asked = []string{"path", "time-pos", "duration", "media-title"}
+var asked = []string{"path", "time-pos", "duration", "media-title", "speed", "pid"}
 
 // Read is what the running mpv is playing.
 //
@@ -237,6 +250,8 @@ func Read(socketPath string) (State, error) {
 		Title:    text(found["media-title"]),
 		Position: seconds(found["time-pos"]),
 		Duration: seconds(found["duration"]),
+		Speed:    rate(found["speed"]),
+		PID:      integer(found["pid"]),
 	}
 	// An mpv running with nothing loaded answers every read and holds no path.
 	// It is reachable without anyone asking for it, because `ypl play` runs mpv
@@ -264,6 +279,27 @@ func seconds(value any) *int64 {
 	}
 	whole := int64(answer)
 	return &whole
+}
+
+// integer is a property mpv answered with as a whole number. JSON carries it
+// as a float.
+func integer(value any) *int64 {
+	answer, ok := value.(float64)
+	if !ok {
+		return nil
+	}
+	whole := int64(answer)
+	return &whole
+}
+
+// rate is a property mpv answered with as a number, kept as one: a speed of
+// 1.5 is a speed of 1.5.
+func rate(value any) *float64 {
+	answer, ok := value.(float64)
+	if !ok {
+		return nil
+	}
+	return &answer
 }
 
 // unreadable is every way a socket that answered the dial fails afterwards.
