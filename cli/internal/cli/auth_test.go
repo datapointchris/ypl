@@ -46,8 +46,8 @@ func TestAuthStatusReportsAStoredTokenAndWhetherItHasExpired(t *testing.T) {
 	f.logIn(time.Now().Add(time.Hour))
 
 	status := asJSON[authStatus](t, f.run("auth", "status", "--json"))
-	if !status.LoggedIn || status.Expired {
-		t.Fatalf("status = %+v, want logged in with a live token", status)
+	if !status.LoggedIn || status.Expired || status.Backend == "" {
+		t.Fatalf("status = %+v, want logged in with a live token, naming where it is stored", status)
 	}
 }
 
