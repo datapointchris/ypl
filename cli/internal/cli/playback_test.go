@@ -1,19 +1,23 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
 	"github.com/datapointchris/ypl/cli/internal/mpv"
+	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
 
 // shortStateDir points XDG_STATE_HOME somewhere a unix socket address fits.
@@ -293,9 +297,9 @@ func deafSocket(t *testing.T) {
 	}()
 }
 
-// A play is keyed by the client so a retry stores one row, and the video is
-// named by an id or by a link somebody copied.
-func TestPlaysAddSendsAVersion7IdAndTheVideoFromAURL(t *testing.T) {
+// A play is keyed by the client so a retry stores one row, whether it came from
+// `plays add` naming a video by a link or from playback counting one as heard.
+func TestAListenIsRecordedOnceUnderAnIdTheClientMade(t *testing.T) {
 	stored := `{"id": "01920000-0000-7000-8000-000000000000", "handle": 41, "played_ts": "2026-09-17T12:00:00Z",
 		"video": {"id": "dQw4w9WgXcQ", "title": "Six Hours Of House", "channel_title": "One"}}`
 	f := newFixture(t, answers(map[string]answer{"POST /api/v1/plays": {body: stored}}))
@@ -324,6 +328,76 @@ func TestPlaysAddSendsAVersion7IdAndTheVideoFromAURL(t *testing.T) {
 	f = newFixture(t, answers(nil))
 	if refused := f.run("plays", "add", "not a video"); refused.code != 2 || len(f.sent) != 0 {
 		t.Errorf("exited %d after %d requests, want 2 and none", refused.code, len(f.sent))
+	}
+
+	// Playback counts a mix as heard once it has played long enough, and only
+	// ground covered at the speed of playing counts toward that. The server
+	// refuses the first play it is sent, so the retry is under the same id.
+	calls := 0
+	f = newFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error": "down", "code": "unavailable"}`))
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id": "x", "handle": 1, "played_ts": "2026-09-18T00:00:00Z",
+			"video": {"id": "v", "title": "Heard", "channel_title": "One"}}`))
+	})
+	client, err := f.app.client(context.Background())
+	if err != nil {
+		t.Fatalf("the fixture's client: %v", err)
+	}
+	var script []mpv.State
+	played := func(videoID string, from, to, length int64) {
+		for at := from; at <= to; at += int64(listenEvery / time.Second) {
+			position, duration := at, length
+			script = append(script, mpv.State{Path: youtube.WatchURL(videoID), Position: &position, Duration: &duration})
+		}
+	}
+	played("aaaaaaaaaaa", 0, 1300, 7200) // a two-hour mix, played past twenty minutes
+	played("bbbbbbbbbbb", 0, 20, 7200)   // one skimmed: a moment, a seek, a moment
+	played("bbbbbbbbbbb", 6000, 6020, 7200)
+	played("ccccccccccc", 0, 310, 600) // a ten-minute one, played past half
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time)
+	next := 0
+	read := func() (mpv.State, error) {
+		state := script[next]
+		next++
+		return state, nil
+	}
+	recording := make(chan listened, 1)
+	go func() { recording <- recordListens(ctx, client, read, ticks) }()
+	for range script {
+		ticks <- time.Now()
+	}
+	cancel()
+	heard := <-recording
+
+	if len(heard.recorded) != 2 || len(heard.unsent) != 0 {
+		t.Errorf("recorded %d and could not send %v, want the two played long enough", len(heard.recorded), heard.unsent)
+	}
+	sentFor := map[string][]string{}
+	for _, one := range f.writes() {
+		var body struct {
+			ID      string `json:"id"`
+			VideoID string `json:"video_id"`
+		}
+		decodeInto(t, one.Body, &body)
+		sentFor[body.VideoID] = append(sentFor[body.VideoID], body.ID)
+	}
+	if ids := sentFor["aaaaaaaaaaa"]; len(ids) != 2 || ids[0] != ids[1] {
+		t.Errorf("sent the refused play under %v, want it sent twice under one id", ids)
+	}
+	if len(sentFor["ccccccccccc"]) != 1 {
+		t.Errorf("sent the short mix %d times, want once at half its length", len(sentFor["ccccccccccc"]))
+	}
+	if ids, sent := sentFor["bbbbbbbbbbb"]; sent {
+		t.Errorf("counted a skimmed mix as heard, under %v", ids)
 	}
 }
 

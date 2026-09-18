@@ -25,13 +25,19 @@ The CLI, on every workstation:
 | This machine's keychain | `goclilogin` | The OS keychain, or a mode-600 file where there is none | The refresh token lives there |
 | A browser | `pkg/browser` | Whatever `xdg-open` or `open` resolves to, once, during `ypl auth login` | A subprocess |
 | An editor | `cli/internal/editbuffer` | Whatever `$VISUAL` or `$EDITOR` names, holding the terminal, during `ypl playlists edit` | A subprocess, and the terminal until it exits |
-| mpv | `cli/internal/mpv` | mpv on `PATH`, holding the terminal, during `ypl play`; and its IPC socket at `$XDG_STATE_HOME/ypl/mpv.sock` during `ypl now` and a bare `ypl` | A subprocess, the terminal until it exits, and whatever mpv itself reaches |
+| mpv | `cli/internal/mpv` | mpv on `PATH`, holding the terminal, during `ypl play`; and its IPC socket at `$XDG_STATE_HOME/ypl/mpv.sock` during `ypl play` itself, `ypl now` and a bare `ypl` | A subprocess, the terminal until it exits, and whatever mpv itself reaches |
 
 mpv makes its own network requests, as yt-dlp does. What crosses to it is the watch URLs, the
 socket path, `--no-video` under `--audio`, and whatever `--mpv` was given — no credential, no token,
-no part of the store. mpv opens the socket itself, from the flag `ypl play` passes it, and `ypl now`
-and a bare `ypl` connect to it afterwards. The only thing either writes there is `get_property`,
-which is how mpv's IPC is asked anything and changes nothing about what is playing.
+no part of the store. mpv opens the socket itself, from the flag `ypl play` passes it. `ypl play`
+reads it every ten seconds while mpv runs, which is how a listen is recorded, and `ypl now` and a
+bare `ypl` read it when asked. The only thing any of them writes there is `get_property`, which is
+how mpv's IPC is asked anything and changes nothing about what is playing.
+
+A listen is counted from how far mpv's position moved between two reads, so a seek is not
+listening. Once a mix has played for 20 minutes, or half its length when that is shorter,
+`ypl play` posts a play through the server door while mpv is still running, under an id it made at
+that moment, so a retry is stored once.
 
 `api/ytdlp.Reader.Video` is the only place in the server that starts a process. In the CLI there
 are three, `ypl auth login`, `ypl playlists edit` and `ypl play`, and the first hands its

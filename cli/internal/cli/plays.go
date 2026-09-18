@@ -36,9 +36,9 @@ func (a *app) playsAddCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <video>",
 		Short: "Record that a video was listened to",
-		Long: "What `ypl next` reads to stop suggesting the same mix. Written when a listen\n" +
-			"is logged rather than inferred from playback, because `ypl play` hands mpv\n" +
-			"the whole playlist at once and never learns which of it got played.\n" +
+		Long: "What `ypl next` reads to stop suggesting the same mix. `ypl play` records\n" +
+			"what it plays on its own; this is for a mix heard where it could not see, in\n" +
+			"a browser or on a phone.\n" +
 			"\n" +
 			"The video is named by its id or by a URL it was copied from. The server takes\n" +
 			"the moment the request arrived as when it was played.",

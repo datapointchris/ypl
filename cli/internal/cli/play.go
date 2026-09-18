@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
@@ -31,7 +34,10 @@ func (a *app) playCommand() *cobra.Command {
 			"server already knows which ones those are.\n" +
 			"\n" +
 			"Playback opens mpv's IPC socket, which is what lets `ypl now` say which track\n" +
-			"of a two-hour mix is on.",
+			"of a two-hour mix is on. It is also how a listen is recorded: once a mix has\n" +
+			"played for 20 minutes, or half its length when that is shorter, the server is\n" +
+			"told, and `ypl next` stops offering it first. A seek forward is not listening,\n" +
+			"so it does not count toward that.",
 		Example: "  ypl play sunday-morning             the whole playlist, in its order\n" +
 			"  ypl play                            a draw, least recently heard first\n" +
 			"  ypl play sunday-morning --audio     no video window\n" +
@@ -85,10 +91,27 @@ func (a *app) playCommand() *cobra.Command {
 			if !mpv.Addressable(socket) {
 				// mpv logs this and plays on regardless, which leaves `ypl now`
 				// quietly reporting nothing with no way to tell why.
-				nothing(cmd, fmt.Sprintf("%s is too long for a unix socket, so `ypl now` will not see this.", socket))
+				nothing(cmd, fmt.Sprintf("%s is too long for a unix socket, so `ypl now` will not see this and no listen is recorded.", socket))
 				socket = ""
 			}
+
+			// The recorder reads the socket mpv opens and stops when mpv
+			// exits. What it has to say waits for the terminal to come back,
+			// because mpv is drawing on it until then.
+			listening, stop := context.WithCancel(cmd.Context())
+			heard := make(chan listened, 1)
+			if socket != "" {
+				ticks := time.NewTicker(listenEvery)
+				defer ticks.Stop()
+				go func() {
+					heard <- recordListens(listening, client, func() (mpv.State, error) { return mpv.Read(socket) }, ticks.C)
+				}()
+			} else {
+				heard <- listened{}
+			}
 			outcome, err := mpv.Play(cmd.Context(), socket, arguments, urls)
+			stop()
+			reportListens(cmd, <-heard)
 			if err != nil {
 				return reported(err)
 			}
@@ -111,6 +134,21 @@ func (a *app) playCommand() *cobra.Command {
 	// and never a rendering flag's. `ypl playlists show --json` and
 	// `ypl next --json` are the reads.
 	return cmd
+}
+
+// reportListens says what a playback recorded, and names each play the server
+// was not told about, since `ypl next` will offer that mix again as if unheard.
+func reportListens(cmd *cobra.Command, heard listened) {
+	if len(heard.recorded) > 0 {
+		titles := make([]string, len(heard.recorded))
+		for i, play := range heard.recorded {
+			titles[i] = play.Video.Title
+		}
+		nothing(cmd, fmt.Sprintf("Recorded %s: %s.", count(int64(len(titles)), "listen"), strings.Join(titles, ", ")))
+	}
+	for _, err := range heard.unsent {
+		nothing(cmd, fmt.Sprintf("Could not record a listen, so `ypl next` may offer it again. %v", err))
+	}
 }
 
 // drawn is a draw of the library made the way `ypl next` makes one, up to
