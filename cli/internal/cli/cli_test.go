@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -76,6 +77,7 @@ func newFixture(t *testing.T, answer http.HandlerFunc) *fixture {
 			return f.store
 		},
 		terminal: isTerminal,
+		width:    widthOf,
 	}
 	return f
 }
@@ -431,6 +433,34 @@ func TestVideosShowReadsTheTracklist(t *testing.T) {
 	}
 	if len(got.Artists) != 1 || got.Artists[0] != "Björk" {
 		t.Fatalf("artists = %+v", got.Artists)
+	}
+}
+
+// A row that runs past the terminal wraps into the rows under it. Cutting a
+// title keeps the row readable; cutting an id leaves nothing to type into the
+// next command, so only prose columns give up width, the widest first.
+func TestFitCutsOnlyProseAndOnlyUntilTheRowFits(t *testing.T) {
+	columns := []column{whole("VIDEO"), prose("TITLE"), whole("LENGTH"), prose("ARTISTS")}
+	gutters := 3 * len(gutter)
+	for _, c := range []struct {
+		name    string
+		natural []int
+		width   int
+		want    []int
+	}{
+		{"a row that fits keeps every width", []int{11, 30, 7, 20}, 80, []int{11, 30, 7, 20}},
+		{"the widest prose column gives way first", []int{11, 60, 7, 20}, 80, []int{11, 36, 7, 20}},
+		{"two wide prose columns end up level", []int{11, 60, 7, 50}, 80, []int{11, 28, 7, 28}},
+		{"no prose column is cut below the floor", []int{11, 60, 7, 50}, 30, []int{11, shortestProse, 7, shortestProse}},
+	} {
+		widths := slices.Clone(c.natural)
+		fit(widths, columns, c.width)
+		if !slices.Equal(widths, c.want) {
+			t.Errorf("%s: fit(%v, %d) = %v, want %v", c.name, c.natural, c.width, widths, c.want)
+		}
+		if total := gutters + widths[0] + widths[1] + widths[2] + widths[3]; total > c.width && widths[1] > shortestProse {
+			t.Errorf("%s: a row is %d cells, past %d, with prose left to cut", c.name, total, c.width)
+		}
 	}
 }
 

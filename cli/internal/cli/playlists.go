@@ -89,7 +89,7 @@ func (a *app) playlistsShowCommand() *cobra.Command {
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), playlist)
 			}
-			printPlaylist(cmd.OutOrStdout(), playlist)
+			printPlaylist(cmd.OutOrStdout(), a.width(cmd.OutOrStdout()), playlist)
 			return nil
 		},
 	}
@@ -111,10 +111,10 @@ func printPlaylists(out io.Writer, playlists []api.PlaylistSummary) {
 			playlist.ID,
 		}
 	}
-	table(out, []string{"TITLE", "VIDEOS", "READ", "UNAVAILABLE", "PRIVACY", "ID"}, rows)
+	table(out, 0, []column{whole("TITLE"), whole("VIDEOS"), whole("READ"), whole("UNAVAILABLE"), whole("PRIVACY"), whole("ID")}, rows)
 }
 
-func printPlaylist(out io.Writer, playlist api.Playlist) {
+func printPlaylist(out io.Writer, width int, playlist api.Playlist) {
 	_, _ = fmt.Fprintf(out, "%s  %s\n", playlist.Title, playlist.ID)
 	if playlist.Description != "" {
 		_, _ = fmt.Fprintln(out, playlist.Description)
@@ -135,7 +135,7 @@ func printPlaylist(out io.Writer, playlist api.Playlist) {
 			state(video),
 		}
 	}
-	table(out, []string{"#", "VIDEO", "TITLE", "CHANNEL", "LENGTH", "TRACKS", "STATE"}, rows)
+	table(out, width, []column{whole("#"), whole("VIDEO"), prose("TITLE"), prose("CHANNEL"), whole("LENGTH"), whole("TRACKS"), whole("STATE")}, rows)
 }
 
 // state is what is worth saying about a video beyond its own fields: that

@@ -49,7 +49,7 @@ func splitReadingFromChanging(cmd *cobra.Command) {
 
 // NewRootCommand returns the ypl command tree.
 func NewRootCommand() *cobra.Command {
-	return newRootCommand(&app{client: newAPIClient, tokens: goclilogin.NewTokenStore, terminal: isTerminal})
+	return newRootCommand(&app{client: newAPIClient, tokens: goclilogin.NewTokenStore, terminal: isTerminal, width: widthOf})
 }
 
 func newRootCommand(a *app) *cobra.Command {

@@ -174,7 +174,7 @@ func (a *app) playsListCommand() *cobra.Command {
 				nothing(cmd, "Nothing has been listened to yet. `ypl next` picks something to put on.")
 				return nil
 			}
-			printPlays(cmd.OutOrStdout(), plays.Rows)
+			printPlays(cmd.OutOrStdout(), a.width(cmd.OutOrStdout()), plays.Rows)
 			if plays.More {
 				nothing(cmd, fmt.Sprintf("More plays follow. `ypl plays list --limit %d` reads further back.", limit*2))
 			}
@@ -217,7 +217,7 @@ func (a *app) playsShowCommand() *cobra.Command {
 
 // printPlays leads with the handle, since that is what `ypl plays show` is
 // given and a UUID is not something anyone retypes.
-func printPlays(out io.Writer, plays []api.Play) {
+func printPlays(out io.Writer, width int, plays []api.Play) {
 	rows := make([][]string, len(plays))
 	for i, play := range plays {
 		rows[i] = []string{
@@ -228,5 +228,5 @@ func printPlays(out io.Writer, plays []api.Play) {
 			play.Video.ChannelTitle,
 		}
 	}
-	table(out, []string{"PLAY", "WHEN", "VIDEO", "TITLE", "CHANNEL"}, rows)
+	table(out, width, []column{whole("PLAY"), whole("WHEN"), whole("VIDEO"), prose("TITLE"), prose("CHANNEL")}, rows)
 }

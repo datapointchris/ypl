@@ -111,5 +111,5 @@ func printConfig(out io.Writer, resolved resolvedConfig) {
 	for i, setting := range resolved.Settings {
 		rows[i] = []string{setting.Key, setting.Value, string(setting.From), setting.Env}
 	}
-	table(out, []string{"SETTING", "VALUE", "FROM", "ENVIRONMENT"}, rows)
+	table(out, 0, []column{whole("SETTING"), whole("VALUE"), whole("FROM"), whole("ENVIRONMENT")}, rows)
 }
