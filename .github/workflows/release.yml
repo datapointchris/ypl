@@ -147,8 +147,10 @@ jobs:
 
   # The Go CLI is a nested module with its own version, tagged `cli/v1.2.3` so
   # it never collides with the Python tool's `v*` namespace. The two releases
-  # are independent: pyproject's path_filters exclude `cli/**`, and svu's
-  # --log.directory confines this one to commits touching `cli/`.
+  # are independent: pyproject's path_filters exclude `cli/**` and `.github/**`,
+  # and svu's --log.directory confines this one to commits touching `cli/`. The
+  # workflow exclusion is what stops a change to this file releasing the Python
+  # tool, whatever conventional type its commit carries.
   #
   # svu rather than python-semantic-release's Go sibling, because
   # go-semantic-release hardcodes the tag prefix to `v` and parses candidate
@@ -184,6 +186,11 @@ jobs:
       # The condition is the absent tag rather than a failed svu, because
       # treating any svu failure as a first release turns a broken run into a
       # published one.
+      #
+      # The bump is read from the branch's own commit subjects. svu skips merge
+      # commits, and this repository merges rather than squashes, so the PR
+      # title lands on a commit svu never reads. A PR titled `feat(cli):` whose
+      # commits are all `chore:` or `refactor:` merges green and cuts nothing.
       - name: Resolve the next version
         id: resolve
         run: |
@@ -292,7 +299,9 @@ jobs:
       # Creates the tag as well as the release, at the commit being built. A tag
       # pushed with GITHUB_TOKEN cannot trigger another workflow, so tagging in
       # one job and firing the build on the tag would never run at all.
-      - uses: softprops/action-gh-release@v2
+      # SHA-pinned because it is third-party, the major tag moves, and this job
+      # holds contents: write.
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
