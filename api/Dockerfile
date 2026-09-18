@@ -48,6 +48,6 @@ COPY --from=builder /build/ypl-api /usr/local/bin/ypl-api
 # the image is destroyed by the next pull with nothing reporting it.
 ENV DATABASE_PATH=/var/db/ypl/ypl.db
 
-USER ypl
+USER 10001:10001
 EXPOSE 8080
 CMD ["ypl-api"]
