@@ -16,15 +16,14 @@ func (a *app) nextCommand() *cobra.Command {
 		asJSON   bool
 	)
 	cmd := &cobra.Command{
-		Use:     "next [flags]",
-		Short:   "What to put on next",
+		Use:     "next",
+		Short:   "Suggest what to play next, without playing it",
 		GroupID: groupPlaying,
-		Long: "The mixes least recently listened to, never-played ones first. Videos last\n" +
-			"played at the same moment come back in a new order each time, so this is a\n" +
-			"draw rather than a page of a standing list.",
-		Example: "  ypl next                                        one thing to put on now\n" +
-			"  ypl next --playlist 'sunday morning' --limit 5  five to choose from, out of one playlist\n" +
-			"  ypl next --json                                 for a status bar or a picker",
+		Long: "Never-played videos first, then the least recently heard, in a new order each\n" +
+			"time. `ypl play` with no playlist plays videos picked the same way.",
+		Example: "  ypl next                                      one thing to put on now\n" +
+			"  ypl next --playlist sunday-morning --limit 5  five, from one playlist\n" +
+			"  ypl next --json                               for a status bar or a picker",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
@@ -49,15 +48,15 @@ func (a *app) nextCommand() *cobra.Command {
 				}
 			}
 			if len(suggestions) == 0 {
-				nothing(cmd, "Nothing to play. Check `ypl status` for what the server holds.")
+				nothing(cmd, "Nothing to play. `ypl server status` says what the server holds.")
 				return exitCode(1)
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&playlist, "playlist", "p", "", "Draw from one playlist, by title or id")
+	cmd.Flags().StringVarP(&playlist, "playlist", "p", "", "Suggest only from one playlist, by title or id")
 	completeFlag(cmd, "playlist", a.completePlaylists)
-	addLimit(cmd, &limit, api.MaxSuggestions, "How many to draw")
+	addLimit(cmd, &limit, api.MaxSuggestions, "How many to suggest")
 	addJSON(cmd, &asJSON, "the suggestions")
 	return cmd
 }

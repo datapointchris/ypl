@@ -51,6 +51,48 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 			t.Errorf("%v said %q, want it to name %q", args, got.err, meant)
 		}
 	}
+
+	// A command that moved is answered with the line that replaced it, whether
+	// it is run or its help is asked for.
+	for now, args := range map[string][]string{
+		"ypl server status":     {"status"},
+		"ypl server syncs list": {"sync", "runs", "list", "--limit", "5"},
+	} {
+		if got := f.run(args...); got.code != 2 || !strings.Contains(got.err, now) {
+			t.Errorf("%v exited %d saying %q, want 2 and `%s`", args, got.code, got.err, now)
+		}
+		if got := f.run("help", args[0]); !strings.Contains(got.out, now) {
+			t.Errorf("`ypl help %s` said %q, want `%s`", args[0], got.out, now)
+		}
+	}
+
+	// --no-input sits on the verbs that would take the terminal and on no
+	// other, and each of them refuses under it before asking anything. The
+	// refusal is matched rather than the flag's name, because cobra's own
+	// "unknown flag" names it too and also exits 2.
+	takesTerminal := map[string][]string{
+		"ypl playlists delete": {"playlists", "delete", "sunday-morning"},
+		"ypl playlists edit":   {"playlists", "edit", "sunday-morning"},
+		"ypl plays delete":     {"plays", "delete", "41"},
+	}
+	declaring := binding(newRootCommand(&app{}), noInput, nil)
+	if len(declaring) != len(takesTerminal) {
+		t.Errorf("--no-input is on %v, want exactly the verbs that take the terminal", declaring)
+	}
+	for _, path := range declaring {
+		if _, ok := takesTerminal[strings.Join(append([]string{"ypl"}, path...), " ")]; !ok {
+			t.Errorf("--no-input is on %v, which takes no terminal", path)
+		}
+	}
+	for path, args := range takesTerminal {
+		terminal := newFixture(t, serves(nil))
+		terminal.atTerminal("y\n")
+		got := terminal.run(append(args, "--no-input")...)
+		if got.code != 2 || !strings.Contains(got.err, "refusing to") || len(terminal.asked) != 0 {
+			t.Errorf("%s --no-input at a terminal exited %d after %d requests saying %q, want 2, none, and a refusal",
+				path, got.code, len(terminal.asked), got.err)
+		}
+	}
 }
 
 // A caller can mean no rows — `tail -n 0` and `head -n 0` both print nothing —
@@ -128,25 +170,46 @@ func namespaces(cmd *cobra.Command, path []string) [][]string {
 	return found
 }
 
-// A namespace expects another word after it, so bare shows help and exits 0
-// rather than failing at someone walking down the tree a word at a time.
+// A namespace expects another word after it, so bare shows its help and exits
+// 0 rather than failing at someone walking down the tree a word at a time. That
+// help names every command beneath it a caller can run, which is the answer to
+// what the namespace holds.
 func TestEveryNamespaceShowsHelpWhenGivenNothing(t *testing.T) {
-	found := namespaces(newRootCommand(&app{}), nil)
+	tree := newRootCommand(&app{})
+	found := namespaces(tree, nil)
 	if len(found) < 8 {
 		t.Fatalf("walked %d namespaces, want every node with subcommands", len(found))
 	}
 	for _, args := range found {
+		namespace, _, err := tree.Find(args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		help := newFixture(t, serves(nil)).run(append(append([]string{}, args...), "--help")...)
+		if help.code != 0 {
+			t.Errorf("%v --help exited %d", args, help.code)
+		}
+		var rows []row
+		for _, s := range commandSections(namespace) {
+			rows = append(rows, s.rows...)
+		}
+		for _, leaf := range leaves(namespace) {
+			typed := strings.TrimPrefix(leaf, namespace.CommandPath()+" ")
+			if !slices.ContainsFunc(rows, func(r row) bool { return r.line == typed || strings.HasPrefix(r.line, typed+" ") }) {
+				t.Errorf("%s --help lists no row for %s", namespace.CommandPath(), leaf)
+			}
+		}
+		for _, r := range rows {
+			if !strings.Contains(help.out, r.line) {
+				t.Errorf("%s --help left %q off the screen", namespace.CommandPath(), r.line)
+			}
+		}
 		// The root is the one node that answers bare, with the glance.
 		if len(args) == 0 {
 			continue
 		}
-		f := newFixture(t, serves(nil))
-		got := f.run(args...)
-		if got.code != 0 {
-			t.Errorf("%v exited %d, want help and 0", args, got.code)
-		}
-		if !strings.Contains(got.out, "Usage:") {
-			t.Errorf("%v printed no usage: %s", args, got.out)
+		if bare := newFixture(t, serves(nil)).run(args...); bare.code != 0 || bare.out != help.out {
+			t.Errorf("%v exited %d having written %q, want its help and 0", args, bare.code, bare.out)
 		}
 	}
 }
@@ -212,7 +275,7 @@ func TestNothingReachesStdoutWhenACommandRefuses(t *testing.T) {
 	for _, args := range [][]string{
 		{"playlists", "list", "--json"},
 		{"videos", "list", "--json"},
-		{"status", "--json"},
+		{"server", "status", "--json"},
 	} {
 		got := f.run(args...)
 		if got.out != "" {
@@ -229,7 +292,7 @@ func TestAnAnswerThatIsNotTheServersStillCarriesItsStatus(t *testing.T) {
 		_, _ = w.Write([]byte("<html>502 Bad Gateway</html>"))
 	})
 
-	got := f.run("status")
+	got := f.run("server", "status")
 	if got.code != 1 {
 		t.Fatalf("exited %d, want 1", got.code)
 	}
@@ -238,22 +301,22 @@ func TestAnAnswerThatIsNotTheServersStillCarriesItsStatus(t *testing.T) {
 	}
 }
 
-// jsonCapable walks the assembled tree for every leaf binding --json, so a
+// binding walks the assembled tree for every command declaring flag, so a
 // command added later is covered without anyone remembering to list it.
-func jsonCapable(cmd *cobra.Command, path []string) [][]string {
+func binding(cmd *cobra.Command, flag string, path []string) [][]string {
 	var found [][]string
 	here := path
 	if cmd.Name() != "ypl" {
 		here = append(append([]string{}, path...), cmd.Name())
 	}
-	if cmd.Flags().Lookup("json") != nil {
+	if cmd.Flags().Lookup(flag) != nil {
 		found = append(found, here)
 	}
 	for _, child := range cmd.Commands() {
 		if child.Name() == "help" || child.Name() == "completion" {
 			continue
 		}
-		found = append(found, jsonCapable(child, here)...)
+		found = append(found, binding(child, flag, here)...)
 	}
 	return found
 }
@@ -271,7 +334,7 @@ func TestTheRenderingNeverDecidesTheExitCode(t *testing.T) {
 		"/api/v1/sync/runs":   `{"data": [], "has_more": false}`,
 		"/api/v1/status":      `{"library": {}, "last_run": null, "last_ok_run": null}`,
 	}
-	commands := jsonCapable(newRootCommand(&app{}), nil)
+	commands := binding(newRootCommand(&app{}), "json", nil)
 	if len(commands) < 8 {
 		t.Fatalf("found %d commands taking --json, want every leaf that binds it", len(commands))
 	}
@@ -291,7 +354,7 @@ func TestAReadWithNothingInItSaysSoAndNamesWhatToRunNext(t *testing.T) {
 		{"playlists", "list"},
 		{"videos", "list", "--artist", "nobody"},
 		{"plays", "list"},
-		{"sync", "runs", "list"},
+		{"server", "syncs", "list"},
 	} {
 		f := newFixture(t, serves(map[string]string{
 			"/api/v1/playlists": `[]`,
@@ -370,7 +433,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		{"playlists", "list"},
 		{"videos", "list", "--artist", "nobody"},
 		{"plays", "list"},
-		{"sync", "runs", "list"},
+		{"server", "syncs", "list"},
 		{"next"},
 		{"now"},
 		{"play", "Empty"},
@@ -451,18 +514,25 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 	// prompts, writes to YouTube, or answers completely and so has nothing to
 	// suggest next.
 	writesNoHintHere := map[string]bool{
-		"ypl auth login": true, "ypl auth logout": true, "ypl auth refresh": true,
-		"ypl config edit": true, "ypl config example": true, "ypl config path": true,
+		"ypl auth login": true, "ypl auth logout": true,
+		"ypl config example": true, "ypl config path": true,
 		"ypl config show": true, "ypl help": true, "ypl update": true,
 		"ypl playlists create": true, "ypl playlists delete": true, "ypl playlists edit": true,
 		"ypl playlists rename": true, "ypl playlists show": true,
-		"ypl plays add": true, "ypl plays delete": true, "ypl plays show": true, "ypl status": true,
-		"ypl sync run": true, "ypl sync runs show": true, "ypl videos show": true,
-		"ypl videos sorts": true,
+		"ypl plays add": true, "ypl plays delete": true, "ypl plays show": true,
+		"ypl server status": true, "ypl videos show": true, "ypl videos sorts": true,
 	}
-	for _, leaf := range leaves(root()) {
+	grown := leaves(root())
+	for _, leaf := range grown {
 		if !exercised[leaf] && !writesNoHintHere[leaf] {
 			t.Errorf("%s is in the tree and no run here reads the hint it writes", leaf)
+		}
+	}
+	// An exemption for a command the tree does not have would exempt it the
+	// day somebody adds it, before anyone has read what it suggests.
+	for leaf := range writesNoHintHere {
+		if !slices.Contains(grown, leaf) {
+			t.Errorf("%s is exempted and the tree has no such command", leaf)
 		}
 	}
 
@@ -472,9 +542,10 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 			t.Errorf("a command told the reader to run `ypl %s`, which names no command at all", hint)
 			continue
 		}
+		// A hidden command is one that moved, and running it only refuses.
 		tree := root()
 		found, rest, err := tree.Find(named)
-		if err != nil || len(rest) > 0 || found == tree {
+		if err != nil || len(rest) > 0 || found == tree || found.Hidden {
 			t.Errorf("a command told the reader to run `ypl %s`, which the tree does not have", hint)
 		}
 	}
@@ -491,14 +562,17 @@ func TestTheRejectedTokenHintIsAmongTheCheckedOnes(t *testing.T) {
 }
 
 // leaves is every command in the tree that runs something, named as cobra spells
-// a command path. A namespace is not one: it only shows help.
+// a command path. A namespace is not one: it only shows help. Neither is a
+// hidden command, which is one that moved and only refuses.
 func leaves(cmd *cobra.Command) []string {
 	if len(cmd.Commands()) == 0 {
 		return []string{cmd.CommandPath()}
 	}
 	found := []string{}
 	for _, child := range cmd.Commands() {
-		found = append(found, leaves(child)...)
+		if !child.Hidden {
+			found = append(found, leaves(child)...)
+		}
 	}
 	return found
 }

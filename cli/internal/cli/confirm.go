@@ -107,3 +107,11 @@ func readConfirmation(out io.Writer, in io.Reader, question string) (bool, error
 func addYes(cmd *cobra.Command, yes *bool, does string) {
 	cmd.Flags().BoolVarP(yes, "yes", "y", false, "Answer the confirmation, and "+does+" without asking")
 }
+
+// addNoInput binds --no-input on a verb that asks a question or opens an
+// editor, and on no other, so it never shows on a verb it would not change.
+// instead is what the verb does in place of taking the terminal. The flag is
+// read back off the flag set by forbidsInput.
+func addNoInput(cmd *cobra.Command, instead string) {
+	cmd.Flags().Bool(noInput, false, "Never take the terminal; "+instead)
+}

@@ -10,17 +10,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
+	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
 
 func (a *app) videosCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "videos",
-		Short:   "The mixes across every playlist",
-		GroupID: groupLibrary,
-		Long: "Every available video some playlist holds, with the artists its tracklist\n" +
-			"names and the playlists it is in. This is the library as one set, rather\n" +
-			"than a playlist at a time.",
-		RunE: requireSubcommand,
+		Short:   "Every video across all playlists",
+		GroupID: groupVideos,
+		RunE:    requireSubcommand,
 	}
 	cmd.AddCommand(a.videosListCommand(), a.videosShowCommand(), a.videosSortsCommand())
 	return cmd
@@ -34,11 +32,12 @@ func (a *app) videosListCommand() *cobra.Command {
 		asJSON     bool
 	)
 	cmd := &cobra.Command{
-		Use:   "list [flags]",
-		Short: "List the library, narrowed and ordered",
-		Example: "  ypl videos list --artist bjork                               every mix whose tracklist names them\n" +
-			"  ypl videos list --playlist 'sunday morning' --sort longest  the longest in one playlist\n" +
-			"  ypl videos list --min-minutes 90 --json                     everything long enough for an evening",
+		Use:   "list",
+		Short: "List videos, filtered by length, artist or playlist",
+		Example: "  ypl videos list --min-minutes 180  videos three hours long or more\n" +
+			"  ypl videos list --artist bjork     videos whose tracklist names Björk\n" +
+			"  ypl videos list --sort newest      the latest uploads first\n" +
+			"  ypl videos list --json             the whole library, for a script",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Absence comes from the parser, so a bound of zero is a bound
@@ -69,9 +68,9 @@ func (a *app) videosListCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&filter.Playlist, "playlist", "", "Only the videos this playlist holds, by title or id")
 	cmd.Flags().StringVar(&filter.Artist, "artist", "", "Only videos whose tracklist names an artist holding this, ignoring case and accents")
-	addMinutes(cmd, "min-minutes", &minMinutes, "Only videos at least this many minutes long")
-	addMinutes(cmd, "max-minutes", &maxMinutes, "Only videos at most this many minutes long")
-	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order, one of "+strings.Join(api.VideoSorts, ", ")+"; the server decides")
+	addMinutes(cmd, "min-minutes", &minMinutes, "Only videos at least this many minutes long; a video whose length is unknown is left out")
+	addMinutes(cmd, "max-minutes", &maxMinutes, "Only videos at most this many minutes long; a video whose length is unknown is left out")
+	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order: "+strings.Join(api.VideoSorts, ", ")+" (default "+api.VideoSorts[0]+"); newest and oldest go by upload date")
 	completeFlag(cmd, "playlist", a.completePlaylists)
 	completeFlag(cmd, "sort", cobra.FixedCompletions(api.VideoSorts, cobra.ShellCompDirectiveNoFileComp))
 	addJSON(cmd, &asJSON, "the videos")
@@ -81,9 +80,10 @@ func (a *app) videosListCommand() *cobra.Command {
 func (a *app) videosShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "show <video-id>",
-		Short: "Show one video with its tracklist",
-		Example: "  ypl videos show dQw4w9WgXcQ         what is in this mix, track by track\n" +
+		Use:   "show <video>",
+		Short: "Show a video's tracklist, by its link or id",
+		Long:  "FROM is the part of the video each track was read from.",
+		Example: "  ypl videos show dQw4w9WgXcQ         the video, track by track\n" +
 			"  ypl videos show dQw4w9WgXcQ --json  the same, for a script",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -91,7 +91,11 @@ func (a *app) videosShowCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			video, err := client.GetVideo(cmd.Context(), args[0])
+			ref := args[0]
+			if id := youtube.VideoID(ref); id != "" {
+				ref = id
+			}
+			video, err := client.GetVideo(cmd.Context(), ref)
 			if err != nil {
 				return reported(err)
 			}
@@ -112,8 +116,8 @@ func (a *app) videosSortsCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:     "sorts",
-		Short:   "List the orders --sort accepts",
-		Example: "  ypl videos sorts  the orders --sort takes, before typing one",
+		Short:   "List the orders `ypl videos list --sort` takes",
+		Example: "  ypl videos sorts  one order a line, for a script",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if asJSON {
@@ -148,10 +152,23 @@ func printVideos(out io.Writer, videos []api.LibraryVideo) {
 			video.ChannelTitle,
 			clock(video.DurationSeconds),
 			strconv.FormatInt(video.TrackCount, 10),
-			strings.Join(video.Artists, ", "),
+			firstArtists(video.Artists),
 		}
 	}
 	table(out, []string{"VIDEO", "TITLE", "CHANNEL", "LENGTH", "TRACKS", "ARTISTS"}, rows)
+}
+
+// shownArtists is how many artists a row of the library names. A mix's
+// tracklist can name forty, and a row that long wraps every row after it.
+const shownArtists = 3
+
+// firstArtists is the first shownArtists of artists, and how many more there
+// are. --json carries every one.
+func firstArtists(artists []string) string {
+	if len(artists) <= shownArtists {
+		return strings.Join(artists, ", ")
+	}
+	return fmt.Sprintf("%s +%d", strings.Join(artists[:shownArtists], ", "), len(artists)-shownArtists)
 }
 
 func printVideo(out io.Writer, video api.Video) {

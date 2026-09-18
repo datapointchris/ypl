@@ -39,18 +39,10 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "edit <playlist>",
 		GroupID: groupChanging,
-		Short:   "Rearrange a playlist in your editor",
-		Long: "Opens one line per video — the id first, then the title — in $VISUAL or\n" +
-			"$EDITOR. Move lines to reorder, delete a line to remove that video, paste a\n" +
-			"URL or an id on its own line to add one. Save to apply, or save an empty\n" +
-			"buffer to abort.\n" +
-			"\n" +
-			"Modeled on `git rebase -i`, because rearranging a list is something your\n" +
-			"editor is already better at than any command could be. Reads the buffer from\n" +
-			"stdin instead when something is piped in.\n" +
-			"\n" +
-			"This changes the order the server holds. The next sync run pushes it to\n" +
-			"YouTube, so `ypl status` is where it shows up as sent.",
+		Short:   "Reorder, add or remove videos in $EDITOR",
+		Long: "One line per video, in $VISUAL or $EDITOR. Move lines to reorder, delete one to\n" +
+			"remove it, paste a link to add one. An empty buffer changes nothing. A buffer\n" +
+			"piped in is read instead. The next sync pushes the new order to YouTube.\n" + wholeName,
 		Example: "  ypl playlists edit 'Sunday Morning'          rearrange it in your editor\n" +
 			"  ypl playlists edit 'Sunday Morning' < order  apply a buffer written elsewhere",
 		Args:              usageArgs(cobra.ExactArgs(1)),
@@ -126,6 +118,7 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 		},
 	}
 	addJSON(cmd, &asJSON, "what the edit changed")
+	addNoInput(cmd, "refuse rather than open an editor, unless a buffer is piped in")
 	return cmd
 }
 
@@ -293,7 +286,7 @@ func reportEdit(cmd *cobra.Command, result edited) {
 	// happened, one of which did not.
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s — %s. It now holds %s.\n",
 		result.Title, strings.Join(said, ", "), count(int64(result.ItemCount), "video"))
-	nothing(cmd, "The next sync run pushes it to YouTube. `ypl status` says when that was.")
+	nothing(cmd, "The next sync pushes it to YouTube. `ypl server status` says when that was.")
 }
 
 // keptAt writes the edited buffer somewhere it can be read back from, and is the

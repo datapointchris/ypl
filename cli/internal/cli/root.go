@@ -19,13 +19,16 @@ import (
 // version is set at build time with -ldflags.
 var version = "dev"
 
-// The help sections, named for what someone is trying to do rather than for
-// what the commands are.
+// The root's help sections. Playing comes first because it is what the tool
+// is for, and each library namespace has a section of its own, so its
+// commands are not interleaved with another's.
 const (
-	groupLibrary = "library"
-	groupPlaying = "playing"
-	groupServer  = "server"
-	groupSetup   = "setup"
+	groupPlaying   = "playing"
+	groupPlaylists = "playlists"
+	groupVideos    = "videos"
+	groupPlays     = "plays"
+	groupServer    = "server"
+	groupSetup     = "setup"
 )
 
 // Within a namespace whose verbs both read and change something, the verbs
@@ -39,8 +42,8 @@ const (
 // splitReadingFromChanging gives cmd the two sections its verbs go under.
 func splitReadingFromChanging(cmd *cobra.Command) {
 	cmd.AddGroup(
-		&cobra.Group{ID: groupReading, Title: "Reading:"},
-		&cobra.Group{ID: groupChanging, Title: "Changing:"},
+		&cobra.Group{ID: groupReading, Title: "Reading commands:"},
+		&cobra.Group{ID: groupChanging, Title: "Changing commands:"},
 	)
 }
 
@@ -52,28 +55,19 @@ func NewRootCommand() *cobra.Command {
 func newRootCommand(a *app) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "ypl",
-		Short: "The ypl command-line client",
-		Long: "ypl plays YouTube playlists of long DJ mixes, over a server that keeps the\n" +
-			"playlists mirrored and reads a tracklist for each mix.\n" +
-			"\n" +
-			"What you do while listening sits at the top: play, now, next. The library is\n" +
-			"noun then verb, so moving from reading a playlist to acting on it changes\n" +
-			"only the final word. Every read takes --json.\n" +
-			"\n" +
-			"Tab completes a playlist wherever one is named, as its title slugged — `ypl\n" +
-			"play sunday-morning` plays Sunday Morning. The title works as well, and its\n" +
-			"case, spacing and punctuation do not have to be reproduced. A read takes part\n" +
-			"of a title too; a verb that changes something does not, because a fragment\n" +
-			"matching one playlist matches it unambiguously.\n" +
-			"\n" +
-			"A bare `ypl` says what is playing and where the server stands. Run any other\n" +
-			"partial command with no arguments or --help to see what comes next.",
-		Example: "  ypl play <Tab>                             pick a playlist and play it\n" +
-			"  ypl play                                   play a draw, least recently heard first\n" +
-			"  ypl now                                    which track of the mix is on\n" +
-			"  ypl playlists list                         every playlist, and how much of it is read\n" +
-			"  ypl config example > \"$(ypl config path)\"  first run: write the file, then fill it in\n" +
-			"  ypl auth login                             log this machine in, once",
+		Short: "Play and organize YouTube playlists of long DJ mixes",
+		Long: "`ypl` on its own shows what is playing and how the server's last sync went.\n" +
+			"A command is a noun, then a verb, so reading a playlist and changing one differ\n" +
+			"only in the last word. A namespace on its own, like `ypl playlists`, lists the\n" +
+			"commands under it. Name a playlist by its title, its slug from Tab, or its id.\n" +
+			"A read also takes part of a title, and a change does not. Every list and show\n" +
+			"takes --json.",
+		Example: "  ypl play <Tab>                     play a playlist\n" +
+			"  ypl play                           play what you have heard least lately\n" +
+			"  ypl now                            which track is playing\n" +
+			"  ypl videos list --min-minutes 180  videos three hours long or more\n" +
+			"  ypl plays list                     what you have listened to\n" +
+			"  ypl server status                  what the server holds, and its last sync",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -92,7 +86,7 @@ func newRootCommand(a *app) *cobra.Command {
 		},
 	}
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return goclikit.UsageError(err) })
-	useUsageTemplate(root)
+	useHelp(root)
 
 	// Cobra's automatic version flag claims -v, which is the counted verbosity
 	// flag everywhere else. Leave --version long-only rather than teach one
@@ -100,14 +94,20 @@ func newRootCommand(a *app) *cobra.Command {
 	root.InitDefaultVersionFlag()
 	if flag := root.Flags().Lookup("version"); flag != nil {
 		flag.Shorthand = ""
+		flag.Usage = "Print which release of ypl this is"
 	}
 
 	root.AddGroup(
-		&cobra.Group{ID: groupPlaying, Title: "Playing:"},
-		&cobra.Group{ID: groupLibrary, Title: "The library:"},
-		&cobra.Group{ID: groupServer, Title: "The server:"},
-		&cobra.Group{ID: groupSetup, Title: "Setting up:"},
+		&cobra.Group{ID: groupPlaying, Title: "Playing commands:"},
+		&cobra.Group{ID: groupPlaylists, Title: "Playlist commands:"},
+		&cobra.Group{ID: groupVideos, Title: "Video commands:"},
+		&cobra.Group{ID: groupPlays, Title: "Listening history commands:"},
+		&cobra.Group{ID: groupServer, Title: "Server commands:"},
+		&cobra.Group{ID: groupSetup, Title: "Setup commands:"},
 	)
+	// Tab is how a playlist is named without quoting it, so the command that
+	// sets Tab up is listed with the rest of the setup.
+	root.SetCompletionCommandGroupID(groupSetup)
 	root.AddCommand(
 		a.playCommand(),
 		a.nowCommand(),
@@ -115,11 +115,12 @@ func newRootCommand(a *app) *cobra.Command {
 		a.playlistsCommand(),
 		a.videosCommand(),
 		a.playsCommand(),
-		a.statusCommand(),
-		a.syncCommand(),
+		a.serverCommand(),
 		a.authCommand(),
 		newConfigCommand(),
 		newUpdateCommand(),
+		moved("status", "ypl server status"),
+		moved("sync", "ypl server syncs list"),
 	)
 	noFiles(root)
 	return root
