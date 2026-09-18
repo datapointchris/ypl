@@ -1,19 +1,21 @@
 # syntax=docker/dockerfile:1
 
-# The ypl server. Its migrations are embedded in the binary, so the runtime
-# stage holds the binary, yt-dlp, and nothing else this repo produces.
+# The ypl server, and the command that puts videos enrichment stopped reading
+# back in its queue. Migrations are embedded in the binaries, so the runtime
+# stage holds those two, yt-dlp, and nothing else this repo produces.
 
 FROM golang:1.26.6-alpine AS builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ypl-api .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ypl-api . && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o reset-enrichment ./cmd/reset-enrichment
 
 FROM alpine:3.22
 
 # ca-certificates because every door out of this process is HTTPS. tzdata
-# because a sync run's timestamps are read by a person in a local zone.
+# because an operator setting TZ needs a zone database to resolve it against.
 RUN apk add --no-cache ca-certificates tzdata
 
 # yt-dlp ships in the image, pinned. ENRICH_VIDEOS_PER_RUN defaults to 30 and
@@ -42,11 +44,25 @@ RUN adduser -D -u 10001 -h /home/ypl ypl && mkdir -p /var/db/ypl && chown ypl:yp
 
 COPY --from=builder /build/ypl-api /usr/local/bin/ypl-api
 
+# A video enrichment has stopped reading is held back until something clears
+# the row, and this is the only thing that reaches it. Without it in the image
+# the verdict has no way out on the deployed server.
+COPY --from=builder /build/reset-enrichment /usr/local/bin/reset-enrichment
+
 # Declared so a compose file mounting the host's database directory needs no
 # environment variable to point the server at it. Left unset, the server would
 # resolve its own default under the container filesystem, and a database inside
 # the image is destroyed by the next pull with nothing reporting it.
 ENV DATABASE_PATH=/var/db/ypl/ypl.db
+
+# The port EXPOSE names, so the two cannot disagree and `docker run -P` cannot
+# publish a port with nothing behind it.
+ENV PORT=8080
+
+# The zone every timestamp is logged in. Alpine ships no /etc/localtime, so
+# without this Go resolves time.Local to UTC and the zone database above is
+# never read. Declaring it is what makes overriding it a choice.
+ENV TZ=UTC
 
 USER 10001:10001
 EXPOSE 8080
