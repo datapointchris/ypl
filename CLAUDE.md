@@ -26,13 +26,13 @@ The CLI, on every workstation:
 | This machine's keychain | `goclilogin` | The OS keychain, or a mode-600 file where there is none | The refresh token lives there |
 | A browser | `pkg/browser` | Whatever `xdg-open` or `open` resolves to, once, during `ypl auth login` | A subprocess |
 | An editor | `cli/internal/editbuffer` | Whatever `$VISUAL` or `$EDITOR` names, holding the terminal, during `ypl playlists edit` | A subprocess, and the terminal until it exits |
-| mpv | `cli/internal/mpv` | mpv on `PATH`, holding the terminal, during `ypl play`; and its IPC socket at `$XDG_STATE_HOME/ypl/mpv.sock` during `ypl play` itself, `ypl now` and a bare `ypl` | A subprocess, the terminal until it exits, and whatever mpv itself reaches |
+| mpv | `cli/internal/mpv` | mpv on `PATH`, holding the terminal, during `ypl play`; and its IPC socket at `$XDG_STATE_HOME/ypl/mpv.sock` during `ypl play` itself and `ypl now` | A subprocess, the terminal until it exits, and whatever mpv itself reaches |
 
 mpv makes its own network requests, as yt-dlp does. What crosses to it is the watch URLs, the
 socket path, `--no-video` under `--audio`, and whatever `--mpv` was given — no credential, no token,
 no part of the store. mpv opens the socket itself, from the flag `ypl play` passes it. `ypl play`
 reads it while mpv runs, which is how `cli/internal/cli/listen.go` records a play, and `ypl now`
-and a bare `ypl` read it when asked. The only thing any of them writes there is `get_property`,
+reads it when asked. The only thing any of them writes there is `get_property`,
 which is how mpv's IPC is asked anything and changes nothing about what is playing. A play is
 posted through the server door while mpv is still running, under an id made once, so a retry is
 stored once.
@@ -110,8 +110,7 @@ requires every field it declares to arrive. Renaming a response field without re
 that catches, and it is the one mistake a green build on both sides would otherwise hide.
 
 A value the server *enforces* is the harder half and is not solved. `PageSize` and `VideoSorts` are
-copies of numbers and words the server owns, with no door to read them through, and so is the
-`"ok"` a bare `ypl` reads a sync run's outcome by. A shape the client has wrong degrades — an unknown
+copies of numbers and words the server owns, with no door to read them through. A shape the client has wrong degrades — an unknown
 field is ignored — and a value it has wrong is a refusal the client reports as a failure.
 
 The slug a playlist is offered by on Tab is a derivation the server owns, and it is the one copy

@@ -66,7 +66,7 @@ func (a *app) nowCommand() *cobra.Command {
 	return cmd
 }
 
-// nothingPlaying is what `ypl now` and a bare `ypl` say with nothing on.
+// nothingPlaying is what `ypl now` says with nothing on.
 const nothingPlaying = "Nothing is playing. `ypl play` plays what you have heard least lately,\n" +
 	"and `ypl play <playlist>` one playlist, which Tab completes."
 

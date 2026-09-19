@@ -212,10 +212,6 @@ func TestEveryNamespaceShowsHelpWhenGivenNothing(t *testing.T) {
 				t.Errorf("%s --help left %q off the screen", namespace.CommandPath(), r.line)
 			}
 		}
-		// The root is the one node that answers bare, with the glance.
-		if len(args) == 0 {
-			continue
-		}
 		if bare := newFixture(t, serves(nil)).run(args...); bare.code != 0 || bare.out != help.out {
 			t.Errorf("%v exited %d having written %q, want its help and 0", args, bare.code, bare.out)
 		}
@@ -428,7 +424,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 	said := map[string]bool{}
 	exercised := map[string]bool{}
 	// Cobra adds `help` as the binary executes, so the tree read here adds it
-	// too; a bare `ypl` names it.
+	// too.
 	root := func() *cobra.Command {
 		tree := newRootCommand(&app{})
 		tree.InitDefaultHelpCmd()
@@ -446,7 +442,6 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		{"now"},
 		{"play", "Empty"},
 		{"play"},
-		{},
 		{"auth", "status"},
 		{"auth", "token"},
 	} {

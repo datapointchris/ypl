@@ -58,8 +58,7 @@ func newRootCommand(a *app) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "ypl",
 		Short: "Play and organize YouTube playlists of long DJ mixes",
-		Long: "`ypl` on its own shows what is playing and how the server's last sync went.\n" +
-			"A command is a noun, then a verb, so reading a playlist and changing one differ\n" +
+		Long: "A command is a noun, then a verb, so reading a playlist and changing one differ\n" +
 			"only in the last word. A namespace on its own, like `ypl playlists`, lists the\n" +
 			"commands under it. Name a playlist by its title, its slug from Tab, or its id.\n" +
 			"A read also takes part of a title, and a change does not. Every list and show\n" +
@@ -77,15 +76,7 @@ func newRootCommand(a *app) *cobra.Command {
 		// with an untyped error, which exits 1 and reads as a failure rather
 		// than as a word that is not a command.
 		Args: cobra.ArbitraryArgs,
-		// The root is the one command that answers bare rather than showing
-		// help. It has no sibling a bare invocation could be confused with,
-		// and the glance takes no flags and writes nothing.
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return a.glance(cmd)
-			}
-			return requireSubcommand(cmd, args)
-		},
+		RunE: requireSubcommand,
 	}
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		if id, ok := dashedVideoID(err); ok {

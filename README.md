@@ -63,8 +63,7 @@ ypl server status                           # what the server holds
 
 `ypl --help` lists every command as the line to type, in sections: playing first, then one for each
 thing the library holds, then the server and setup. It is not repeated here, because a list in
-markdown goes stale and `--help` cannot. A bare `ypl` answers with what is playing, what the server
-holds and how its last sync ended.
+markdown goes stale and `--help` cannot. A bare `ypl` prints that help.
 
 A playlist is named by its title or its YouTube id at every command that takes one, and the title's
 case, spacing and punctuation do not have to be reproduced. `ypl playlists show 'sunday morning'`
