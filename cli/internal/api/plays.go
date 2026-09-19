@@ -60,7 +60,7 @@ func (c *Client) CreatePlay(ctx context.Context, id PlayID, videoID VideoID) (Pl
 // ListPlays is the newest limit plays, newest first, reading as many pages as
 // that takes.
 func (c *Client) ListPlays(ctx context.Context, limit int) (Page[Play], error) {
-	return collect(ctx, c, "/api/v1/plays", limit, func(p Play) string { return p.ID })
+	return collect(ctx, c, "/api/v1/plays", nil, limit, func(p Play) string { return p.ID })
 }
 
 // GetPlay is the play named by name: its id, its handle, or the last eight

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -271,11 +272,39 @@ type pageSize struct {
 	fallback, most int64
 }
 
+// everyRow is a fallback that answers the whole list as one page. The library
+// lists are read and ordered whole in memory for every request, so a caller
+// reading all of one is served by one request rather than one per page.
+const everyRow = math.MaxInt64
+
 var (
 	playsPage       = pageSize{fallback: 20, most: 100}
 	runsPage        = pageSize{fallback: 20, most: 100}
 	suggestionsDraw = pageSize{fallback: 1, most: 100}
+	videosPage      = pageSize{fallback: everyRow, most: 100}
+	playlistsPage   = pageSize{fallback: everyRow, most: 100}
 )
+
+// pageAfter is the page of rows, in their order, that starts after the row
+// whose id is after, and the first page where after is empty. ok is false once
+// it has answered a 400 for an after naming no row of rows, which is how a list
+// that changed between two of its pages arrives.
+//
+// rows is the whole list, read and ordered in memory, since both lists it
+// pages are filtered and collated in Go rather than in the store.
+func pageAfter[T any](w http.ResponseWriter, rows []T, id func(T) string, after string, limit int64) (page[T], bool) {
+	start := 0
+	if after != "" {
+		i := slices.IndexFunc(rows, func(row T) bool { return id(row) == after })
+		if i < 0 {
+			wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter,
+				"starting_after %q is not in this list, which has changed since the page before; read it again from the start", after)
+			return page[T]{}, false
+		}
+		start = i + 1
+	}
+	return pageOf(rows[start:], limit), true
+}
 
 // limitParam is the query parameter limit as a count within size. ok is false
 // once it has answered a 400.

@@ -54,7 +54,7 @@ func TestTheLibraryListsTheAvailableVideosSomePlaylistHolds(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
 
-	got := decode[[]wireLibraryVideo](t, f.get("/api/v1/videos"), http.StatusOK)
+	got := decode[wirePage[wireLibraryVideo]](t, f.get("/api/v1/videos"), http.StatusOK).Data
 	byID := make(map[string]wireLibraryVideo, len(got))
 	for _, v := range got {
 		byID[v.ID] = v
@@ -92,17 +92,31 @@ func TestTheLibraryListsInTheOrderSortNames(t *testing.T) {
 		"title":    {"e", "b", "c", "a"},
 	}
 	for sort, want := range cases {
-		got := videoIDs(decode[[]wireLibraryVideo](t, f.get("/api/v1/videos?sort="+sort), http.StatusOK))
+		got := videoIDs(decode[wirePage[wireLibraryVideo]](t, f.get("/api/v1/videos?sort="+sort), http.StatusOK).Data)
 		if !slices.Equal(got, want) {
 			t.Errorf("sort %q = %v, want %v", sort, got, want)
 		}
 	}
 
-	got := videoIDs(decode[[]wireLibraryVideo](t, f.get("/api/v1/videos?sort=random"), http.StatusOK))
+	got := videoIDs(decode[wirePage[wireLibraryVideo]](t, f.get("/api/v1/videos?sort=random"), http.StatusOK).Data)
 	slices.Sort(got)
 	if !slices.Equal(got, []string{"a", "b", "c", "e"}) {
 		t.Errorf("sort random = %v, want every video once", got)
 	}
+
+	// An order comes a page at a time, each after the last id of the one
+	// before. A random order is a draw with no next page.
+	first := decode[wirePage[wireLibraryVideo]](t, f.get("/api/v1/videos?sort=title&limit=2"), http.StatusOK)
+	rest := decode[wirePage[wireLibraryVideo]](t, f.get("/api/v1/videos?sort=title&limit=2&starting_after=b"), http.StatusOK)
+	if got := append(videoIDs(first.Data), videoIDs(rest.Data)...); !slices.Equal(got, cases["title"]) || !first.HasMore || rest.HasMore {
+		t.Errorf("pages by title = %v then %v, more %v then %v, want %v over two pages", videoIDs(first.Data), videoIDs(rest.Data), first.HasMore, rest.HasMore, cases["title"])
+	}
+	if draw := decode[wirePage[wireLibraryVideo]](t, f.get("/api/v1/videos?sort=random&limit=2"), http.StatusOK); len(draw.Data) != 2 || draw.HasMore {
+		t.Errorf("a random draw of 2 = %+v, want 2 videos and no next page", draw)
+	}
+	refused(t, f.get("/api/v1/videos?sort=random&starting_after=b"), http.StatusBadRequest, wire.CodeInvalidParameter)
+	refused(t, f.get("/api/v1/videos?sort=title&starting_after=gone"), http.StatusBadRequest, wire.CodeInvalidParameter)
+	refused(t, f.get("/api/v1/videos?limit=101"), http.StatusBadRequest, wire.CodeInvalidLimit)
 }
 
 func TestTheLibraryKeepsOnlyTheVideosEachFilterNames(t *testing.T) {
@@ -122,7 +136,7 @@ func TestTheLibraryKeepsOnlyTheVideosEachFilterNames(t *testing.T) {
 		"artist=nobody":                     {},
 	}
 	for query, want := range cases {
-		got := decode[[]wireLibraryVideo](t, f.get("/api/v1/videos?"+query+"&sort=title"), http.StatusOK)
+		got := decode[wirePage[wireLibraryVideo]](t, f.get("/api/v1/videos?"+query+"&sort=title"), http.StatusOK).Data
 		ids := videoIDs(got)
 		slices.Sort(ids)
 		if got == nil || !slices.Equal(ids, want) {

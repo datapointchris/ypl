@@ -91,14 +91,14 @@ provider beside the sync, retrying while it is down, and `/ready` answers 200 on
 
 | Request | Answers with |
 | --- | --- |
-| `GET /api/v1/playlists` | Every playlist, with how many items it holds and how many of their videos are unavailable or enriched |
+| `GET /api/v1/playlists` | Playlists by title, with how many items each holds and how many of their videos are unavailable or enriched, a page at a time |
 | `POST /api/v1/playlists` | The private playlist it creates on YouTube, from `{"title", "description"}` |
 | `GET /api/v1/playlists/{id}` | One playlist and its items in order |
 | `PATCH /api/v1/playlists/{id}` | The playlist with the `title` or `description` it sets on YouTube |
 | `DELETE /api/v1/playlists/{id}` | Nothing, once it has deleted the playlist on YouTube and from the store |
 | `GET /api/v1/playlists/{id}/items` | The playlist's order as `{"video_ids"}`, with its `ETag` |
 | `PUT /api/v1/playlists/{id}/items` | The order it sets, from `{"video_ids"}`, when `If-Match` matches the order's `ETag` |
-| `GET /api/v1/videos` | Every available video some playlist holds, with its artists and playlists |
+| `GET /api/v1/videos` | The available videos some playlist holds, with their artists and playlists, a page at a time |
 | `GET /api/v1/videos/{id}` | One video with its description and tracklist |
 | `POST /api/v1/plays` | The play it records, from `{"id", "video_id", "played_ts"}` |
 | `GET /api/v1/plays` | Plays newest first, a page at a time |
@@ -125,7 +125,9 @@ for a video or a playlist alike, since part of a title can match hundreds of mix
 
 `GET /api/v1/videos` narrows by `playlist`, `min_seconds`, `max_seconds` and `artist`, which
 matches part of an artist's name ignoring case and accents. `sort` is one of `longest`, `shortest`,
-`newest`, `oldest`, `title` or `random`. The first is the order when `sort` is absent.
+`newest`, `oldest`, `title` or `random`. The first is the order when `sort` is absent. A random
+order comes out new on every request, so it answers one page, of `limit` videos or every one, and
+has no next.
 `GET /api/v1/suggestions` takes `playlist`, and a `limit` of up to 100 that is one when absent.
 
 A play's `id` is a UUIDv7 the client generates, written lowercase with hyphens, so sending the
@@ -177,8 +179,10 @@ On SIGTERM the server begins no new playlist write, answering 503 `shutting_down
 requests in flight up to 30 seconds to finish. A container's stop timeout has to be longer.
 
 A paged list answers `{"data": [...], "has_more": true}`. The next page is the same request with
-`starting_after` set to the last id on this one. `limit` sets the page size, 20 when absent and at
-most 100.
+`starting_after` set to the last id on this one. `limit` sets the page size, at most 100. When it is
+absent, videos and playlists answer the whole list as one page, and plays and sync runs answer 20. A
+`starting_after` naming no row of the list is refused, since the list has changed since the page
+before.
 
 A refused request answers `{"error": "<sentence>", "code": "<code>"}`. The sentence is for a person
 and can change. The code is for a client to branch on, and `api/wire` lists every one.

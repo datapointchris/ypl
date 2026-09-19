@@ -79,13 +79,26 @@ var VideoSorts = []string{"longest", "shortest", "newest", "oldest", "title", "r
 // ListVideos is every available video some playlist holds, narrowed by filter,
 // read whole or a page at a time as the server answers.
 func (c *Client) ListVideos(ctx context.Context, filter VideoFilter) ([]LibraryVideo, error) {
-	return all(ctx, c, "/api/v1/videos", [][2]string{
+	return all(ctx, c, "/api/v1/videos", filter.pairs(), videoCursor)
+}
+
+// ListVideosUpTo is the first limit videos ListVideos would answer, and whether
+// more follow.
+func (c *Client) ListVideosUpTo(ctx context.Context, filter VideoFilter, limit int) (Page[LibraryVideo], error) {
+	return collect(ctx, c, "/api/v1/videos", filter.pairs(), limit, videoCursor)
+}
+
+func videoCursor(video LibraryVideo) string { return video.ID }
+
+// pairs is the filter as the server's own parameters.
+func (filter VideoFilter) pairs() [][2]string {
+	return [][2]string{
 		{"playlist", filter.Playlist},
 		{"artist", filter.Artist},
 		{"min_seconds", seconds(filter.MinSeconds)},
 		{"max_seconds", seconds(filter.MaxSeconds)},
 		{"sort", filter.Sort},
-	}, func(video LibraryVideo) string { return video.ID })
+	}
 }
 
 // seconds is a duration bound as the server takes it, and "" for no bound.

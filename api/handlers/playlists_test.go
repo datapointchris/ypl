@@ -60,7 +60,7 @@ func TestPlaylistsListByTitleWithTheirCounts(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
 
-	got := decode[[]wirePlaylistSummary](t, f.get("/api/v1/playlists"), http.StatusOK)
+	got := decode[wirePage[wirePlaylistSummary]](t, f.get("/api/v1/playlists"), http.StatusOK).Data
 	want := []wirePlaylistSummary{
 		{ID: "PLA", Title: "Alpha", Description: "First", Privacy: "private", ItemCount: 3, UnavailableCount: 1, EnrichedCount: 1},
 		{ID: "PLC", Title: "Écoute", Description: "", Privacy: "unlisted", ItemCount: 0, UnavailableCount: 0, EnrichedCount: 0},
@@ -74,11 +74,18 @@ func TestPlaylistsListByTitleWithTheirCounts(t *testing.T) {
 			t.Errorf("playlist %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
+
+	// They come a page at a time, each after the last id of the one before.
+	first := decode[wirePage[wirePlaylistSummary]](t, f.get("/api/v1/playlists?limit=2"), http.StatusOK)
+	rest := decode[wirePage[wirePlaylistSummary]](t, f.get("/api/v1/playlists?limit=2&starting_after=PLC"), http.StatusOK)
+	if len(first.Data) != 2 || !first.HasMore || len(rest.Data) != 1 || rest.Data[0].ID != "PLB" || rest.HasMore {
+		t.Errorf("pages = %+v then %+v, want Alpha and Écoute, then zulu alone", first, rest)
+	}
 }
 
 func TestNoPlaylistsListAsAnEmptyList(t *testing.T) {
 	f := newFixture(t)
-	if got := decode[[]wirePlaylistSummary](t, f.get("/api/v1/playlists"), http.StatusOK); got == nil {
+	if got := decode[wirePage[wirePlaylistSummary]](t, f.get("/api/v1/playlists"), http.StatusOK).Data; got == nil {
 		t.Fatal("no playlists answered null, want []")
 	}
 }
