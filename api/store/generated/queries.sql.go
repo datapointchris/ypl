@@ -1851,6 +1851,56 @@ func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBefore
 	return items, nil
 }
 
+const listTrackTexts = `-- name: ListTrackTexts :many
+SELECT
+    track_id,
+    artist,
+    title,
+    raw_text,
+    source
+FROM tracks
+ORDER BY track_id
+`
+
+type ListTrackTextsRow struct {
+	TrackID int64
+	Artist  sql.NullString
+	Title   string
+	RawText string
+	Source  string
+}
+
+// Every stored track's text as it was read, and the artist and title parsed
+// from it.
+func (q *Queries) ListTrackTexts(ctx context.Context) ([]ListTrackTextsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTrackTexts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTrackTextsRow
+	for rows.Next() {
+		var i ListTrackTextsRow
+		if err := rows.Scan(
+			&i.TrackID,
+			&i.Artist,
+			&i.Title,
+			&i.RawText,
+			&i.Source,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTracks = `-- name: ListTracks :many
 SELECT
     track_id,
@@ -2214,6 +2264,22 @@ type SetRefusedWriteParams struct {
 
 func (q *Queries) SetRefusedWrite(ctx context.Context, arg SetRefusedWriteParams) error {
 	_, err := q.db.ExecContext(ctx, setRefusedWrite, arg.RefusedWriteID, arg.PlaylistID)
+	return err
+}
+
+const setTrackArtistAndTitle = `-- name: SetTrackArtistAndTitle :exec
+UPDATE tracks SET artist = ?1, title = ?2
+WHERE track_id = ?3
+`
+
+type SetTrackArtistAndTitleParams struct {
+	Artist  sql.NullString
+	Title   string
+	TrackID int64
+}
+
+func (q *Queries) SetTrackArtistAndTitle(ctx context.Context, arg SetTrackArtistAndTitleParams) error {
+	_, err := q.db.ExecContext(ctx, setTrackArtistAndTitle, arg.Artist, arg.Title, arg.TrackID)
 	return err
 }
 

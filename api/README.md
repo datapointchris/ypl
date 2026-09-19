@@ -64,7 +64,9 @@ that budget stops. A server configured to read no video needs no `yt-dlp` and st
 those the timestamped lines of its description, or failing that the first of its top 20 comments
 holding at least 3 timestamped lines that run forward and reach at least half way through the
 video. Fewer than 3 chapters are read as no chapters, since `yt-dlp` reports chapters it derived
-from the description the same way it reports chapters YouTube marked.
+from the description the same way it reports chapters YouTube marked. Each track keeps the line it
+was read from, and the store derives every track's artist and title from that line again each time
+it opens, so a parser that learns a shape of line corrects the tracks read before it.
 
 When YouTube refuses a read for its rate limit or its bot check, the run stops reading and records
 it, and no run reads for a day after. A run also stops once 3 reads in a row fail, whatever they

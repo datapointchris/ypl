@@ -281,9 +281,11 @@ func TestARevisionCountsOnlyFromTheRevisionHeld(t *testing.T) {
 	}
 }
 
-// A database whose playlists were stored before the server kept its own order
-// takes each playlist's items as both its entries and its base.
-func TestMigratingKeepsEachPlaylistsItemsAsItsEntriesAndBase(t *testing.T) {
+// A store written by an older release is brought to this one when it opens. Its
+// playlists, stored before the server kept its own order, take each playlist's
+// items as both its entries and its base. Its tracks take what this parser
+// makes of the text each was read from, whatever an older parser made of it.
+func TestOpeningAnOlderStoreBringsItsPlaylistsAndTracksToThisRelease(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "api.db")
 	db, err := sql.Open("sqlite", URI(path, "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"))
@@ -306,6 +308,14 @@ func TestMigratingKeepsEachPlaylistsItemsAsItsEntriesAndBase(t *testing.T) {
 		`INSERT INTO playlists (playlist_id, title, description, privacy) VALUES ('PLA', 'A', '', 'private')`,
 		`INSERT INTO videos (video_id, title, channel_title, is_unavailable) VALUES ('a', 'A', 'C', 0), ('b', 'B', 'C', 0)`,
 		`INSERT INTO playlist_items (item_id, playlist_id, position, video_id) VALUES ('i2', 'PLA', 1, 'a'), ('i1', 'PLA', 0, 'b')`,
+		`INSERT INTO track_sources (source, label, description) VALUES ('comment', 'Comment', '')`,
+		`INSERT INTO tracks (video_id, position, artist, title, raw_text, source) VALUES
+			('a', 1, '• Baby Run', 'Jimi Jules', '00:00 • Baby Run - Jimi Jules', 'comment'),
+			('a', 2, NULL, '• Superman', '14:47 • Superman', 'comment'),
+			('a', 3, '*NSYNC', 'Bye Bye Bye', '20:00 *NSYNC - Bye Bye Bye', 'comment'),
+			('a', 4, '• ID', 'ID', '30:00 • ID - ID', 'comment'),
+			('a', 5, '• 1. Caribou', 'Odessa', '40:00 • 1. Caribou - Odessa', 'comment'),
+			('a', 6, '️ Baby Run', 'Jimi Jules', '50:00 ▶️ Baby Run - Jimi Jules', 'comment')`,
 	} {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			t.Fatalf("%s: %v", statement, err)
@@ -328,6 +338,21 @@ func TestMigratingKeepsEachPlaylistsItemsAsItsEntriesAndBase(t *testing.T) {
 	}
 	if held := state(t, st, "PLA"); held.Revision != 1 || held.Sort != SortManual || held.UnansweredWriteID.Valid || held.RefusedWriteID.Valid {
 		t.Fatalf("state = %+v, want revision 1, sorted manually, with no write unanswered or refused", held)
+	}
+	tracks, err := st.Queries.ListTracks(ctx, "a")
+	if err != nil || len(tracks) != 6 {
+		t.Fatalf("tracks of a = %+v, %v, want the six stored", tracks, err)
+	}
+	var got []string
+	for _, track := range tracks {
+		got = append(got, track.Artist.String+" - "+track.Title)
+	}
+	want := []string{
+		"Baby Run - Jimi Jules", " - Superman", "*NSYNC - Bye Bye Bye",
+		" - ID", "Caribou - Odessa", "Baby Run - Jimi Jules",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("tracks = %q, want %q: markers, an unidentified artist and a track number gone, an asterisk in a name kept", got, want)
 	}
 }
 

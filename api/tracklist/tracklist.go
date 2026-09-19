@@ -64,6 +64,13 @@ type Track struct {
 // on both sides. The whitespace is what keeps "Jay-Z" whole.
 var artistTitleSeparator = regexp.MustCompile(`\s+[-–—~]\s+`)
 
+// leadingMarker is the list markers opening a text, as a commenter who writes
+// a tracklist as a list puts one after each timestamp: "• Baby Run - Jimi
+// Jules", "▶️ Baby Run", "🎵 Baby Run". A bullet may touch the name. Any other
+// symbol or emoji is a marker only with whitespace after it, which keeps
+// "*NSYNC" whole, and an emoji's presentation selector goes with it.
+var leadingMarker = regexp.MustCompile(`^\s*(?:[•·●▪◦►▶]\x{FE0F}?\s*|[\p{So}\p{Sm}]\x{FE0F}?\s+)+`)
+
 // leadingTrackNumber is a track number opening a text: "1.", "01)" or "#3". A
 // colon does not end one, since a number before a colon is part of a title far
 // more often than it numbers a track: "1:1 Sessions".
@@ -90,12 +97,12 @@ var timestampLast = regexp.MustCompile(`^\s*(\S.*?)\s*(?:[-–—|]\s*)?[\[(]?(?
 var unknownArtists = map[string]bool{"id": true, "?": true, "unknown": true, "n/a": true}
 
 // SplitArtistAndTitle splits "Artist - Title" at its first separator, so
-// "Bicep - Glue - Extended Mix" keeps its version on the title. A leading
-// track number and quotes around the text are dropped first. The artist is
-// empty when the text holds no separator with words on both sides, or names an
-// artist nobody has identified.
+// "Bicep - Glue - Extended Mix" keeps its version on the title. A leading list
+// marker, a leading track number and quotes around the text are dropped first.
+// The artist is empty when the text holds no separator with words on both
+// sides, or names an artist nobody has identified.
 func SplitArtistAndTitle(text string) (artist, title string) {
-	cleaned := unquoted(strings.TrimSpace(leadingTrackNumber.ReplaceAllString(text, "")))
+	cleaned := unquoted(strings.TrimSpace(leadingTrackNumber.ReplaceAllString(leadingMarker.ReplaceAllString(text, ""), "")))
 	parts := artistTitleSeparator.Split(cleaned, 2)
 	if len(parts) != 2 {
 		return "", cleaned
@@ -124,6 +131,23 @@ func unquoted(text string) string {
 		return text
 	}
 	return strings.TrimSpace(inner[:len(inner)-lastSize])
+}
+
+// Rederive is the artist and title this parser makes of a stored track's text,
+// read from source, and false when the parser makes no track of it. A
+// chapter's text is its title; a line of text carries its timestamp, which is
+// dropped.
+func Rederive(raw string, source Source) (artist, title string, ok bool) {
+	text := raw
+	if source != SourceChapter {
+		_, rest, found := timestamped(raw)
+		if !found {
+			return "", "", false
+		}
+		text = rest
+	}
+	artist, title = SplitArtistAndTitle(text)
+	return artist, title, title != ""
 }
 
 // FromChapters is a track for each chapter, with the chapter's start and end.

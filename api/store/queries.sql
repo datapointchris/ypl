@@ -58,6 +58,22 @@ FROM tracks
 WHERE video_id = ?
 ORDER BY position;
 
+-- name: ListTrackTexts :many
+-- Every stored track's text as it was read, and the artist and title parsed
+-- from it.
+SELECT
+    track_id,
+    artist,
+    title,
+    raw_text,
+    source
+FROM tracks
+ORDER BY track_id;
+
+-- name: SetTrackArtistAndTitle :exec
+UPDATE tracks SET artist = sqlc.narg(artist), title = sqlc.arg(title)
+WHERE track_id = sqlc.arg(track_id);
+
 -- name: UpsertEnrichFailure :exec
 INSERT INTO enrich_failures (video_id, attempted_ts, reason, attempts, retry_ts)
 VALUES (?, ?, ?, ?, ?)
