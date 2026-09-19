@@ -1,29 +1,32 @@
-[
-  {
-    "id": "PLA",
-    "title": "Alpha",
-    "description": "First",
-    "privacy": "private",
-    "item_count": 3,
-    "unavailable_count": 1,
-    "enriched_count": 1
-  },
-  {
-    "id": "PLC",
-    "title": "Écoute",
-    "description": "",
-    "privacy": "unlisted",
-    "item_count": 0,
-    "unavailable_count": 0,
-    "enriched_count": 0
-  },
-  {
-    "id": "PLB",
-    "title": "zulu",
-    "description": "",
-    "privacy": "public",
-    "item_count": 3,
-    "unavailable_count": 0,
-    "enriched_count": 0
-  }
-]
+{
+  "data": [
+    {
+      "id": "PLA",
+      "title": "Alpha",
+      "description": "First",
+      "privacy": "private",
+      "item_count": 3,
+      "unavailable_count": 1,
+      "enriched_count": 1
+    },
+    {
+      "id": "PLC",
+      "title": "Écoute",
+      "description": "",
+      "privacy": "unlisted",
+      "item_count": 0,
+      "unavailable_count": 0,
+      "enriched_count": 0
+    },
+    {
+      "id": "PLB",
+      "title": "zulu",
+      "description": "",
+      "privacy": "public",
+      "item_count": 3,
+      "unavailable_count": 0,
+      "enriched_count": 0
+    }
+  ],
+  "has_more": false
+}

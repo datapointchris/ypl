@@ -435,7 +435,7 @@ func TestAWriteYouTubeRefusesIsA422ThatChangesNothing(t *testing.T) {
 			t.Errorf("%s %s answered %s, want YouTube's message", c.method, c.target, rec.Body)
 		}
 	}
-	playlists := decode[[]wirePlaylistSummary](t, f.get("/api/v1/playlists"), http.StatusOK)
+	playlists := decode[wirePage[wirePlaylistSummary]](t, f.get("/api/v1/playlists"), http.StatusOK).Data
 	if len(playlists) != 3 || playlists[0].Title != "Alpha" || playlists[0].Description != "First" {
 		t.Errorf("playlists after refused writes = %+v, want the library as it was", playlists)
 	}
@@ -458,7 +458,7 @@ func TestAWriteWithNoAnswerIsA502ThatChangesNothingStored(t *testing.T) {
 	} {
 		refused(t, f.do(c.method, c.target, c.body), http.StatusBadGateway, wire.CodeYouTubeWriteFailed)
 	}
-	playlists := decode[[]wirePlaylistSummary](t, f.get("/api/v1/playlists"), http.StatusOK)
+	playlists := decode[wirePage[wirePlaylistSummary]](t, f.get("/api/v1/playlists"), http.StatusOK).Data
 	if len(playlists) != 3 || playlists[0].Title != "Alpha" {
 		t.Errorf("playlists after failed writes = %+v, want the library as it was", playlists)
 	}
@@ -530,7 +530,7 @@ func TestAWriteWhoseCallerWentAwayIsStillMadeAndStored(t *testing.T) {
 	if f.youtube.canceled {
 		t.Error("a request reached YouTube on a canceled context")
 	}
-	playlists := decode[[]wirePlaylistSummary](t, f.get("/api/v1/playlists"), http.StatusOK)
+	playlists := decode[wirePage[wirePlaylistSummary]](t, f.get("/api/v1/playlists"), http.StatusOK).Data
 	var titles []string
 	for _, p := range playlists {
 		titles = append(titles, p.Title)

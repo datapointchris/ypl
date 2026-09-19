@@ -53,6 +53,10 @@ type videoSummary struct {
 }
 
 func (h *Handlers) listPlaylists(w http.ResponseWriter, r *http.Request) {
+	limit, ok := limitParam(w, r, playlistsPage)
+	if !ok {
+		return
+	}
 	rows, err := h.store.Queries.ListPlaylistSummaries(r.Context())
 	if err != nil {
 		h.writeInternalError(w, r, err)
@@ -74,7 +78,10 @@ func (h *Handlers) listPlaylists(w http.ResponseWriter, r *http.Request) {
 	slices.SortFunc(playlists, func(a, b playlistSummary) int {
 		return cmp.Or(c.CompareString(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
 	})
-	wire.JSON(w, http.StatusOK, playlists)
+	answer, ok := pageAfter(w, playlists, func(p playlistSummary) string { return p.ID }, r.URL.Query().Get("starting_after"), limit)
+	if ok {
+		wire.JSON(w, http.StatusOK, answer)
+	}
 }
 
 func (h *Handlers) showPlaylist(w http.ResponseWriter, r *http.Request) {

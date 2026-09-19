@@ -76,9 +76,9 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 		document string
 		into     func() any
 	}{
-		{"playlists", func() any { return &[]PlaylistSummary{} }},
+		{"playlists", func() any { return &page[PlaylistSummary]{} }},
 		{"playlist", func() any { return &Playlist{} }},
-		{"videos", func() any { return &[]LibraryVideo{} }},
+		{"videos", func() any { return &page[LibraryVideo]{} }},
 		{"video", func() any { return &Video{} }},
 		{"plays", func() any { return &page[Play]{} }},
 		{"suggestions", func() any { return &[]Suggestion{} }},

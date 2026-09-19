@@ -108,10 +108,13 @@ func orderNames() string {
 	return strings.Join(names, ", ")
 }
 
-// listVideos answers every available video some playlist holds. playlist keeps
-// the videos that playlist holds, min_seconds and max_seconds bound the
-// duration, artist keeps the videos with an artist whose name contains it
-// ignoring case and accents, and sort names the order.
+// listVideos answers a page of the available videos some playlist holds.
+// playlist keeps the videos that playlist holds, min_seconds and max_seconds
+// bound the duration, artist keeps the videos with an artist whose name
+// contains it ignoring case and accents, and sort names the order.
+//
+// A random order comes out new on every request, so it is a draw rather than a
+// page of a standing list: it answers limit videos and has no next page.
 func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	filter := generated.ListLibraryVideosParams{PlaylistID: optionalText(r, "playlist")}
@@ -132,6 +135,15 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	artist := r.URL.Query().Get("artist")
+	limit, ok := limitParam(w, r, videosPage)
+	if !ok {
+		return
+	}
+	after := r.URL.Query().Get("starting_after")
+	if after != "" && order.compare == nil {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "a random order has no next page, so it takes no starting_after")
+		return
+	}
 
 	var rows []generated.ListLibraryVideosRow
 	var artists []generated.ListVideoArtistsRow
@@ -186,12 +198,16 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 
 	if order.compare == nil {
 		rand.Shuffle(len(videos), func(i, j int) { videos[i], videos[j] = videos[j], videos[i] })
-	} else {
-		slices.SortFunc(videos, func(a, b libraryVideo) int {
-			return cmp.Or(order.compare(&a, &b), c.CompareString(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
-		})
+		wire.JSON(w, http.StatusOK, page[libraryVideo]{Data: videos[:min(int64(len(videos)), limit)], HasMore: false})
+		return
 	}
-	wire.JSON(w, http.StatusOK, videos)
+	slices.SortFunc(videos, func(a, b libraryVideo) int {
+		return cmp.Or(order.compare(&a, &b), c.CompareString(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
+	})
+	answer, ok := pageAfter(w, videos, func(v libraryVideo) string { return v.ID }, after, limit)
+	if ok {
+		wire.JSON(w, http.StatusOK, answer)
+	}
 }
 
 // resolveVideo is the id of the video ref names, by its id or loosely as
