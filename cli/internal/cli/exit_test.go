@@ -52,6 +52,12 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		}
 	}
 
+	// A video id can open with a dash, and one copied from a list then reads as
+	// a run of short flags. The refusal names the line that passes it as an id.
+	if got := f.run("videos", "show", "-w9kW6mNTlk"); got.code != 2 || !strings.Contains(got.err, "-- -w9kW6mNTlk") {
+		t.Errorf("a dash-led id exited %d saying %q, want 2 and the line with --", got.code, got.err)
+	}
+
 	// A command that moved is answered with the line that replaced it, whether
 	// it is run or its help is asked for.
 	for now, args := range map[string][]string{
