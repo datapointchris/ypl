@@ -306,9 +306,38 @@ func TestOpeningAnOlderStoreBringsItsPlaylistsAndTracksToThisRelease(t *testing.
 	for _, statement := range []string{
 		`INSERT INTO playlist_privacies (privacy, label, description) VALUES ('private', 'Private', '')`,
 		`INSERT INTO playlists (playlist_id, title, description, privacy) VALUES ('PLA', 'A', '', 'private')`,
-		`INSERT INTO videos (video_id, title, channel_title, is_unavailable) VALUES ('a', 'A', 'C', 0), ('b', 'B', 'C', 0)`,
+		`INSERT INTO videos (video_id, title, channel_title, is_unavailable) VALUES
+			('a', 'A', 'C', 0), ('b', 'B', 'C', 0), ('w', 'W', 'C', 0), ('t', 'T', 'C', 0), ('m', 'M', 'C', 0),
+			('u', 'U', 'C', 0)`,
 		`INSERT INTO playlist_items (item_id, playlist_id, position, video_id) VALUES ('i2', 'PLA', 1, 'a'), ('i1', 'PLA', 0, 'b')`,
-		`INSERT INTO track_sources (source, label, description) VALUES ('comment', 'Comment', '')`,
+		`INSERT INTO track_sources (source, label, description) VALUES ('comment', 'Comment', ''), ('chapter', 'Chapter', '')`,
+		// w credits five artists, and t names four of them as titles: t is
+		// written title first, but for its fifth line, which names an artist
+		// w credits as its artist. Only t credits Ada, and only once it is read
+		// the right way round, which is what makes u's fourth known title. m
+		// names five of them as titles and three as artists, too few more for a
+		// list read the wrong way round.
+		`INSERT INTO tracks (video_id, position, artist, title, raw_text, source) VALUES
+			('w', 1, 'Monolink', 'Return To Oz', 'Monolink - Return To Oz', 'chapter'),
+			('w', 2, 'Worakls', 'Nocturne', 'Worakls - Nocturne', 'chapter'),
+			('w', 3, 'Rohne', 'Kiara', 'Rohne - Kiara', 'chapter'),
+			('w', 4, 'Ben Bohmer', 'Hear Me', 'Ben Bohmer - Hear Me', 'chapter'),
+			('w', 5, 'Stephan Bodzin', 'Birth', 'Stephan Bodzin - Birth', 'chapter'),
+			('t', 1, 'Laura', 'Monolink', 'Laura - Monolink', 'chapter'),
+			('t', 2, 'Father Ocean', 'Worakls', 'Father Ocean - Worakls', 'chapter'),
+			('t', 3, 'Salzburg', 'Rohne', 'Salzburg - Rohne', 'chapter'),
+			('t', 4, 'Flicker', 'Ben Böhmer (Extended Mix)', 'Flicker - Ben Böhmer (Extended Mix)', 'chapter'),
+			('t', 5, 'Stephan Bodzin', 'Singularity', 'Stephan Bodzin - Singularity', 'chapter'),
+			('t', 6, 'Kiara', 'Ada', 'Kiara - Ada', 'chapter'),
+			('u', 1, 'One', 'Ada', 'One - Ada', 'chapter'),
+			('u', 2, 'Two', 'Monolink', 'Two - Monolink', 'chapter'),
+			('u', 3, 'Three', 'Worakls', 'Three - Worakls', 'chapter'),
+			('u', 4, 'Four', 'Rohne', 'Four - Rohne', 'chapter'),
+			('m', 1, 'Worakls', 'Monolink', 'Worakls - Monolink', 'chapter'),
+			('m', 2, 'Rohne', 'Ben Bohmer', 'Rohne - Ben Bohmer', 'chapter'),
+			('m', 3, 'Monolink', 'Rohne', 'Monolink - Rohne', 'chapter'),
+			('m', 4, 'Xyzzy', 'Worakls', 'Xyzzy - Worakls', 'chapter'),
+			('m', 5, 'Plugh', 'Stephan Bodzin', 'Plugh - Stephan Bodzin', 'chapter')`,
 		`INSERT INTO tracks (video_id, position, artist, title, raw_text, source) VALUES
 			('a', 1, '• Baby Run', 'Jimi Jules', '00:00 • Baby Run - Jimi Jules', 'comment'),
 			('a', 2, NULL, '• Superman', '14:47 • Superman', 'comment'),
@@ -353,6 +382,27 @@ func TestOpeningAnOlderStoreBringsItsPlaylistsAndTracksToThisRelease(t *testing.
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("tracks = %q, want %q: markers, an unidentified artist and a track number gone, an asterisk in a name kept", got, want)
+	}
+
+	oriented, err := st.Queries.ListTracks(ctx, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = nil
+	for _, track := range oriented {
+		got = append(got, track.Artist.String+" - "+track.Title)
+	}
+	want = []string{
+		"Monolink - Laura", "Worakls - Father Ocean", "Rohne - Salzburg",
+		"Ben Böhmer - Flicker (Extended Mix)", "Stephan Bodzin - Singularity", "Ada - Kiara",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("tracks of t = %q, want %q: read artist first, its annotation on the title, its artist-first line as written", got, want)
+	}
+	for video, artist := range map[string]string{"w": "Monolink", "m": "Worakls", "u": "Ada"} {
+		if first, err := st.Queries.ListTracks(ctx, video); err != nil || first[0].Artist.String != artist {
+			t.Errorf("tracks of %s = %+v, %v, want %s's first", video, first, err, artist)
+		}
 	}
 }
 

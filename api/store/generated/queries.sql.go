@@ -1862,16 +1862,18 @@ func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBefore
 const listTrackTexts = `-- name: ListTrackTexts :many
 SELECT
     track_id,
+    video_id,
     artist,
     title,
     raw_text,
     source
 FROM tracks
-ORDER BY track_id
+ORDER BY video_id, position
 `
 
 type ListTrackTextsRow struct {
 	TrackID int64
+	VideoID string
 	Artist  sql.NullString
 	Title   string
 	RawText string
@@ -1879,7 +1881,7 @@ type ListTrackTextsRow struct {
 }
 
 // Every stored track's text as it was read, and the artist and title parsed
-// from it.
+// from it, a video's tracks together and in order.
 func (q *Queries) ListTrackTexts(ctx context.Context) ([]ListTrackTextsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listTrackTexts)
 	if err != nil {
@@ -1891,6 +1893,7 @@ func (q *Queries) ListTrackTexts(ctx context.Context) ([]ListTrackTextsRow, erro
 		var i ListTrackTextsRow
 		if err := rows.Scan(
 			&i.TrackID,
+			&i.VideoID,
 			&i.Artist,
 			&i.Title,
 			&i.RawText,

@@ -43,6 +43,8 @@ func TestSplitArtistAndTitle(t *testing.T) {
 		{"• ID - ID", "", "ID"},
 		{"*NSYNC - Bye Bye Bye", "*NSYNC", "Bye Bye Bye"},
 		{"01) Caribou - Odessa", "Caribou", "Odessa"},
+		{"1..Caribou - Odessa", "Caribou", "Odessa"},
+		{"1).Caribou - Odessa", "Caribou", "Odessa"},
 		{"#3 Caribou - Odessa", "Caribou", "Odessa"},
 		{"Intro", "", "Intro"},
 		{"ID - ID", "", "ID"},

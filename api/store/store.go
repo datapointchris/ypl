@@ -233,34 +233,49 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := st.rederive(ctx); err != nil {
+	if err := st.Rederive(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return st, nil
 }
 
-// rederive sets each stored track's artist and title to what this release's
-// parser makes of the text the track was read from. raw_text keeps that text
-// whole, so a parser that learns a shape of line corrects every track read
-// before it on the next open, and no migration restates the parser's rules in
-// SQL. A text the parser makes no track of keeps what it holds.
-func (s *Store) rederive(ctx context.Context) error {
+// Rederive sets each stored track's artist and title to what this release's
+// parser makes of the text the track was read from, with each tracklist
+// written title first read the right way round, as tracklist.Orient judges
+// it. raw_text keeps that text whole, so a parser that learns a shape of line
+// corrects every track read before it, and no migration restates the parser's
+// rules in SQL. A text the parser makes no track of keeps what it holds.
+//
+// Open runs it, and so does enrichment once it stores a tracklist, since each
+// tracklist is judged against all the others.
+func (s *Store) Rederive(ctx context.Context) error {
 	return s.InTx(ctx, func(tx *Tx) error {
-		tracks, err := tx.ListTrackTexts(ctx)
+		rows, err := tx.ListTrackTexts(ctx)
 		if err != nil {
 			return fmt.Errorf("read the stored tracks: %w", err)
 		}
-		for _, track := range tracks {
-			artist, title, ok := tracklist.Rederive(track.RawText, tracklist.Source(track.Source))
-			parsed := sql.NullString{String: artist, Valid: artist != ""}
-			if !ok || parsed == track.Artist && title == track.Title {
+		lists := map[string][]tracklist.Track{}
+		for _, row := range rows {
+			artist, title, ok := tracklist.Rederive(row.RawText, tracklist.Source(row.Source))
+			if !ok {
+				artist, title = row.Artist.String, row.Title
+			}
+			lists[row.VideoID] = append(lists[row.VideoID], tracklist.Track{Artist: artist, Title: title})
+		}
+		tracklist.Orient(lists)
+		next := map[string]int{}
+		for _, row := range rows {
+			track := lists[row.VideoID][next[row.VideoID]]
+			next[row.VideoID]++
+			derived := sql.NullString{String: track.Artist, Valid: track.Artist != ""}
+			if derived == row.Artist && track.Title == row.Title {
 				continue
 			}
 			if err := tx.SetTrackArtistAndTitle(ctx, generated.SetTrackArtistAndTitleParams{
-				Artist: parsed, Title: title, TrackID: track.TrackID,
+				Artist: derived, Title: track.Title, TrackID: row.TrackID,
 			}); err != nil {
-				return fmt.Errorf("derive track %d again: %w", track.TrackID, err)
+				return fmt.Errorf("derive track %d again: %w", row.TrackID, err)
 			}
 		}
 		return nil
