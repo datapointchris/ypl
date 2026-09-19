@@ -50,8 +50,8 @@ import (
 const shutdownGrace = max(handlers.WriteDuration, reconcile.WriteDuration) + 5*time.Second
 
 // defaultSyncInterval is the mean wait between ticks when SYNC_INTERVAL is
-// unset. A tick reads the listing and one playlist, a few units, so a day of
-// them spends under a tenth of the quota.
+// unset. A tick reads the listing and one average playlist, which reconcile's
+// quota guard keeps back for every tick left in the day.
 const defaultSyncInterval = 5 * time.Minute
 
 // leastSyncInterval is the shortest SYNC_INTERVAL the server takes. A day of
@@ -164,9 +164,9 @@ func syncInterval() (time.Duration, error) {
 }
 
 // defaultEnrichPace is the least time between two reads of videos when
-// ENRICH_PACE is unset, about 26 reads an hour once each wait adds its jitter.
-// yt-dlp reads from the server's own address, which YouTube throttles after
-// reads that come too fast.
+// ENRICH_PACE is unset. Each wait adds up to the pace again at random, so reads
+// average one every pace and a half. yt-dlp reads from the server's own
+// address, which YouTube throttles after reads that come too fast.
 const defaultEnrichPace = 90 * time.Second
 
 // enrichment is the limits the reading of videos keeps to, from ENRICH_PACE or
