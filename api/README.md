@@ -46,6 +46,11 @@ each merge and is added to at its end, until an edit of its order tries position
 playlist whose items were written less than a minute before a run read them is left for the next
 run.
 
+A run then reads, through the Data API, the length of each video a playlist holds that it holds no
+length for, the newest first, up to 1,000 a run at a unit per 50. So a filter or an order by length
+reaches a video before its tracklist is read. Once the library is measured, a run reads the videos
+new since the last and any YouTube reports no length for, which are live and upcoming streams.
+
 Each run then reads a tracklist for each video the playlists hold that has none, the newest in a
 playlist first, which `api/enrich` queues and paces. The Data API reports neither chapters nor
 comments, so these reads go through `yt-dlp`, signed in as nobody, at `YTDLP_PATH` or on `PATH`;

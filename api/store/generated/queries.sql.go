@@ -2085,6 +2085,45 @@ func (q *Queries) ListVideosToEnrich(ctx context.Context, arg ListVideosToEnrich
 	return items, nil
 }
 
+const listVideosWithoutLength = `-- name: ListVideosWithoutLength :many
+SELECT v.video_id
+FROM videos AS v
+INNER JOIN playlist_entries AS pe ON v.video_id = pe.video_id
+WHERE v.duration_seconds IS NULL AND v.is_unavailable = 0
+GROUP BY v.video_id
+ORDER BY max(pe.entry_id) DESC
+LIMIT ?1
+`
+
+// At most max_rows of the videos some playlist holds that play and that the
+// store holds no length for, the ones a playlist gained latest first. A video
+// no playlist holds is left out: no playlist read reaches it to mark it
+// unavailable once YouTube deletes it, so it would be asked for on every run.
+// A video YouTube reports no length for, a live or upcoming stream, is asked
+// for on every run until it has one.
+func (q *Queries) ListVideosWithoutLength(ctx context.Context, maxRows int64) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listVideosWithoutLength, maxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var video_id string
+		if err := rows.Scan(&video_id); err != nil {
+			return nil, err
+		}
+		items = append(items, video_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const seedVideo = `-- name: SeedVideo :exec
 INSERT INTO videos (
     video_id, title, channel_title, duration_seconds, description, upload_date, is_unavailable, enriched_ts
@@ -2195,7 +2234,7 @@ func (q *Queries) SetUnansweredWrite(ctx context.Context, arg SetUnansweredWrite
 
 const setVideoEnrichment = `-- name: SetVideoEnrichment :execrows
 UPDATE videos SET
-    duration_seconds = ?1,
+    duration_seconds = coalesce(?1, duration_seconds),
     description = ?2,
     upload_date = ?3,
     enriched_ts = ?4
@@ -2211,7 +2250,8 @@ type SetVideoEnrichmentParams struct {
 }
 
 // Stores what a full read of a video reports that a playlist read does not, and
-// when enrichment read it.
+// when enrichment read it. A read that reports no length keeps the one the
+// store holds.
 func (q *Queries) SetVideoEnrichment(ctx context.Context, arg SetVideoEnrichmentParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setVideoEnrichment,
 		arg.DurationSeconds,
@@ -2224,6 +2264,22 @@ func (q *Queries) SetVideoEnrichment(ctx context.Context, arg SetVideoEnrichment
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setVideoLength = `-- name: SetVideoLength :exec
+UPDATE videos SET duration_seconds = ?1
+WHERE video_id = ?2 AND duration_seconds IS NULL
+`
+
+type SetVideoLengthParams struct {
+	DurationSeconds sql.NullInt64
+	VideoID         string
+}
+
+// Stores the length of a video the store holds none for.
+func (q *Queries) SetVideoLength(ctx context.Context, arg SetVideoLengthParams) error {
+	_, err := q.db.ExecContext(ctx, setVideoLength, arg.DurationSeconds, arg.VideoID)
+	return err
 }
 
 const settleYouTubeWrite = `-- name: SettleYouTubeWrite :execrows

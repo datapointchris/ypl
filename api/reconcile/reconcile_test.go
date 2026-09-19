@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/youtube"
 )
 
@@ -32,8 +33,8 @@ func TestARunStoresEveryPlaylistAsYouTubeHoldsIt(t *testing.T) {
 		t.Fatalf("playlist %+v, %v, want it stored as YouTube reports it", playlist, err)
 	}
 	video, err := st.Queries.GetVideo(context.Background(), "d")
-	if err != nil || video.Title != "Video d" {
-		t.Fatalf("video d = %+v, %v, want it stored with its title", video, err)
+	if err != nil || video.Title != "Video d" || !video.DurationSeconds.Valid || video.DurationSeconds.Int64 != 60*60 {
+		t.Fatalf("video d = %+v, %v, want it stored with its title and the hour the Data API reports", video, err)
 	}
 }
 
@@ -102,14 +103,19 @@ func TestAPlaylistDeletedBetweenTheListAndItsReadIsDeletedHere(t *testing.T) {
 	}
 }
 
-// The playlist that could not be read keeps what the store held for it.
-func TestAReadFailureSkipsOnlyThatPlaylist(t *testing.T) {
+// A failed read costs the run only what the read was for. The playlist that
+// could not be read keeps what the store held for it, and a failed read of
+// lengths leaves those videos without one while the rest of the run goes on.
+func TestAFailedReadCostsTheRunOnlyWhatItWasFor(t *testing.T) {
 	f := newFakeChannel(map[youtube.PlaylistID]string{"PLA": "abc", "PLB": "d"})
 	r, st, _ := newRunner(t, f)
 	mustRun(t, context.Background(), r, store.OutcomeOK)
 	f.remove("PLA", 0)
 	f.add("PLB", "e", 1)
 	f.itemsErrors["PLA"] = fmt.Errorf("%w: moved", youtube.ErrInconsistentRead)
+	f.videosError = errors.New("connection reset")
+	enricher := r.enricher.(*fakeEnricher)
+	runs := enricher.runs
 
 	report := mustRun(t, context.Background(), r, store.OutcomePartial)
 	if videos, _ := stored(t, st, "PLA"); videos != "abc" || report.PlaylistsSkipped != 1 {
@@ -119,8 +125,14 @@ func TestAReadFailureSkipsOnlyThatPlaylist(t *testing.T) {
 		t.Fatalf("PLB holds %q, want de", videos)
 	}
 	failures, err := st.Queries.ListSyncFailures(context.Background(), report.RunID)
-	if err != nil || len(failures) != 1 || failures[0].PlaylistID.String != "PLA" {
-		t.Fatalf("recorded failures %+v, %v, want one against PLA", failures, err)
+	if err != nil || len(failures) != 2 || failures[0].PlaylistID.String != "PLA" || failures[1].PlaylistID.Valid {
+		t.Fatalf("recorded failures %+v, %v, want one against PLA and one of the lengths read", failures, err)
+	}
+	if video, err := st.Queries.GetVideo(context.Background(), "e"); err != nil || video.DurationSeconds.Valid {
+		t.Fatalf("video e = %+v, %v, want it stored without a length", video, err)
+	}
+	if enricher.runs != runs+1 {
+		t.Fatalf("enrichment ran %d times, want once after the failed read of lengths", enricher.runs-runs)
 	}
 }
 
@@ -136,24 +148,34 @@ func TestAFailedListingIsAFailedRun(t *testing.T) {
 	}
 }
 
+// The refusal ends the run wherever it lands, on a playlist's read or on the
+// read of lengths after the push, and no later run that day asks again.
 func TestYouTubesQuotaRefusalEndsTheRunAndTheDay(t *testing.T) {
-	f := newFakeChannel(map[youtube.PlaylistID]string{"PLA": "abc", "PLB": "d"})
-	r, _, c := newRunner(t, f)
-	f.quota = 2 // the listing and PLA's items
+	for _, quota := range []int64{
+		2, // the listing and PLA's items
+		3, // those and PLB's items, so the read of lengths is refused
+	} {
+		f := newFakeChannel(map[youtube.PlaylistID]string{"PLA": "abc", "PLB": "d"})
+		r, _, c := newRunner(t, f)
+		f.quota = quota
 
-	mustRun(t, context.Background(), r, store.OutcomeQuotaSpent)
+		mustRun(t, context.Background(), r, store.OutcomeQuotaSpent)
+		if runs := r.enricher.(*fakeEnricher).runs; quota == 3 && runs != 1 {
+			t.Fatalf("with the lengths refused, enrichment ran %d times, want once", runs)
+		}
 
-	requests := f.requests
-	c.now = c.now.Add(time.Hour)
-	mustRun(t, context.Background(), r, store.OutcomeQuotaSpent)
-	if f.requests != requests {
-		t.Fatalf("a later run the same day made %d requests, want none", f.requests-requests)
-	}
+		requests := f.requests
+		c.now = c.now.Add(time.Hour)
+		mustRun(t, context.Background(), r, store.OutcomeQuotaSpent)
+		if f.requests != requests {
+			t.Fatalf("a quota of %d: a later run the same day made %d requests, want none", quota, f.requests-requests)
+		}
 
-	f.quota = 0
-	c.now = c.now.Add(24 * time.Hour)
-	if report := mustRun(t, context.Background(), r, store.OutcomeOK); report.Playlists != 2 {
-		t.Fatalf("the next day's run stored %d playlists, want 2", report.Playlists)
+		f.quota = 0
+		c.now = c.now.Add(24 * time.Hour)
+		if report := mustRun(t, context.Background(), r, store.OutcomeOK); report.Playlists != 2 {
+			t.Fatalf("a quota of %d: the next day's run stored %d playlists, want 2", quota, report.Playlists)
+		}
 	}
 }
 
@@ -183,11 +205,27 @@ func TestACanceledRunLeavesEachPlaylistWhole(t *testing.T) {
 	if err != nil || run.Outcome != store.OutcomeCanceled {
 		t.Fatalf("recorded run %+v, %v, want it canceled", run, err)
 	}
+
+	// A run stopped during its read of lengths is canceled too, rather than
+	// recorded as a sync that failed at something.
+	f.add("PLB", "z", 1)
+	ctx, cancel = context.WithCancel(context.Background())
+	f.beforeVideos = cancel
+	report = mustRun(t, ctx, r, store.OutcomeCanceled)
+	if failures, err := st.Queries.ListSyncFailures(context.Background(), report.RunID); err != nil || len(failures) != 0 {
+		t.Fatalf("recorded failures %+v, %v, want none for a canceled read of lengths", failures, err)
+	}
 }
 
+// The second run spends only its own reads. The first measured every video a
+// playlist holds, and a video no playlist holds is never asked for, since no
+// playlist read reaches it to say YouTube has deleted it.
 func TestARunRecordsItsOwnRequestsAndUnitsAgainstThePacificDate(t *testing.T) {
 	f := newFakeChannel(map[youtube.PlaylistID]string{"PLA": "abc", "PLB": "d"})
 	r, st, c := newRunner(t, f)
+	if err := st.Queries.SeedVideo(context.Background(), generated.SeedVideoParams{VideoID: "z", Title: "Held by no playlist"}); err != nil {
+		t.Fatal(err)
+	}
 	mustRun(t, context.Background(), r, store.OutcomeOK)
 	// 05:00 UTC on the 18th is 22:00 Pacific on the 17th.
 	c.now = time.Date(2026, 9, 18, 5, 0, 0, 0, time.UTC)

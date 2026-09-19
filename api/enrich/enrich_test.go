@@ -199,6 +199,10 @@ func TestAReadThatFindsNoTracklistKeepsTheTracksAVideoHolds(t *testing.T) {
 	f := newFixture(t, "vheld")
 	ctx := context.Background()
 	err := f.st.InTx(ctx, func(tx *store.Tx) error {
+		// A read that reports no length leaves the one the Data API gave.
+		if err := tx.SetVideoLength(ctx, generated.SetVideoLengthParams{VideoID: "vheld", DurationSeconds: sql.NullInt64{Int64: 3600, Valid: true}}); err != nil {
+			return err
+		}
 		return tx.ReplaceTracks(ctx, "vheld", []generated.InsertTrackParams{
 			{Position: 1, Title: "Read before", RawText: "0:00 Read before", Source: "description"},
 		})
@@ -220,6 +224,9 @@ func TestAReadThatFindsNoTracklistKeepsTheTracksAVideoHolds(t *testing.T) {
 	tracks, err := f.st.Queries.ListTracks(ctx, "vheld")
 	if err != nil || len(tracks) != 1 || tracks[0].Title != "Read before" {
 		t.Fatalf("tracks of vheld = %+v, %v, want the one it held kept", tracks, err)
+	}
+	if video, err := f.st.Queries.GetVideo(ctx, "vheld"); err != nil || video.DurationSeconds.Int64 != 3600 {
+		t.Fatalf("vheld after a read reporting no length = %+v, %v, want its hour kept", video, err)
 	}
 }
 

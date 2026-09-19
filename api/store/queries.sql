@@ -136,13 +136,34 @@ LIMIT sqlc.arg(max_videos);
 
 -- name: SetVideoEnrichment :execrows
 -- Stores what a full read of a video reports that a playlist read does not, and
--- when enrichment read it.
+-- when enrichment read it. A read that reports no length keeps the one the
+-- store holds.
 UPDATE videos SET
-    duration_seconds = sqlc.narg(duration_seconds),
+    duration_seconds = coalesce(sqlc.narg(duration_seconds), duration_seconds),
     description = sqlc.arg(description),
     upload_date = sqlc.narg(upload_date),
     enriched_ts = sqlc.arg(enriched_ts)
 WHERE video_id = sqlc.arg(video_id);
+
+-- name: ListVideosWithoutLength :many
+-- At most max_rows of the videos some playlist holds that play and that the
+-- store holds no length for, the ones a playlist gained latest first. A video
+-- no playlist holds is left out: no playlist read reaches it to mark it
+-- unavailable once YouTube deletes it, so it would be asked for on every run.
+-- A video YouTube reports no length for, a live or upcoming stream, is asked
+-- for on every run until it has one.
+SELECT v.video_id
+FROM videos AS v
+INNER JOIN playlist_entries AS pe ON v.video_id = pe.video_id
+WHERE v.duration_seconds IS NULL AND v.is_unavailable = 0
+GROUP BY v.video_id
+ORDER BY max(pe.entry_id) DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: SetVideoLength :exec
+-- Stores the length of a video the store holds none for.
+UPDATE videos SET duration_seconds = sqlc.arg(duration_seconds)
+WHERE video_id = sqlc.arg(video_id) AND duration_seconds IS NULL;
 
 -- name: CountVideos :one
 SELECT count(*) FROM videos;

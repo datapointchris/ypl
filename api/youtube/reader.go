@@ -3,8 +3,10 @@ package youtube
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	ytapi "google.golang.org/api/youtube/v3"
@@ -94,12 +96,42 @@ func (c *Channel) Playlist(ctx context.Context, id PlaylistID) (Playlist, error)
 	return playlistFrom(response.Items[0])
 }
 
-// Video is a video as a read of it by id reports it.
+// Video is a video as a read of it by id reports it. DurationSeconds is nil
+// where YouTube reports no length, as it does for a live stream.
 type Video struct {
-	ID           VideoID
-	Title        string
-	ChannelTitle string
-	Privacy      string
+	ID              VideoID
+	Title           string
+	ChannelTitle    string
+	Privacy         string
+	DurationSeconds *int64
+}
+
+// isoDuration is a video's length as YouTube writes it, an ISO 8601 duration:
+// P, then days, then T and hours, minutes and seconds, each part optional.
+var isoDuration = regexp.MustCompile(`^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$`)
+
+// lengthOf is the seconds iso names, and nil where it names none: a zero,
+// which YouTube reports for a live stream, or text of another shape.
+func lengthOf(iso string) *int64 {
+	parts := isoDuration.FindStringSubmatch(iso)
+	if parts == nil {
+		return nil
+	}
+	var total int64
+	for i, unit := range []int64{24 * 60 * 60, 60 * 60, 60, 1} {
+		if parts[i+1] == "" {
+			continue
+		}
+		n, err := strconv.ParseInt(parts[i+1], 10, 64)
+		if err != nil {
+			return nil
+		}
+		total += n * unit
+	}
+	if total == 0 {
+		return nil
+	}
+	return &total
 }
 
 // Videos is each of ids that YouTube returns a video for, read 50 ids a
@@ -112,7 +144,7 @@ func (c *Channel) Videos(ctx context.Context, ids []VideoID) ([]Video, error) {
 		for i, id := range chunk {
 			names[i] = string(id)
 		}
-		call := c.service.Videos.List([]string{"snippet", "status"}).Id(strings.Join(names, ","))
+		call := c.service.Videos.List([]string{"snippet", "status", "contentDetails"}).Id(strings.Join(names, ","))
 		response, err := send(ctx, c, videosList, call.Context(ctx).Do)
 		if err != nil {
 			return nil, fmt.Errorf("read videos by id: %w", err)
@@ -129,12 +161,16 @@ func (c *Channel) Videos(ctx context.Context, ids []VideoID) ([]Video, error) {
 			if !slices.Contains(chunk, VideoID(resource.Id)) {
 				return nil, fmt.Errorf("%w: a read of videos by id returned %s, which it did not name", ErrUnexpectedResponse, resource.Id)
 			}
-			videos = append(videos, Video{
+			video := Video{
 				ID:           VideoID(resource.Id),
 				Title:        resource.Snippet.Title,
 				ChannelTitle: resource.Snippet.ChannelTitle,
 				Privacy:      resource.Status.PrivacyStatus,
-			})
+			}
+			if resource.ContentDetails != nil {
+				video.DurationSeconds = lengthOf(resource.ContentDetails.Duration)
+			}
+			videos = append(videos, video)
 		}
 	}
 	return videos, nil

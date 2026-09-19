@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -281,24 +282,32 @@ func TestADeleteAndAnAddBetweenPagesGoUnseen(t *testing.T) {
 	}
 }
 
-// 55 ids take two requests of 50 and 5.
+// 55 ids take two requests of 50 and 5. A length is read from the ISO 8601
+// duration YouTube writes, and a live stream's zero is no length.
 func TestVideosReadsEachVideoYouTubeReturns(t *testing.T) {
 	api := newFakeAPI(t)
 	api.videos["vidA"] = publicVideo("vidA")
 	api.videos["private"] = privateVideo()
+	live := publicVideo("live")
+	live.duration = "P0D"
+	api.videos["live"] = live
 	channel := api.channel()
-	ids := []VideoID{"vidA", "private", "unknown"}
-	for i := range 52 {
+	ids := []VideoID{"vidA", "private", "unknown", "live"}
+	for i := range 51 {
 		ids = append(ids, VideoID(fmt.Sprintf("none%02d", i)))
 	}
-	api.videos["none51"] = publicVideo("none51")
+	long := publicVideo("none50")
+	long.duration = "P1DT2H3M4S"
+	api.videos["none50"] = long
 
 	videos, err := channel.Videos(context.Background(), ids)
+	hourMinuteSecond, dayAndMore := int64(3661), int64(93784)
 	want := []Video{
-		{ID: "vidA", Title: "Video vidA", ChannelTitle: "Channel of vidA", Privacy: "public"},
-		{ID: "none51", Title: "Video none51", ChannelTitle: "Channel of none51", Privacy: "public"},
+		{ID: "vidA", Title: "Video vidA", ChannelTitle: "Channel of vidA", Privacy: "public", DurationSeconds: &hourMinuteSecond},
+		{ID: "live", Title: "Video live", ChannelTitle: "Channel of live", Privacy: "public"},
+		{ID: "none50", Title: "Video none50", ChannelTitle: "Channel of none50", Privacy: "public", DurationSeconds: &dayAndMore},
 	}
-	if err != nil || !slices.Equal(videos, want) {
+	if err != nil || !reflect.DeepEqual(videos, want) {
 		t.Fatalf("Videos = %+v, %v, want %+v", videos, err, want)
 	}
 	if requests, units := channel.Requests(), channel.Units(); requests != 2 || units != 2 {
@@ -414,11 +423,11 @@ func TestTheFakeAnswersAsTheDataAPIDoes(t *testing.T) {
 
 	api.videos["x0public001"] = publicVideo("x0public001")
 	api.videos["x0private01"] = privateVideo()
-	videos, err := server.Videos.List([]string{"snippet", "status"}).Id("x0public001,x0private01,x0deleted01,zzzzzzzzzzz").Context(ctx).Do()
+	videos, err := server.Videos.List([]string{"snippet", "status", "contentDetails"}).Id("x0public001,x0private01,x0deleted01,zzzzzzzzzzz").Context(ctx).Do()
 	if err != nil || len(videos.Items) != 1 || videos.Items[0].Id != "x0public001" || videos.PageInfo.TotalResults != 1 || videos.Items[0].Status.PrivacyStatus != "public" {
 		t.Errorf("a read of an available, a private, a deleted and a made-up video = %+v, %v, want the available one alone", videos, err)
 	}
-	onlyUnknown, err := server.Videos.List([]string{"snippet", "status"}).Id("zzzzzzzzzzz").Context(ctx).Do()
+	onlyUnknown, err := server.Videos.List([]string{"snippet", "status", "contentDetails"}).Id("zzzzzzzzzzz").Context(ctx).Do()
 	if err != nil || len(onlyUnknown.Items) != 0 || onlyUnknown.PageInfo.TotalResults != 0 {
 		t.Errorf("a read of a made-up video = %+v, %v, want no videos and a total of 0", onlyUnknown, err)
 	}
