@@ -71,10 +71,11 @@ var artistTitleSeparator = regexp.MustCompile(`\s+[-–—~]\s+`)
 // "*NSYNC" whole, and an emoji's presentation selector goes with it.
 var leadingMarker = regexp.MustCompile(`^\s*(?:[•·●▪◦►▶]\x{FE0F}?\s*|[\p{So}\p{Sm}]\x{FE0F}?\s+)+`)
 
-// leadingTrackNumber is a track number opening a text: "1.", "01)" or "#3". A
+// leadingTrackNumber is a track number opening a text: "1.", "01)", "1..",
+// "1)." or "#3". A
 // colon does not end one, since a number before a colon is part of a title far
 // more often than it numbers a track: "1:1 Sessions".
-var leadingTrackNumber = regexp.MustCompile(`^\s*#?\d{1,3}\s*[.)]\s*|^\s*#\d{1,3}\s+`)
+var leadingTrackNumber = regexp.MustCompile(`^\s*#?\d{1,3}\s*[.)]+\s*|^\s*#\d{1,3}\s+`)
 
 // timestampFirst is a line opening with a timestamp, after an optional track
 // number, then whitespace or a dash, then text: "0:00 Artist - Title",
