@@ -140,7 +140,19 @@ type Failure struct {
 // Run reads the videos waiting for a tracklist, newest in a playlist first, up
 // to the batch and within the budget. The error is a failure of the store, or
 // ctx's once it ends.
+//
+// A run that stored a tracklist derives every stored track again, since
+// whether a tracklist is written title first is judged against all the others.
 func (e *Enricher) Run(ctx context.Context) (Report, error) {
+	report, err := e.read(ctx)
+	if err == nil && report.Tracks > 0 {
+		err = e.store.Rederive(ctx)
+	}
+	return report, err
+}
+
+// read is Run's reading, the tracklists it stores as each read makes them.
+func (e *Enricher) read(ctx context.Context) (Report, error) {
 	var report Report
 	if e.limits.Batch <= 0 {
 		return report, nil

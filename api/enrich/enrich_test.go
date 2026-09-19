@@ -137,7 +137,7 @@ func (f *fixture) failure(t *testing.T, video string) (generated.EnrichFailure, 
 // Each read stores what it reports and the best tracklist it holds, from
 // chapters, the description, a comment, or none.
 func TestAReadStoresWhatItReportsAndItsTracklist(t *testing.T) {
-	f := newFixture(t, "vnone", "vcomment", "vdescription", "vchapters")
+	f := newFixture(t, "vnone", "vcomment", "vdescription", "vchapters", "vartists", "vmore", "vtitlefirst")
 	f.reader.videos["vchapters"] = ytdlp.Video{
 		ID: "vchapters", DurationSeconds: 754, UploadDate: "2023-01-11", Description: listing("Ignored"),
 		Chapters: []tracklist.Chapter{
@@ -149,10 +149,22 @@ func TestAReadStoresWhatItReportsAndItsTracklist(t *testing.T) {
 	f.reader.videos["vnone"] = withoutTracklist("vnone")
 	f.reader.videos["vdescription"] = ytdlp.Video{ID: "vdescription", Description: listing("Description")}
 	f.reader.videos["vcomment"] = ytdlp.Video{ID: "vcomment", Description: "Follow us", Comments: []string{"Gorgeous set", listing("Comment")}}
+	// vartists and vmore credit four artists, and vtitlefirst names them as its
+	// titles, so the run stores vtitlefirst read the right way round.
+	chaptered := func(titles ...string) []tracklist.Chapter {
+		var made []tracklist.Chapter
+		for i, title := range titles {
+			made = append(made, tracklist.Chapter{StartSeconds: int64(i * 60), EndSeconds: int64(i*60 + 60), Title: title})
+		}
+		return made
+	}
+	f.reader.videos["vartists"] = ytdlp.Video{ID: "vartists", Chapters: chaptered("Wax - One", "Xen - Two", "Yam - Three", "Zed - Four")}
+	f.reader.videos["vmore"] = ytdlp.Video{ID: "vmore", Chapters: chaptered("Wax - Five", "Xen - Six", "Yam - Seven", "Zed - Eight")}
+	f.reader.videos["vtitlefirst"] = ytdlp.Video{ID: "vtitlefirst", Comments: []string{"0:00 One - Wax\n1:00 Two - Xen\n2:00 Three - Yam\n3:00 Four - Zed"}}
 
 	report := f.run(t)
-	if report.Reads != 4 || report.Enriched != 4 || report.Tracks != 9 || report.Failures != nil {
-		t.Fatalf("report %+v, want 4 reads enriching 4 videos with 9 tracks", report)
+	if report.Reads != 7 || report.Enriched != 7 || report.Tracks != 21 || report.Failures != nil {
+		t.Fatalf("report %+v, want 7 reads enriching 7 videos with 21 tracks", report)
 	}
 	ctx := context.Background()
 	video, err := f.st.Queries.GetVideo(ctx, "vchapters")
@@ -183,6 +195,9 @@ func TestAReadStoresWhatItReportsAndItsTracklist(t *testing.T) {
 	described, _ := f.st.Queries.ListTracks(ctx, "vdescription")
 	if last := described[len(described)-1]; last.EndSeconds.Valid || last.Artist.String != "Description" || last.StartSeconds.Int64 != 540 {
 		t.Errorf("vdescription's last track = %+v, want Description's at 540 with no end", last)
+	}
+	if oriented, err := f.st.Queries.ListTracks(ctx, "vtitlefirst"); err != nil || len(oriented) != 4 || oriented[0].Artist.String != "Wax" || oriented[0].Title != "One" {
+		t.Errorf("tracks of vtitlefirst = %+v, %v, want Wax's One first, read artist first", oriented, err)
 	}
 	if again := f.run(t); again.Reads != 0 {
 		t.Fatalf("the next run read %d videos, want none", again.Reads)

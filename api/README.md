@@ -68,6 +68,13 @@ from the description the same way it reports chapters YouTube marked. Each track
 was read from, and the store derives every track's artist and title from that line again each time
 it opens, so a parser that learns a shape of line corrects the tracks read before it.
 
+A line says which of its two sides is the artist only by where it puts it, and some tracklists put
+the title first. So a tracklist is read the other way round when at least 4 of its titles name an
+artist another tracklist credits, and at least twice as many as its artists do. A line in such a
+tracklist whose artist is a known one and whose title is not stays as written. The store judges
+every tracklist that way whenever it opens and whenever a run stores one, the clearest first, so
+each exchange counts toward the next.
+
 When YouTube refuses a read for its rate limit or its bot check, the run stops reading and records
 it, and no run reads for a day after. A run also stops once 3 reads in a row fail, whatever they
 failed with, since only a refusal worded the way `api/ytdlp` spells it is recognized as one. A read

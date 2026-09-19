@@ -60,15 +60,16 @@ ORDER BY position;
 
 -- name: ListTrackTexts :many
 -- Every stored track's text as it was read, and the artist and title parsed
--- from it.
+-- from it, a video's tracks together and in order.
 SELECT
     track_id,
+    video_id,
     artist,
     title,
     raw_text,
     source
 FROM tracks
-ORDER BY track_id;
+ORDER BY video_id, position;
 
 -- name: SetTrackArtistAndTitle :exec
 UPDATE tracks SET artist = sqlc.narg(artist), title = sqlc.arg(title)
