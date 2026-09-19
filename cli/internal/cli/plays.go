@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/google/uuid"
@@ -96,20 +98,30 @@ func (a *app) playsAddCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "add <video>",
 		GroupID: groupChanging,
-		Short:   "Record a video heard somewhere else, by its link or id",
+		Short:   "Record a video heard somewhere else, by its link, id or title",
 		Long: "`ypl play` records what it plays. This is for a video heard in a browser or on\n" +
-			"a phone, and records it as heard now.",
-		Example: "  ypl plays add dQw4w9WgXcQ                             record one by id\n" +
-			"  ypl plays add 'https://youtu.be/dQw4w9WgXcQ?t=42'     record one from a link",
+			"a phone, and records it as heard now. Name the video as `ypl videos show` does.",
+		Example: "  ypl plays add dQw4w9WgXcQ                          record one by id\n" +
+			"  ypl plays add 'https://youtu.be/dQw4w9WgXcQ?t=42'  record one from a link\n" +
+			"  ypl plays add 'mayan warrior'                      by part of its title",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			videoID := youtube.VideoID(args[0])
-			if videoID == "" {
-				return goclikit.UsageError(fmt.Errorf("%q is not a video id or a YouTube address", args[0]))
+			if strings.TrimSpace(args[0]) == "" {
+				return goclikit.UsageError(errors.New("name the video by its link, its id or its title"))
 			}
 			client, err := a.client(cmd.Context())
 			if err != nil {
 				return reported(err)
+			}
+			// Anything that is not a link or an id is a title, which the server
+			// resolves as it does for `ypl videos show`.
+			videoID := youtube.VideoID(args[0])
+			if videoID == "" {
+				video, err := client.GetVideo(cmd.Context(), args[0])
+				if err != nil {
+					return reported(err)
+				}
+				videoID = video.ID
 			}
 			// The id is made here rather than by the server, so a play sent
 			// again after an answer went missing is stored once rather than
@@ -131,7 +143,7 @@ func (a *app) playsAddCommand() *cobra.Command {
 		},
 	}
 	addJSON(cmd, &asJSON, "the play")
-	return cmd
+	return goclikit.WithRecoveryHints(cmd, hintVideos)
 }
 
 func (a *app) playsListCommand() *cobra.Command {
