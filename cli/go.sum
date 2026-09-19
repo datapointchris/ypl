@@ -7,8 +7,8 @@ github.com/danieljoos/wincred v1.2.3 h1:v7dZC2x32Ut3nEfRH+vhoZGvN72+dQ/snVXo/vMF
 github.com/danieljoos/wincred v1.2.3/go.mod h1:6qqX0WNrS4RzPZ1tnroDzq9kY3fu1KwE7MRLQK4X0bs=
 github.com/datapointchris/goclikit v0.2.0 h1:4RiBlkOnquDvffB2pdreLlNAbwMoC6i4n0CJscGT2xY=
 github.com/datapointchris/goclikit v0.2.0/go.mod h1:As8h3WOxQPfjZdan4NRJthTfruNetcvPaQLOuqrggCM=
-github.com/datapointchris/goclilogin v0.3.0 h1:wb5nktxdl67Xg9FjuVXAtYn43k2I09NiwdIcUYcIcbs=
-github.com/datapointchris/goclilogin v0.3.0/go.mod h1:Rwbj1t3XFi9kfYzVv9z9VYKmL87Acy9jFXUrMcsvw30=
+github.com/datapointchris/goclilogin v0.3.1 h1:BP+zu0Z0YU/iVHACIUy6JBqgOkg7yJfkOzV2lxTt9dU=
+github.com/datapointchris/goclilogin v0.3.1/go.mod h1:Rwbj1t3XFi9kfYzVv9z9VYKmL87Acy9jFXUrMcsvw30=
 github.com/datapointchris/goselfupdate v0.11.0 h1:aUJ27Cm9ZNGMfC7+kKChBsnm8offBE99wwUa10lFo2w=
 github.com/datapointchris/goselfupdate v0.11.0/go.mod h1:YcgyvM+wH6nh9zo9xioUqTHeH5HTYeCHevv4U+G7INc=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
