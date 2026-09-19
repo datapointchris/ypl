@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -77,7 +78,7 @@ func (a *app) serverSyncsListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List recent syncs: what each changed, read and spent",
-		Long: "OUTCOME is ok, or the word for why the sync fell short; one that is not ok\n" +
+		Long: "OUTCOME is ok, what fell short, or why the sync stopped; one that is not ok\n" +
 			"has its failures listed below the table. CHANGED is videos added to and\n" +
 			"removed from playlists, items_added and items_removed in --json. READS is\n" +
 			"tracklist reads attempted, video_reads. QUOTA is the YouTube Data API units\n" +
@@ -119,12 +120,13 @@ func printStatus(out io.Writer, status api.Status) {
 		count(library.Playlists, "playlist"), count(library.Videos, "video"),
 		count(library.Tracks, "track"), count(library.Plays, "play"))
 	if held := library.VideosWithTracklist; held != nil {
-		_, _ = fmt.Fprintf(out, "%s with a tracklist, %d read for one, %d unavailable\n\n",
+		_, _ = fmt.Fprintf(out, "%s with a tracklist, %d read for one, %d unavailable\n",
 			count(*held, "video"), library.EnrichedVideos, library.UnavailableVideos)
 	} else {
-		_, _ = fmt.Fprintf(out, "%s read for a tracklist, %d unavailable\n\n",
+		_, _ = fmt.Fprintf(out, "%s read for a tracklist, %d unavailable\n",
 			count(library.EnrichedVideos, "video"), library.UnavailableVideos)
 	}
+	_, _ = fmt.Fprintf(out, "%s\n\n", backlog(status))
 
 	if status.LastRun == nil {
 		_, _ = fmt.Fprintln(out, "The server has not synced yet.")
@@ -142,11 +144,64 @@ func printStatus(out io.Writer, status api.Status) {
 	}
 }
 
+// backlog is how many videos still wait for a tracklist read, and how many
+// syncs reading at the last one's pace that takes. The count is videos less
+// those read and those YouTube will not serve, so it is close rather than
+// exact: a video can be both read and unavailable.
+func backlog(status api.Status) string {
+	library := status.Library
+	left := max(0, library.Videos-library.EnrichedVideos-library.UnavailableVideos)
+	if left == 0 {
+		return "Every video has been read for a tracklist."
+	}
+	line := fmt.Sprintf("About %s not yet read for a tracklist", count(left, "video"))
+	if status.LastRun != nil && status.LastRun.VideoReads > 0 {
+		pace := status.LastRun.VideoReads
+		line += fmt.Sprintf(", %s at %d a sync", count((left+pace-1)/pace, "more sync"), pace)
+	}
+	return line + "."
+}
+
+// outcome is how a sync ended, with a partial one named by what fell short:
+// the tracklist reads that failed out of those tried, the playlists that
+// failed, and any other step. A sync is partial exactly when it recorded
+// failures and still ran to the end.
+func outcome(run api.SyncRun) string {
+	if run.Outcome != "partial" {
+		return run.Outcome
+	}
+	var reads, playlists, steps int64
+	for _, failure := range run.Failures {
+		switch {
+		case failure.Stage == "enrichment":
+			reads++
+		case failure.PlaylistID != nil:
+			playlists++
+		default:
+			steps++
+		}
+	}
+	var parts []string
+	if reads > 0 {
+		parts = append(parts, fmt.Sprintf("%d of %d reads failed", reads, run.VideoReads))
+	}
+	if playlists > 0 {
+		parts = append(parts, count(playlists, "playlist")+" failed")
+	}
+	if steps > 0 {
+		parts = append(parts, count(steps, "sync step")+" failed")
+	}
+	if len(parts) == 0 {
+		return run.Outcome
+	}
+	return strings.Join(parts, ", ")
+}
+
 // syncLine is one sync as a line: when it finished, how it ended, and what it
 // changed, read and spent.
 func syncLine(run api.SyncRun) string {
 	line := fmt.Sprintf("%s  %s  %d playlists, +%d -%d playlist videos, %d quota units",
-		run.FinishedTs, run.Outcome, run.Playlists, run.ItemsAdded, run.ItemsRemoved, run.Units)
+		run.FinishedTs, outcome(run), run.Playlists, run.ItemsAdded, run.ItemsRemoved, run.Units)
 	if run.VideoReads > 0 {
 		line += fmt.Sprintf(", %d tracklist reads found %d tracks", run.VideoReads, run.TracksFound)
 	}
@@ -177,7 +232,7 @@ func printSyncs(out io.Writer, runs []api.SyncRun) {
 		rows[i] = []string{
 			strconv.FormatInt(run.ID, 10),
 			run.FinishedTs,
-			run.Outcome,
+			outcome(run),
 			strconv.FormatInt(run.Playlists, 10),
 			"+" + strconv.FormatInt(run.ItemsAdded, 10) + " -" + strconv.FormatInt(run.ItemsRemoved, 10),
 			strconv.FormatInt(run.VideoReads, 10),
@@ -194,7 +249,7 @@ func printSyncs(out io.Writer, runs []api.SyncRun) {
 		if len(run.Failures) == 0 {
 			continue
 		}
-		_, _ = fmt.Fprintf(out, "\nSync %d, %s:\n", run.ID, run.Outcome)
+		_, _ = fmt.Fprintf(out, "\nSync %d, %s:\n", run.ID, outcome(run))
 		for _, failure := range run.Failures {
 			_, _ = fmt.Fprintf(out, "  %s %s: %s\n", failure.Stage, failedOn(failure), failure.Error)
 		}
