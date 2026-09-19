@@ -112,8 +112,9 @@ Every read takes `--json`, which writes a stable shape to stdout and nothing els
 nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
 success, 2 for an invocation the CLI would not accept, and 1 for a command that ran and failed;
 `ypl auth status` and `ypl next` exit 1 to report a real state rather than a failure, so a status bar
-can run either unguarded. `ypl server status` exits 1 when the server has not finished an ok sync
-in the last hour, so a check on a timer can run it as it is.
+can run either unguarded. `ypl server status` exits 3 when the server's latest ok sync is older
+than an hour, or older than twelve of its ticks where those are longer, which is a state for a
+person to look at rather than a command that failed.
 
 ## License
 

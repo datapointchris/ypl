@@ -39,9 +39,9 @@ func (a *app) serverStatusCommand() *cobra.Command {
 			"not it held any, enriched_videos. The last sync is last_run, and the last ok\n" +
 			"one last_ok_run. The day's YouTube quota and each playlist waiting to be\n" +
 			"pushed to YouTube are under sync.\n\n" +
-			"Exits 1 when the server has not finished an ok sync in the last hour, or in\n" +
-			"twelve of its ticks where those are longer, so a check on a timer can run\n" +
-			"it as it is.",
+			"Exits 3 when the server has not finished an ok sync in the last hour, or in\n" +
+			"twelve of its ticks where those are longer, a state a person has to look\n" +
+			"at. Exits 1 when the server could not be asked.",
 		Example: "  ypl server status         the library's size and the last sync\n" +
 			"  ypl server status --json  the same, for a check on a timer",
 		Args: usageArgs(cobra.NoArgs),
@@ -64,7 +64,7 @@ func (a *app) serverStatusCommand() *cobra.Command {
 			}
 			if stale(status, now) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "The server has not finished an ok sync in the last %s.\n", window(staleAfter(status)))
-				return exitCode(1)
+				return exitCode(3)
 			}
 			return nil
 		},
