@@ -761,8 +761,8 @@ LIMIT 1;
 
 -- name: CountLibrary :one
 -- How many playlists, videos some playlist holds, of those videos how many are
--- unavailable and how many enrichment has read, tracks and plays the store
--- holds.
+-- unavailable, how many enrichment has read and how many hold a track, tracks
+-- and plays the store holds.
 SELECT
     CAST((SELECT count(*) FROM playlists) AS INTEGER) AS playlists,
     CAST((
@@ -781,6 +781,12 @@ SELECT
             v.enriched_ts IS NOT NULL
             AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
     ) AS INTEGER) AS enriched_videos,
+    CAST((
+        SELECT count(*) FROM videos AS v
+        WHERE
+            EXISTS (SELECT 1 FROM tracks AS t WHERE t.video_id = v.video_id)
+            AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
+    ) AS INTEGER) AS videos_with_tracklist,
     CAST((SELECT count(*) FROM tracks) AS INTEGER) AS tracks,
     CAST((SELECT count(*) FROM plays) AS INTEGER) AS plays;
 
