@@ -372,6 +372,9 @@ func (run *run) storeDetails(playlist youtube.Playlist) error {
 // writes, since a read it cannot act on is spent for nothing. A playlist an
 // edit changed whose read cannot yet show a recent write is retried once it
 // can. The error is one that ends the pass.
+//
+// The read is stamped as taken up whatever came of it, so the sweep moves past
+// a playlist whose reads keep failing rather than taking it every tick.
 func (run *run) sync(job Job) error {
 	if job.Priority == PriorityUnfinished {
 		room, err := run.allows(job.Priority, youtube.WriteUnits)
@@ -380,8 +383,14 @@ func (run *run) sync(job Job) error {
 		}
 	}
 	run.synced[job.Playlist] = true
+	takenAt := run.now()
 	m, result, outcome, err := run.mergePlaylist(job.Playlist)
 	if err != nil {
+		return err
+	}
+	if err := run.store.Queries.SetPlaylistReadTs(run.ctx, generated.SetPlaylistReadTsParams{
+		PlaylistID: job.Playlist, ReadTs: sql.NullString{String: store.Timestamp(takenAt), Valid: true},
+	}); err != nil {
 		return err
 	}
 	switch outcome {
@@ -634,11 +643,12 @@ func (run *run) mergePlaylist(id string) (merged, merge.Result, mergeOutcome, er
 		if err != nil {
 			return err
 		}
-		count := sql.NullInt64{Int64: listing.ItemCount, Valid: isListed}
-		if err := tx.SetPlaylistRead(run.ctx, generated.SetPlaylistReadParams{
-			PlaylistID: id, ReadTs: sql.NullString{String: store.Timestamp(readAt), Valid: true}, ReadItemCount: count,
-		}); err != nil {
-			return err
+		if isListed {
+			if err := tx.SetPlaylistReadCount(run.ctx, generated.SetPlaylistReadCountParams{
+				PlaylistID: id, ReadItemCount: sql.NullInt64{Int64: listing.ItemCount, Valid: true},
+			}); err != nil {
+				return err
+			}
 		}
 		outcome = mergeStored
 		return nil

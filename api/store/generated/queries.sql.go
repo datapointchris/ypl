@@ -2373,24 +2373,37 @@ func (q *Queries) SetEntryItem(ctx context.Context, arg SetEntryItemParams) (int
 	return result.RowsAffected()
 }
 
-const setPlaylistRead = `-- name: SetPlaylistRead :exec
-UPDATE playlists SET
-    read_ts = ?1,
-    read_item_count = coalesce(?2, read_item_count)
-WHERE playlist_id = ?3
+const setPlaylistReadCount = `-- name: SetPlaylistReadCount :exec
+UPDATE playlists SET read_item_count = ?1
+WHERE playlist_id = ?2
 `
 
-type SetPlaylistReadParams struct {
-	ReadTs        sql.NullString
+type SetPlaylistReadCountParams struct {
 	ReadItemCount sql.NullInt64
 	PlaylistID    string
 }
 
-// Records when a read of a playlist's items was merged, and the count the
-// listing before it gave the playlist. A read no listing came before keeps the
-// count stored.
-func (q *Queries) SetPlaylistRead(ctx context.Context, arg SetPlaylistReadParams) error {
-	_, err := q.db.ExecContext(ctx, setPlaylistRead, arg.ReadTs, arg.ReadItemCount, arg.PlaylistID)
+// Records the count the listing gave a playlist before a read of it that
+// merged.
+func (q *Queries) SetPlaylistReadCount(ctx context.Context, arg SetPlaylistReadCountParams) error {
+	_, err := q.db.ExecContext(ctx, setPlaylistReadCount, arg.ReadItemCount, arg.PlaylistID)
+	return err
+}
+
+const setPlaylistReadTs = `-- name: SetPlaylistReadTs :exec
+UPDATE playlists SET read_ts = ?1
+WHERE playlist_id = ?2
+`
+
+type SetPlaylistReadTsParams struct {
+	ReadTs     sql.NullString
+	PlaylistID string
+}
+
+// Records when a sync took up a read of a playlist's items, whatever the read
+// did.
+func (q *Queries) SetPlaylistReadTs(ctx context.Context, arg SetPlaylistReadTsParams) error {
+	_, err := q.db.ExecContext(ctx, setPlaylistReadTs, arg.ReadTs, arg.PlaylistID)
 	return err
 }
 

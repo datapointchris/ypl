@@ -294,13 +294,16 @@ WHERE playlist_id = ?;
 UPDATE playlists SET revision = revision + 1
 WHERE playlist_id = sqlc.arg(playlist_id) AND revision = sqlc.arg(revision);
 
--- name: SetPlaylistRead :exec
--- Records when a read of a playlist's items was merged, and the count the
--- listing before it gave the playlist. A read no listing came before keeps the
--- count stored.
-UPDATE playlists SET
-    read_ts = sqlc.arg(read_ts),
-    read_item_count = coalesce(sqlc.narg(read_item_count), read_item_count)
+-- name: SetPlaylistReadTs :exec
+-- Records when a sync took up a read of a playlist's items, whatever the read
+-- did.
+UPDATE playlists SET read_ts = sqlc.arg(read_ts)
+WHERE playlist_id = sqlc.arg(playlist_id);
+
+-- name: SetPlaylistReadCount :exec
+-- Records the count the listing gave a playlist before a read of it that
+-- merged.
+UPDATE playlists SET read_item_count = sqlc.arg(read_item_count)
 WHERE playlist_id = sqlc.arg(playlist_id);
 
 -- name: ListPlaylistReads :many

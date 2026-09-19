@@ -1,11 +1,13 @@
 -- +goose Up
 
--- When the sync last merged a read of a playlist's items, and the count the
--- channel's listing gave the playlist before that read. A probe lists every
--- playlist for one unit and reads again only those whose count moved from the
--- one stored here, so the count is compared with YouTube's own and never with
--- the rows a read returned, which YouTube may count differently. Both are NULL
--- until the first read.
+-- When a sync last took up a read of a playlist's items, whatever the read did,
+-- and the count the channel's listing gave the playlist before the last read
+-- that merged. The sweep takes the playlist whose read_ts is oldest, so a read
+-- that keeps failing moves on like any other. A probe lists every playlist for
+-- one unit and reads again only those whose count moved from read_item_count,
+-- so the count is compared with YouTube's own and never with the rows a read
+-- returned, which YouTube may count differently. Both are NULL until the first
+-- read.
 ALTER TABLE playlists ADD COLUMN read_ts TEXT;
 ALTER TABLE playlists ADD COLUMN read_item_count INTEGER;
 
