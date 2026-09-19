@@ -23,22 +23,34 @@ func emitJSON(out io.Writer, v any) error {
 	return enc.Encode(v)
 }
 
-// column is one column of a table: its heading, and whether its cells may be
+// column is one column of a table: its heading, and how readily its cells are
 // cut short to fit the terminal.
 type column struct {
 	heading string
-	// prose marks titles and names, which a reader still recognizes cut short.
-	// An id, a number or a time is what the next command is given or what a
-	// reader compares, so it is never cut.
-	prose bool
+	cut     cutting
 }
 
-// whole is a column never cut; prose is one cut before a row wraps.
-func whole(heading string) column { return column{heading: heading} }
-func prose(heading string) column { return column{heading: heading, prose: true} }
+// cutting is how readily a column gives up width. An id, a number or a time is
+// what the next command is given or what a reader compares, so it is never
+// cut. A title or a name is still recognized cut short. A detail beside the
+// title, a channel or the artists of a mix, goes first, since the title is
+// what says which row is which.
+type cutting int
 
-// shortestProse is the narrowest a prose column is cut to. Below it a title no
-// longer says which mix it is, and a wrapped row reads better than that.
+const (
+	uncut cutting = iota
+	cutLate
+	cutEarly
+)
+
+// whole is a column never cut, prose one cut before a row wraps, and detail
+// one cut before any prose.
+func whole(heading string) column  { return column{heading: heading} }
+func prose(heading string) column  { return column{heading: heading, cut: cutLate} }
+func detail(heading string) column { return column{heading: heading, cut: cutEarly} }
+
+// shortestProse is the narrowest a column is cut to. Below it a title stops
+// saying which mix it is, and a wrapped row reads better than that.
 const shortestProse = 12
 
 // gutter is the space between two columns.
@@ -48,10 +60,10 @@ const gutter = "  "
 // takes on a screen rather than by its bytes or runes, since a title can hold
 // characters two cells wide.
 //
-// width is the terminal's, and 0 for anything else. At a terminal the widest
-// prose column is cut, with an ellipsis, until a row fits. Anything else gets
-// every character, since what reads it is grep or a file rather than a person.
-// A table with no prose column has nothing to cut and is given 0.
+// width is the terminal's, and 0 for anything else. At a terminal the details
+// and then the prose are cut, with an ellipsis, until a row fits. Anything else
+// gets every character, since what reads it is grep or a file rather than a
+// person. A table whose columns are all whole has nothing to cut and is given 0.
 //
 // No rows writes nothing, so a caller sees an empty answer rather than a header
 // for one.
@@ -93,10 +105,11 @@ func table(out io.Writer, width int, columns []column, rows [][]string) {
 	}
 }
 
-// fit narrows the widest prose column a cell at a time until a row fits width,
-// so two long columns end up cut to about the same width rather than one
-// losing everything. It stops at shortestProse, or at a prose column's heading
-// where that is wider, and a row that still does not fit wraps.
+// fit narrows a column a cell at a time until a row fits width: the widest
+// detail while any is above its floor, then the widest prose. Two long columns
+// of one kind end up cut to about the same width rather than one losing
+// everything. A column stops at shortestProse, or at its heading where that is
+// wider, and a row that still does not fit wraps.
 func fit(widths []int, columns []column, width int) {
 	total := len(gutter) * (len(widths) - 1)
 	for _, w := range widths {
@@ -106,7 +119,10 @@ func fit(widths []int, columns []column, width int) {
 		widest := -1
 		for i, c := range columns {
 			floor := max(shortestProse, runewidth.StringWidth(c.heading))
-			if c.prose && widths[i] > floor && (widest < 0 || widths[i] > widths[widest]) {
+			if c.cut == uncut || widths[i] <= floor {
+				continue
+			}
+			if widest < 0 || c.cut > columns[widest].cut || c.cut == columns[widest].cut && widths[i] > widths[widest] {
 				widest = i
 			}
 		}

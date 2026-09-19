@@ -157,7 +157,7 @@ func printVideos(out io.Writer, width int, videos []api.LibraryVideo) {
 			firstArtists(video.Artists),
 		}
 	}
-	table(out, width, []column{whole("VIDEO"), prose("TITLE"), prose("CHANNEL"), whole("LENGTH"), whole("TRACKS"), prose("ARTISTS")}, rows)
+	table(out, width, []column{whole("VIDEO"), prose("TITLE"), detail("CHANNEL"), whole("LENGTH"), whole("TRACKS"), detail("ARTISTS")}, rows)
 }
 
 // shownArtists is how many artists a row of the library names. A mix's

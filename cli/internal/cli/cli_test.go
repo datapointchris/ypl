@@ -439,27 +439,26 @@ func TestVideosShowReadsTheTracklist(t *testing.T) {
 // A row that runs past the terminal wraps into the rows under it. Cutting a
 // title keeps the row readable; cutting an id leaves nothing to type into the
 // next command, so only prose columns give up width, the widest first.
-func TestFitCutsOnlyProseAndOnlyUntilTheRowFits(t *testing.T) {
-	columns := []column{whole("VIDEO"), prose("TITLE"), whole("LENGTH"), prose("ARTISTS")}
-	gutters := 3 * len(gutter)
+func TestFitCutsDetailsThenProseAndOnlyUntilTheRowFits(t *testing.T) {
+	library := []column{whole("VIDEO"), prose("TITLE"), whole("LENGTH"), detail("ARTISTS")}
+	tracks := []column{whole("#"), prose("ARTIST"), prose("TITLE"), whole("FROM")}
 	for _, c := range []struct {
 		name    string
+		columns []column
 		natural []int
 		width   int
 		want    []int
 	}{
-		{"a row that fits keeps every width", []int{11, 30, 7, 20}, 80, []int{11, 30, 7, 20}},
-		{"the widest prose column gives way first", []int{11, 60, 7, 20}, 80, []int{11, 36, 7, 20}},
-		{"two wide prose columns end up level", []int{11, 60, 7, 50}, 80, []int{11, 28, 7, 28}},
-		{"no prose column is cut below the floor", []int{11, 60, 7, 50}, 30, []int{11, shortestProse, 7, shortestProse}},
+		{"a row that fits keeps every width", library, []int{11, 30, 7, 20}, 80, []int{11, 30, 7, 20}},
+		{"a detail alone gives way when that is enough", library, []int{11, 40, 7, 30}, 80, []int{11, 40, 7, 16}},
+		{"the title gives way once the detail is at its floor", library, []int{11, 60, 7, 20}, 80, []int{11, 44, 7, shortestProse}},
+		{"two prose columns end up level", tracks, []int{3, 60, 50, 11}, 80, []int{3, 30, 30, 11}},
+		{"nothing is cut below the floor", library, []int{11, 60, 7, 50}, 30, []int{11, shortestProse, 7, shortestProse}},
 	} {
 		widths := slices.Clone(c.natural)
-		fit(widths, columns, c.width)
+		fit(widths, c.columns, c.width)
 		if !slices.Equal(widths, c.want) {
 			t.Errorf("%s: fit(%v, %d) = %v, want %v", c.name, c.natural, c.width, widths, c.want)
-		}
-		if total := gutters + widths[0] + widths[1] + widths[2] + widths[3]; total > c.width && widths[1] > shortestProse {
-			t.Errorf("%s: a row is %d cells, past %d, with prose left to cut", c.name, total, c.width)
 		}
 	}
 }

@@ -135,7 +135,7 @@ func printPlaylist(out io.Writer, width int, playlist api.Playlist) {
 			state(video),
 		}
 	}
-	table(out, width, []column{whole("#"), whole("VIDEO"), prose("TITLE"), prose("CHANNEL"), whole("LENGTH"), whole("TRACKS"), whole("STATE")}, rows)
+	table(out, width, []column{whole("#"), whole("VIDEO"), prose("TITLE"), detail("CHANNEL"), whole("LENGTH"), whole("TRACKS"), whole("STATE")}, rows)
 }
 
 // state is what is worth saying about a video beyond its own fields: that

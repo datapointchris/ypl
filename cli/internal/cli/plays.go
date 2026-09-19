@@ -228,5 +228,5 @@ func printPlays(out io.Writer, width int, plays []api.Play) {
 			play.Video.ChannelTitle,
 		}
 	}
-	table(out, width, []column{whole("PLAY"), whole("WHEN"), whole("VIDEO"), prose("TITLE"), prose("CHANNEL")}, rows)
+	table(out, width, []column{whole("PLAY"), whole("WHEN"), whole("VIDEO"), prose("TITLE"), detail("CHANNEL")}, rows)
 }
