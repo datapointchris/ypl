@@ -51,12 +51,13 @@ type wireStatus struct {
 }
 
 type wireLibrary struct {
-	Playlists         int64 `json:"playlists"`
-	Videos            int64 `json:"videos"`
-	UnavailableVideos int64 `json:"unavailable_videos"`
-	EnrichedVideos    int64 `json:"enriched_videos"`
-	Tracks            int64 `json:"tracks"`
-	Plays             int64 `json:"plays"`
+	Playlists           int64 `json:"playlists"`
+	Videos              int64 `json:"videos"`
+	UnavailableVideos   int64 `json:"unavailable_videos"`
+	EnrichedVideos      int64 `json:"enriched_videos"`
+	VideosWithTracklist int64 `json:"videos_with_tracklist"`
+	Tracks              int64 `json:"tracks"`
+	Plays               int64 `json:"plays"`
 }
 
 // withRuns stores four runs: the first failed, the second ended ok, the third
@@ -224,7 +225,7 @@ func TestStatusCountsTheLibraryAndNamesTheLatestRunAndLatestOKRun(t *testing.T) 
 	f.withRuns(t)
 
 	got := decode[wireStatus](t, f.get("/api/v1/status"), http.StatusOK)
-	want := wireLibrary{Playlists: 3, Videos: 5, UnavailableVideos: 1, EnrichedVideos: 1, Tracks: 5, Plays: 5}
+	want := wireLibrary{Playlists: 3, Videos: 5, UnavailableVideos: 1, EnrichedVideos: 1, VideosWithTracklist: 2, Tracks: 5, Plays: 5}
 	if got.Library != want {
 		t.Errorf("library = %+v, want %+v", got.Library, want)
 	}

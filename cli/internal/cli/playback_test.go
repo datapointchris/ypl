@@ -337,10 +337,17 @@ func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 		t.Errorf("sent id %q, which the server refuses unless it is a version 7 UUID: %v", body.ID, err)
 	}
 
-	// A token that names no video never reaches the server.
-	f = newFixture(t, answers(nil))
-	if refused := f.run("plays", "add", "not a video"); refused.code != 2 || len(f.sent) != 0 {
-		t.Errorf("exited %d after %d requests, want 2 and none", refused.code, len(f.sent))
+	// Anything that is not a link or an id is a title, which the server
+	// resolves, and the play is posted under the id it resolved to.
+	f = newFixture(t, answers(map[string]answer{
+		"GET /api/v1/videos/six hours": {body: `{"id": "dQw4w9WgXcQ", "title": "Six Hours Of House", "channel_title": "One"}`},
+		"POST /api/v1/plays":           {body: stored},
+	}))
+	if titled := f.run("plays", "add", "six hours"); titled.code != 0 {
+		t.Fatalf("a title exited %d: %s", titled.code, titled.err)
+	}
+	if err := json.Unmarshal([]byte(f.onlyWrite().Body), &body); err != nil || body.VideoID != "dQw4w9WgXcQ" {
+		t.Errorf("sent %+v, %v, want the id the title resolved to", body, err)
 	}
 
 	// A play is taken back by deleting it. Where nobody can answer the

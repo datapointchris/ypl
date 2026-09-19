@@ -58,6 +58,22 @@ FROM tracks
 WHERE video_id = ?
 ORDER BY position;
 
+-- name: ListTrackTexts :many
+-- Every stored track's text as it was read, and the artist and title parsed
+-- from it.
+SELECT
+    track_id,
+    artist,
+    title,
+    raw_text,
+    source
+FROM tracks
+ORDER BY track_id;
+
+-- name: SetTrackArtistAndTitle :exec
+UPDATE tracks SET artist = sqlc.narg(artist), title = sqlc.arg(title)
+WHERE track_id = sqlc.arg(track_id);
+
 -- name: UpsertEnrichFailure :exec
 INSERT INTO enrich_failures (video_id, attempted_ts, reason, attempts, retry_ts)
 VALUES (?, ?, ?, ?, ?)
@@ -136,13 +152,34 @@ LIMIT sqlc.arg(max_videos);
 
 -- name: SetVideoEnrichment :execrows
 -- Stores what a full read of a video reports that a playlist read does not, and
--- when enrichment read it.
+-- when enrichment read it. A read that reports no length keeps the one the
+-- store holds.
 UPDATE videos SET
-    duration_seconds = sqlc.narg(duration_seconds),
+    duration_seconds = coalesce(sqlc.narg(duration_seconds), duration_seconds),
     description = sqlc.arg(description),
     upload_date = sqlc.narg(upload_date),
     enriched_ts = sqlc.arg(enriched_ts)
 WHERE video_id = sqlc.arg(video_id);
+
+-- name: ListVideosWithoutLength :many
+-- At most max_rows of the videos some playlist holds that play and that the
+-- store holds no length for, the ones a playlist gained latest first. A video
+-- no playlist holds is left out: no playlist read reaches it to mark it
+-- unavailable once YouTube deletes it, so it would be asked for on every run.
+-- A video YouTube reports no length for, a live or upcoming stream, is asked
+-- for on every run until it has one.
+SELECT v.video_id
+FROM videos AS v
+INNER JOIN playlist_entries AS pe ON v.video_id = pe.video_id
+WHERE v.duration_seconds IS NULL AND v.is_unavailable = 0
+GROUP BY v.video_id
+ORDER BY max(pe.entry_id) DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: SetVideoLength :exec
+-- Stores the length of a video the store holds none for.
+UPDATE videos SET duration_seconds = sqlc.arg(duration_seconds)
+WHERE video_id = sqlc.arg(video_id) AND duration_seconds IS NULL;
 
 -- name: CountVideos :one
 SELECT count(*) FROM videos;
@@ -218,6 +255,14 @@ WHERE playlist_id = ?;
 -- name: ListPlaylistIDs :many
 SELECT playlist_id FROM playlists
 ORDER BY playlist_id;
+
+-- name: ListVideoReferences :many
+-- Every stored video by the two things a request can name it with.
+SELECT
+    video_id,
+    title
+FROM videos
+ORDER BY video_id;
 
 -- name: ListPlaylistReferences :many
 -- Every stored playlist by the two things a request can name it with.
@@ -724,8 +769,8 @@ LIMIT 1;
 
 -- name: CountLibrary :one
 -- How many playlists, videos some playlist holds, of those videos how many are
--- unavailable and how many enrichment has read, tracks and plays the store
--- holds.
+-- unavailable, how many enrichment has read and how many hold a track, tracks
+-- and plays the store holds.
 SELECT
     CAST((SELECT count(*) FROM playlists) AS INTEGER) AS playlists,
     CAST((
@@ -744,6 +789,12 @@ SELECT
             v.enriched_ts IS NOT NULL
             AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
     ) AS INTEGER) AS enriched_videos,
+    CAST((
+        SELECT count(*) FROM videos AS v
+        WHERE
+            EXISTS (SELECT 1 FROM tracks AS t WHERE t.video_id = v.video_id)
+            AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
+    ) AS INTEGER) AS videos_with_tracklist,
     CAST((SELECT count(*) FROM tracks) AS INTEGER) AS tracks,
     CAST((SELECT count(*) FROM plays) AS INTEGER) AS plays;
 

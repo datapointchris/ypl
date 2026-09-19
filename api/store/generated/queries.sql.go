@@ -98,22 +98,29 @@ SELECT
             v.enriched_ts IS NOT NULL
             AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
     ) AS INTEGER) AS enriched_videos,
+    CAST((
+        SELECT count(*) FROM videos AS v
+        WHERE
+            EXISTS (SELECT 1 FROM tracks AS t WHERE t.video_id = v.video_id)
+            AND EXISTS (SELECT 1 FROM playlist_entries AS pe WHERE pe.video_id = v.video_id)
+    ) AS INTEGER) AS videos_with_tracklist,
     CAST((SELECT count(*) FROM tracks) AS INTEGER) AS tracks,
     CAST((SELECT count(*) FROM plays) AS INTEGER) AS plays
 `
 
 type CountLibraryRow struct {
-	Playlists         int64
-	Videos            int64
-	UnavailableVideos int64
-	EnrichedVideos    int64
-	Tracks            int64
-	Plays             int64
+	Playlists           int64
+	Videos              int64
+	UnavailableVideos   int64
+	EnrichedVideos      int64
+	VideosWithTracklist int64
+	Tracks              int64
+	Plays               int64
 }
 
 // How many playlists, videos some playlist holds, of those videos how many are
-// unavailable and how many enrichment has read, tracks and plays the store
-// holds.
+// unavailable, how many enrichment has read and how many hold a track, tracks
+// and plays the store holds.
 func (q *Queries) CountLibrary(ctx context.Context) (CountLibraryRow, error) {
 	row := q.db.QueryRowContext(ctx, countLibrary)
 	var i CountLibraryRow
@@ -122,6 +129,7 @@ func (q *Queries) CountLibrary(ctx context.Context) (CountLibraryRow, error) {
 		&i.Videos,
 		&i.UnavailableVideos,
 		&i.EnrichedVideos,
+		&i.VideosWithTracklist,
 		&i.Tracks,
 		&i.Plays,
 	)
@@ -1851,6 +1859,56 @@ func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBefore
 	return items, nil
 }
 
+const listTrackTexts = `-- name: ListTrackTexts :many
+SELECT
+    track_id,
+    artist,
+    title,
+    raw_text,
+    source
+FROM tracks
+ORDER BY track_id
+`
+
+type ListTrackTextsRow struct {
+	TrackID int64
+	Artist  sql.NullString
+	Title   string
+	RawText string
+	Source  string
+}
+
+// Every stored track's text as it was read, and the artist and title parsed
+// from it.
+func (q *Queries) ListTrackTexts(ctx context.Context) ([]ListTrackTextsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTrackTexts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTrackTextsRow
+	for rows.Next() {
+		var i ListTrackTextsRow
+		if err := rows.Scan(
+			&i.TrackID,
+			&i.Artist,
+			&i.Title,
+			&i.RawText,
+			&i.Source,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTracks = `-- name: ListTracks :many
 SELECT
     track_id,
@@ -2031,6 +2089,43 @@ func (q *Queries) ListVideoPlaylists(ctx context.Context, videoID sql.NullString
 	return items, nil
 }
 
+const listVideoReferences = `-- name: ListVideoReferences :many
+SELECT
+    video_id,
+    title
+FROM videos
+ORDER BY video_id
+`
+
+type ListVideoReferencesRow struct {
+	VideoID string
+	Title   string
+}
+
+// Every stored video by the two things a request can name it with.
+func (q *Queries) ListVideoReferences(ctx context.Context) ([]ListVideoReferencesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listVideoReferences)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVideoReferencesRow
+	for rows.Next() {
+		var i ListVideoReferencesRow
+		if err := rows.Scan(&i.VideoID, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVideosToEnrich = `-- name: ListVideosToEnrich :many
 SELECT v.video_id
 FROM videos AS v
@@ -2064,6 +2159,45 @@ type ListVideosToEnrichParams struct {
 // tracks from somewhere other than a read is left alone.
 func (q *Queries) ListVideosToEnrich(ctx context.Context, arg ListVideosToEnrichParams) ([]string, error) {
 	rows, err := q.db.QueryContext(ctx, listVideosToEnrich, arg.Now, arg.MaxVideos)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var video_id string
+		if err := rows.Scan(&video_id); err != nil {
+			return nil, err
+		}
+		items = append(items, video_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVideosWithoutLength = `-- name: ListVideosWithoutLength :many
+SELECT v.video_id
+FROM videos AS v
+INNER JOIN playlist_entries AS pe ON v.video_id = pe.video_id
+WHERE v.duration_seconds IS NULL AND v.is_unavailable = 0
+GROUP BY v.video_id
+ORDER BY max(pe.entry_id) DESC
+LIMIT ?1
+`
+
+// At most max_rows of the videos some playlist holds that play and that the
+// store holds no length for, the ones a playlist gained latest first. A video
+// no playlist holds is left out: no playlist read reaches it to mark it
+// unavailable once YouTube deletes it, so it would be asked for on every run.
+// A video YouTube reports no length for, a live or upcoming stream, is asked
+// for on every run until it has one.
+func (q *Queries) ListVideosWithoutLength(ctx context.Context, maxRows int64) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listVideosWithoutLength, maxRows)
 	if err != nil {
 		return nil, err
 	}
@@ -2178,6 +2312,22 @@ func (q *Queries) SetRefusedWrite(ctx context.Context, arg SetRefusedWriteParams
 	return err
 }
 
+const setTrackArtistAndTitle = `-- name: SetTrackArtistAndTitle :exec
+UPDATE tracks SET artist = ?1, title = ?2
+WHERE track_id = ?3
+`
+
+type SetTrackArtistAndTitleParams struct {
+	Artist  sql.NullString
+	Title   string
+	TrackID int64
+}
+
+func (q *Queries) SetTrackArtistAndTitle(ctx context.Context, arg SetTrackArtistAndTitleParams) error {
+	_, err := q.db.ExecContext(ctx, setTrackArtistAndTitle, arg.Artist, arg.Title, arg.TrackID)
+	return err
+}
+
 const setUnansweredWrite = `-- name: SetUnansweredWrite :exec
 UPDATE playlists SET unanswered_write_id = ?1
 WHERE playlist_id = ?2
@@ -2195,7 +2345,7 @@ func (q *Queries) SetUnansweredWrite(ctx context.Context, arg SetUnansweredWrite
 
 const setVideoEnrichment = `-- name: SetVideoEnrichment :execrows
 UPDATE videos SET
-    duration_seconds = ?1,
+    duration_seconds = coalesce(?1, duration_seconds),
     description = ?2,
     upload_date = ?3,
     enriched_ts = ?4
@@ -2211,7 +2361,8 @@ type SetVideoEnrichmentParams struct {
 }
 
 // Stores what a full read of a video reports that a playlist read does not, and
-// when enrichment read it.
+// when enrichment read it. A read that reports no length keeps the one the
+// store holds.
 func (q *Queries) SetVideoEnrichment(ctx context.Context, arg SetVideoEnrichmentParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setVideoEnrichment,
 		arg.DurationSeconds,
@@ -2224,6 +2375,22 @@ func (q *Queries) SetVideoEnrichment(ctx context.Context, arg SetVideoEnrichment
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const setVideoLength = `-- name: SetVideoLength :exec
+UPDATE videos SET duration_seconds = ?1
+WHERE video_id = ?2 AND duration_seconds IS NULL
+`
+
+type SetVideoLengthParams struct {
+	DurationSeconds sql.NullInt64
+	VideoID         string
+}
+
+// Stores the length of a video the store holds none for.
+func (q *Queries) SetVideoLength(ctx context.Context, arg SetVideoLengthParams) error {
+	_, err := q.db.ExecContext(ctx, setVideoLength, arg.DurationSeconds, arg.VideoID)
+	return err
 }
 
 const settleYouTubeWrite = `-- name: SettleYouTubeWrite :execrows

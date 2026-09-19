@@ -81,9 +81,11 @@ func (a *app) videosShowCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "show <video>",
-		Short: "Show a video's tracklist, by its link or id",
-		Long:  "FROM is the part of the video each track was read from.",
+		Short: "Show a video's tracklist, by its link, id or title",
+		Long: "Name the video by its link, its id, its title, or part of the title.\n" +
+			"FROM is the part of the video each track was read from.",
 		Example: "  ypl videos show dQw4w9WgXcQ         the video, track by track\n" +
+			"  ypl videos show 'mayan warrior'     by part of its title\n" +
 			"  ypl videos show dQw4w9WgXcQ --json  the same, for a script",
 		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {

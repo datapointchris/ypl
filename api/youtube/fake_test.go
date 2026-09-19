@@ -136,11 +136,14 @@ type fakeVideo struct {
 	// owner is the id of the channel that uploaded the video.
 	owner   string
 	privacy string
+	// duration is the length as YouTube writes it, an ISO 8601 duration.
+	duration string
 }
 
-// publicVideo is a public video another channel uploaded.
+// publicVideo is a public video another channel uploaded, an hour and a
+// minute and a second long.
 func publicVideo(id string) fakeVideo {
-	return fakeVideo{title: "Video " + id, channel: "Channel of " + id, owner: "UCx0otherChannel00000000", privacy: "public"}
+	return fakeVideo{title: "Video " + id, channel: "Channel of " + id, owner: "UCx0otherChannel00000000", privacy: "public", duration: "PT1H1M1S"}
 }
 
 // privateVideo is a private video another channel uploaded.
@@ -377,7 +380,7 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request, resource fakeReso
 func (f *fakeAPI) listVideos(w http.ResponseWriter, r *http.Request, resource fakeResource, parts []string) {
 	query := r.URL.Query()
 	ids := strings.Split(query.Get("id"), ",")
-	if !slices.Equal(slices.Sorted(slices.Values(parts)), []string{"snippet", "status"}) || len(query["id"]) != 1 || query.Has("maxResults") || len(ids) > 50 {
+	if !slices.Equal(slices.Sorted(slices.Values(parts)), []string{"contentDetails", "snippet", "status"}) || len(query["id"]) != 1 || query.Has("maxResults") || len(ids) > 50 {
 		f.unmodeled(w, "a read of videos %s", r.URL.RawQuery)
 		return
 	}
@@ -393,6 +396,7 @@ func (f *fakeAPI) listVideos(w http.ResponseWriter, r *http.Request, resource fa
 			snippet["title"], snippet["channelTitle"], snippet["channelId"] = video.title, video.channel, video.owner
 			snippet["localized"].(map[string]any)["title"] = video.title
 			served["status"].(map[string]any)["privacyStatus"] = video.privacy
+			served["contentDetails"] = map[string]any{"duration": video.duration, "dimension": "2d", "definition": "hd", "caption": "false"}
 			found = append(found, withParts(served, parts))
 		default:
 			f.unmodeled(w, "a read of video %s, whose privacy is %q", id, video.privacy)

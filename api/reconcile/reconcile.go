@@ -78,6 +78,7 @@ type Channel interface {
 	Playlist(ctx context.Context, id youtube.PlaylistID) (youtube.Playlist, error)
 	Items(ctx context.Context, playlist youtube.PlaylistID) ([]youtube.Item, error)
 	ExistingItems(ctx context.Context, ids []youtube.ItemID) ([]youtube.ItemID, error)
+	Videos(ctx context.Context, ids []youtube.VideoID) ([]youtube.Video, error)
 	InsertItem(ctx context.Context, playlist youtube.PlaylistID, video youtube.VideoID, position int64) (youtube.ItemID, error)
 	AppendItem(ctx context.Context, playlist youtube.PlaylistID, video youtube.VideoID) (youtube.ItemID, error)
 	MoveItem(ctx context.Context, item youtube.Item, position int64) error
@@ -274,6 +275,55 @@ func (run *run) execute() {
 			return
 		}
 	}
+
+	// A failed read of lengths costs the run nothing it came for, so it is a
+	// failure of the run rather than its end, unless it is the day's quota or
+	// the run itself was stopped.
+	if err := run.measureLengths(); err != nil {
+		if errors.Is(err, youtube.ErrQuotaSpent) || run.ctx.Err() != nil {
+			run.ended = err
+			return
+		}
+		run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Err: err})
+	}
+}
+
+// lengthsPerRun is the most videos a run reads the length of. The Data API
+// reads 50 a unit, so the most a run spends on lengths is 20 units.
+const lengthsPerRun = 1000
+
+// measureLengths reads the length of each video a playlist holds that the
+// store holds none for, from the Data API. A length otherwise arrives with the
+// video's tracklist read, which paces through the library a few dozen videos a
+// run, and until then a filter or an order by length passes the video over.
+//
+// It runs after the push and outside the reads the quota guard counts. Once the
+// library is measured it reads the videos new since the last run and those
+// YouTube reports no length for, live and upcoming streams, at a unit per 50.
+func (run *run) measureLengths() error {
+	stored, err := run.store.Queries.ListVideosWithoutLength(run.ctx, lengthsPerRun)
+	if err != nil || len(stored) == 0 {
+		return err
+	}
+	ids := make([]youtube.VideoID, len(stored))
+	for i, id := range stored {
+		ids[i] = youtube.VideoID(id)
+	}
+	videos, err := run.channel.Videos(run.ctx, ids)
+	if err != nil {
+		return fmt.Errorf("read the lengths of %d videos: %w", len(ids), err)
+	}
+	for _, video := range videos {
+		if video.DurationSeconds == nil {
+			continue
+		}
+		if err := run.store.Queries.SetVideoLength(run.ctx, generated.SetVideoLengthParams{
+			VideoID: string(video.ID), DurationSeconds: sql.NullInt64{Int64: *video.DurationSeconds, Valid: true},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // deleteUnlisted deletes each stored playlist absent from listed that a read by

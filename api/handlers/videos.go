@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"cmp"
+	"context"
 	"database/sql"
+	"errors"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -192,16 +194,39 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 	wire.JSON(w, http.StatusOK, videos)
 }
 
+// resolveVideo is the id of the video ref names, by its id or loosely as
+// resolveTitled says, as a read of a playlist names one.
+func resolveVideo(ctx context.Context, q *generated.Queries, ref string) (string, error) {
+	if _, err := q.GetVideo(ctx, ref); err == nil {
+		return ref, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	rows, err := q.ListVideoReferences(ctx)
+	if err != nil {
+		return "", err
+	}
+	named := make([]titled, len(rows))
+	for i, row := range rows {
+		named[i] = titled{id: row.VideoID, title: row.Title}
+	}
+	return resolveTitled(named, "video", ref, loosely)
+}
+
 func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	id := r.PathValue("id")
-	only := sql.NullString{String: id, Valid: true}
+	ref := r.PathValue("id")
+	var id string
 	var stored generated.Video
 	var tracks []generated.Track
 	var artists []generated.ListVideoArtistsRow
 	var playlists []generated.ListVideoPlaylistsRow
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		var err error
+		if id, err = resolveVideo(ctx, q, ref); err != nil {
+			return err
+		}
+		only := sql.NullString{String: id, Valid: true}
 		if stored, err = q.GetVideo(ctx, id); err != nil {
 			return err
 		}
@@ -215,7 +240,7 @@ func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
-		h.writeItemError(w, r, err, "video "+id)
+		h.writeItemError(w, r, err, "video "+ref)
 		return
 	}
 	c := newCollator()

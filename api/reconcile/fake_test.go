@@ -32,8 +32,12 @@ type fakeChannel struct {
 	// error Playlist does.
 	itemsErrors map[youtube.PlaylistID]error
 	byIDErrors  map[youtube.PlaylistID]error
-	// playlistsError is the error Playlists returns.
+	// playlistsError is the error Playlists returns, and videosError the error
+	// Videos does.
 	playlistsError error
+	videosError    error
+	// beforeVideos runs before each Videos call.
+	beforeVideos func()
 	// quota is how many units are served before every request is refused with
 	// ErrQuotaSpent. Zero serves without limit.
 	quota int64
@@ -323,16 +327,32 @@ func (f *fakeChannel) DeleteItem(ctx context.Context, id youtube.ItemID) error {
 	return failure.err
 }
 
-// Videos reads each video the fake has in videoTitles, at 1 unit a request of
-// 50, as a read of public videos by id does.
+// Videos reads each video the fake has, in videoTitles or in a playlist, at 1
+// unit a request of 50, as a read of public videos by id does. Every one is an
+// hour long.
 func (f *fakeChannel) Videos(ctx context.Context, ids []youtube.VideoID) ([]youtube.Video, error) {
+	if f.beforeVideos != nil {
+		f.beforeVideos()
+	}
 	if err := f.charge(ctx, pages(len(ids))); err != nil {
 		return nil, err
 	}
+	if f.videosError != nil {
+		return nil, f.videosError
+	}
+	hour := int64(60 * 60)
 	var videos []youtube.Video
 	for _, id := range ids {
-		if title, ok := f.videoTitles[id]; ok {
-			videos = append(videos, youtube.Video{ID: id, Title: title, ChannelTitle: "Channel", Privacy: "public"})
+		title, ok := f.videoTitles[id]
+		for _, items := range f.items {
+			for _, item := range items {
+				if !ok && item.VideoID == id {
+					title, ok = item.Title, true
+				}
+			}
+		}
+		if ok {
+			videos = append(videos, youtube.Video{ID: id, Title: title, ChannelTitle: "Channel", Privacy: "public", DurationSeconds: &hour})
 		}
 	}
 	return videos, nil

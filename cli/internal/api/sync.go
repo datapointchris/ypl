@@ -48,14 +48,17 @@ type Status struct {
 }
 
 // Library counts what the store holds. Videos are the ones some playlist holds,
-// and the unavailable and enriched counts are among them.
+// and the unavailable, enriched and with-a-tracklist counts are among them. A
+// read can find no track, so the last two differ. VideosWithTracklist is nil
+// from a server that does not count it, which a zero would misreport as none.
 type Library struct {
-	Playlists         int64 `json:"playlists"`
-	Videos            int64 `json:"videos"`
-	UnavailableVideos int64 `json:"unavailable_videos"`
-	EnrichedVideos    int64 `json:"enriched_videos"`
-	Tracks            int64 `json:"tracks"`
-	Plays             int64 `json:"plays"`
+	Playlists           int64  `json:"playlists"`
+	Videos              int64  `json:"videos"`
+	UnavailableVideos   int64  `json:"unavailable_videos"`
+	EnrichedVideos      int64  `json:"enriched_videos"`
+	VideosWithTracklist *int64 `json:"videos_with_tracklist"`
+	Tracks              int64  `json:"tracks"`
+	Plays               int64  `json:"plays"`
 }
 
 // ListSyncRuns is the newest limit runs, newest first, reading as many pages as

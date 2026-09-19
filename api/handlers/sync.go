@@ -63,14 +63,16 @@ type status struct {
 }
 
 // library counts what the store holds. Videos are those some playlist holds,
-// and unavailable_videos and enriched_videos count among them.
+// and unavailable_videos, enriched_videos and videos_with_tracklist count among
+// them. A video enrichment read can hold no track, so the last two differ.
 type library struct {
-	Playlists         int64 `json:"playlists"`
-	Videos            int64 `json:"videos"`
-	UnavailableVideos int64 `json:"unavailable_videos"`
-	EnrichedVideos    int64 `json:"enriched_videos"`
-	Tracks            int64 `json:"tracks"`
-	Plays             int64 `json:"plays"`
+	Playlists           int64 `json:"playlists"`
+	Videos              int64 `json:"videos"`
+	UnavailableVideos   int64 `json:"unavailable_videos"`
+	EnrichedVideos      int64 `json:"enriched_videos"`
+	VideosWithTracklist int64 `json:"videos_with_tracklist"`
+	Tracks              int64 `json:"tracks"`
+	Plays               int64 `json:"plays"`
 }
 
 // listSyncRuns answers a page of runs, newest first.
@@ -140,12 +142,13 @@ func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		shown.Library = library{
-			Playlists:         counts.Playlists,
-			Videos:            counts.Videos,
-			UnavailableVideos: counts.UnavailableVideos,
-			EnrichedVideos:    counts.EnrichedVideos,
-			Tracks:            counts.Tracks,
-			Plays:             counts.Plays,
+			Playlists:           counts.Playlists,
+			Videos:              counts.Videos,
+			UnavailableVideos:   counts.UnavailableVideos,
+			EnrichedVideos:      counts.EnrichedVideos,
+			VideosWithTracklist: counts.VideosWithTracklist,
+			Tracks:              counts.Tracks,
+			Plays:               counts.Plays,
 		}
 		latest, err := q.ListNewestSyncRuns(ctx, 1)
 		if err != nil {

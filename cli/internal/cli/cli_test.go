@@ -535,6 +535,11 @@ func TestStatusReadsTheLibraryAndTheLatestRuns(t *testing.T) {
 	case got.LastOKRun == nil || got.LastOKRun.ID != 1:
 		t.Fatalf("last ok run = %+v", got.LastOKRun)
 	}
+	// A server that does not count the videos holding a tracklist is told
+	// apart from one counting none, and the count of videos read stands in.
+	if plain := f.run("server", "status"); !strings.Contains(plain.out, "2 videos read for a tracklist") {
+		t.Errorf("wrote %q, want the read count where the server sends no tracklist count", plain.out)
+	}
 }
 
 func run(id int, outcome string) string {

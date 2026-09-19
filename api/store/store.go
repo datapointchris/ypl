@@ -21,6 +21,7 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 
 	"github.com/datapointchris/ypl/api/store/generated"
+	"github.com/datapointchris/ypl/api/tracklist"
 	"github.com/datapointchris/ypl/api/youtube"
 )
 
@@ -232,7 +233,38 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := st.rederive(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return st, nil
+}
+
+// rederive sets each stored track's artist and title to what this release's
+// parser makes of the text the track was read from. raw_text keeps that text
+// whole, so a parser that learns a shape of line corrects every track read
+// before it on the next open, and no migration restates the parser's rules in
+// SQL. A text the parser makes no track of keeps what it holds.
+func (s *Store) rederive(ctx context.Context) error {
+	return s.InTx(ctx, func(tx *Tx) error {
+		tracks, err := tx.ListTrackTexts(ctx)
+		if err != nil {
+			return fmt.Errorf("read the stored tracks: %w", err)
+		}
+		for _, track := range tracks {
+			artist, title, ok := tracklist.Rederive(track.RawText, tracklist.Source(track.Source))
+			parsed := sql.NullString{String: artist, Valid: artist != ""}
+			if !ok || parsed == track.Artist && title == track.Title {
+				continue
+			}
+			if err := tx.SetTrackArtistAndTitle(ctx, generated.SetTrackArtistAndTitleParams{
+				Artist: parsed, Title: title, TrackID: track.TrackID,
+			}); err != nil {
+				return fmt.Errorf("derive track %d again: %w", track.TrackID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // Close closes the connection pool.

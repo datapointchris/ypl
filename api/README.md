@@ -46,6 +46,11 @@ each merge and is added to at its end, until an edit of its order tries position
 playlist whose items were written less than a minute before a run read them is left for the next
 run.
 
+A run then reads, through the Data API, the length of each video a playlist holds that it holds no
+length for, the newest first, up to 1,000 a run at a unit per 50. So a filter or an order by length
+reaches a video before its tracklist is read. Once the library is measured, a run reads the videos
+new since the last and any YouTube reports no length for, which are live and upcoming streams.
+
 Each run then reads a tracklist for each video the playlists hold that has none, the newest in a
 playlist first, which `api/enrich` queues and paces. The Data API reports neither chapters nor
 comments, so these reads go through `yt-dlp`, signed in as nobody, at `YTDLP_PATH` or on `PATH`;
@@ -59,7 +64,9 @@ that budget stops. A server configured to read no video needs no `yt-dlp` and st
 those the timestamped lines of its description, or failing that the first of its top 20 comments
 holding at least 3 timestamped lines that run forward and reach at least half way through the
 video. Fewer than 3 chapters are read as no chapters, since `yt-dlp` reports chapters it derived
-from the description the same way it reports chapters YouTube marked.
+from the description the same way it reports chapters YouTube marked. Each track keeps the line it
+was read from, and the store derives every track's artist and title from that line again each time
+it opens, so a parser that learns a shape of line corrects the tracks read before it.
 
 When YouTube refuses a read for its rate limit or its bot check, the run stops reading and records
 it, and no run reads for a day after. A run also stops once 3 reads in a row fail, whatever they
@@ -104,6 +111,10 @@ Part of a title reaches a playlist, its videos and its suggestions. It reaches n
 rename, a delete, and both the read and the write of an order take the whole title or the id. The
 order is read as narrowly as it is written because that read is what an edit is made from, and a
 reference the write would refuse buys an editing session that is then thrown away.
+
+`GET /api/v1/videos/{id}` names a video the way a read names a playlist, through the same resolver:
+by its id, its title, or part of its title. A name matching several is refused naming the first 10,
+for a video or a playlist alike, since part of a title can match hundreds of mixes.
 
 `GET /api/v1/videos` narrows by `playlist`, `min_seconds`, `max_seconds` and `artist`, which
 matches part of an artist's name ignoring case and accents. `sort` is one of `longest`, `shortest`,

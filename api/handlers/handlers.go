@@ -179,6 +179,10 @@ type referenceError struct {
 	deleted bool
 }
 
+// shownCandidates is the most rows a refusal of an ambiguous reference names.
+// Part of a title can match hundreds of videos in a library of long mixes.
+const shownCandidates = 10
+
 // The sentence for nearby says what the store can see and no more. A reference
 // matching no row exactly and sitting inside one title is a fragment of that
 // title; it is also a reference to a row deleted moments ago whose id happens
@@ -186,6 +190,9 @@ type referenceError struct {
 // title it found and leaves the caller to recognize their own reference.
 func (e referenceError) Error() string {
 	switch {
+	case len(e.candidates) > shownCandidates:
+		return fmt.Sprintf("%s %q names more than one: %s, and %d more, which more of the title narrows",
+			e.name, e.value, strings.Join(e.candidates[:shownCandidates], ", "), len(e.candidates)-shownCandidates)
 	case len(e.candidates) > 0:
 		return fmt.Sprintf("%s %q names more than one: %s", e.name, e.value, strings.Join(e.candidates, ", "))
 	case len(e.nearby) > 0:
