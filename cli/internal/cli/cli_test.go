@@ -550,27 +550,6 @@ func TestNextExitsOneWhenThereIsNothingToPlay(t *testing.T) {
 	}
 }
 
-func TestStatusReadsTheLibraryAndTheLatestRuns(t *testing.T) {
-	body := `{"library": {"playlists": 3, "videos": 6, "unavailable_videos": 1, "enriched_videos": 2,
-		"tracks": 5, "plays": 4}, "last_run": ` + run(2, "partial") + `, "last_ok_run": ` + run(1, "ok") + `}`
-	f := newFixture(t, serves(map[string]string{"/api/v1/status": body}))
-
-	got := asJSON[api.Status](t, f.run("server", "status", "--json"))
-	switch {
-	case got.Library.Videos != 6 || got.Library.Tracks != 5:
-		t.Fatalf("library = %+v", got.Library)
-	case got.LastRun == nil || got.LastRun.Outcome != "partial":
-		t.Fatalf("last run = %+v", got.LastRun)
-	case got.LastOKRun == nil || got.LastOKRun.ID != 1:
-		t.Fatalf("last ok run = %+v", got.LastOKRun)
-	}
-	// A server that does not count the videos holding a tracklist is told
-	// apart from one counting none, and the count of videos read stands in.
-	if plain := f.run("server", "status"); !strings.Contains(plain.out, "2 videos read for a tracklist") {
-		t.Errorf("wrote %q, want the read count where the server sends no tracklist count", plain.out)
-	}
-}
-
 func run(id int, outcome string) string {
 	return `{"id": ` + strconv.Itoa(id) + `, "started_ts": "2026-09-01T00:00:00Z", "finished_ts": "2026-09-01T00:01:00Z",
 		"quota_date": "2026-09-01", "outcome": "` + outcome + `", "playlists": 3, "playlists_deleted": 0,

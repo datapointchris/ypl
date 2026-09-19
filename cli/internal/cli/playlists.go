@@ -17,7 +17,7 @@ func (a *app) playlistsCommand() *cobra.Command {
 		GroupID: groupPlaylists,
 		Long: "Name a playlist by its title, its slug from Tab, or its id.\n" +
 			"`show` also takes part of a title; a change takes the whole of it.\n" +
-			"A change happens on YouTube at once, except an edit, which the next sync pushes.",
+			"A change happens on YouTube at once. An edit is pushed there as soon as it is saved.",
 		RunE: requireSubcommand,
 	}
 	splitReadingFromChanging(cmd)

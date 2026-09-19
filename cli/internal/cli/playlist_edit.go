@@ -42,7 +42,8 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 		Short:   "Reorder, add or remove videos in $EDITOR",
 		Long: "One line per video, in $VISUAL or $EDITOR. Move lines to reorder, delete one to\n" +
 			"remove it, paste a link to add one. An empty buffer changes nothing. A buffer\n" +
-			"piped in is read instead. The next sync pushes the new order to YouTube.\n" + wholeName,
+			"piped in is read instead. The server pushes the new order to YouTube as soon\n" +
+			"as it is saved, ahead of anything else it has waiting.\n" + wholeName,
 		Example: "  ypl playlists edit 'Sunday Morning'          rearrange it in your editor\n" +
 			"  ypl playlists edit 'Sunday Morning' < order  apply a buffer written elsewhere",
 		Args:              usageArgs(cobra.ExactArgs(1)),
@@ -286,7 +287,7 @@ func reportEdit(cmd *cobra.Command, result edited) {
 	// happened, one of which did not.
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s — %s. It now holds %s.\n",
 		result.Title, strings.Join(said, ", "), count(int64(result.ItemCount), "video"))
-	nothing(cmd, "The next sync pushes it to YouTube. `ypl server status` says when that was.")
+	nothing(cmd, "The server is pushing it to YouTube now. `ypl server status` lists what is left to push.")
 }
 
 // keptAt writes the edited buffer somewhere it can be read back from, and is the
