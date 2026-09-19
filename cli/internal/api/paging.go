@@ -1,7 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
 	"strconv"
 )
 
@@ -59,4 +63,40 @@ func collect[T any](ctx context.Context, c *Client, path string, limit int, curs
 		after = cursor(got.Data[len(got.Data)-1])
 	}
 	return read, nil
+}
+
+// all reads every row of the collection at path, asked with pairs, whether the
+// server answers it whole, as a JSON array, or a page at a time. A page is
+// followed with cursor, which names the row the next starts after.
+//
+// Both answers are in service at once, because a client and a server are
+// released apart, and a client that read only one would fail against the other
+// until somebody updated it.
+func all[T any](ctx context.Context, c *Client, path string, pairs [][2]string, cursor func(T) string) ([]T, error) {
+	var first json.RawMessage
+	if err := c.Get(ctx, query(path, pairs...), &first); err != nil {
+		return nil, err
+	}
+	rows := []T{}
+	if trimmed := bytes.TrimSpace(first); len(trimmed) > 0 && trimmed[0] == '[' {
+		if err := json.Unmarshal(first, &rows); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", path, err)
+		}
+		return rows, nil
+	}
+	var got page[T]
+	if err := json.Unmarshal(first, &got); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	for {
+		rows = append(rows, got.Data...)
+		if !got.HasMore || len(got.Data) == 0 {
+			return rows, nil
+		}
+		next := slices.Concat(pairs, [][2]string{{"starting_after", cursor(got.Data[len(got.Data)-1])}})
+		got = page[T]{}
+		if err := c.Get(ctx, query(path, next...), &got); err != nil {
+			return nil, err
+		}
+	}
 }

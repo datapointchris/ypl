@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 )
 
@@ -160,22 +161,32 @@ func TestTheZeroFilterAsksForNothingAndAZeroBoundIsSent(t *testing.T) {
 
 // A stored value that never reaches the server cannot be read back, and the
 // only sign is a request that quietly asks for something else.
-func TestTheFilterBecomesTheServersOwnParameters(t *testing.T) {
-	var asked string
+// The filter reaches the server on every page, whether the server answers the
+// library whole or a page at a time, and a paged answer is followed to its end.
+func TestTheFilterBecomesTheServersOwnParametersOnEveryPage(t *testing.T) {
+	var asked []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		asked = r.URL.RawQuery
+		asked = append(asked, r.URL.RawQuery)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`[]`))
+		if r.URL.Query().Get("starting_after") == "" {
+			_, _ = w.Write([]byte(`{"data": [{"id": "a"}], "has_more": true}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data": [{"id": "b"}], "has_more": false}`))
 	}))
 	t.Cleanup(server.Close)
 
 	bound := int64(60)
 	filter := VideoFilter{Playlist: "alpha", Artist: "moby", MinSeconds: &bound, Sort: "longest"}
-	if _, err := New(server.URL, server.Client()).ListVideos(context.Background(), filter); err != nil {
-		t.Fatalf("list videos: %v", err)
+	videos, err := New(server.URL, server.Client()).ListVideos(context.Background(), filter)
+	if err != nil || len(videos) != 2 || videos[0].ID != "a" || videos[1].ID != "b" {
+		t.Fatalf("videos = %+v, %v, want a then b, the second page followed", videos, err)
 	}
-	want := "artist=moby&min_seconds=60&playlist=alpha&sort=longest"
-	if asked != want {
+	want := []string{
+		"artist=moby&min_seconds=60&playlist=alpha&sort=longest",
+		"artist=moby&min_seconds=60&playlist=alpha&sort=longest&starting_after=a",
+	}
+	if !slices.Equal(asked, want) {
 		t.Fatalf("asked %q, want %q", asked, want)
 	}
 }
