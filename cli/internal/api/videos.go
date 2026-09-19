@@ -76,19 +76,16 @@ type VideoFilter struct {
 // costs a reader one under-reported listing rather than a working order.
 var VideoSorts = []string{"longest", "shortest", "newest", "oldest", "title", "random"}
 
-// ListVideos is every available video some playlist holds, narrowed by filter.
-// The collection is not paged, so this is all of them.
+// ListVideos is every available video some playlist holds, narrowed by filter,
+// read whole or a page at a time as the server answers.
 func (c *Client) ListVideos(ctx context.Context, filter VideoFilter) ([]LibraryVideo, error) {
-	videos := []LibraryVideo{}
-	target := query("/api/v1/videos",
-		[2]string{"playlist", filter.Playlist},
-		[2]string{"artist", filter.Artist},
-		[2]string{"min_seconds", seconds(filter.MinSeconds)},
-		[2]string{"max_seconds", seconds(filter.MaxSeconds)},
-		[2]string{"sort", filter.Sort},
-	)
-	err := c.Get(ctx, target, &videos)
-	return videos, err
+	return all(ctx, c, "/api/v1/videos", [][2]string{
+		{"playlist", filter.Playlist},
+		{"artist", filter.Artist},
+		{"min_seconds", seconds(filter.MinSeconds)},
+		{"max_seconds", seconds(filter.MaxSeconds)},
+		{"sort", filter.Sort},
+	}, func(video LibraryVideo) string { return video.ID })
 }
 
 // seconds is a duration bound as the server takes it, and "" for no bound.

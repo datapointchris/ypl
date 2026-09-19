@@ -41,12 +41,10 @@ func (item PlaylistItem) ItemID() string {
 	return *item.ID
 }
 
-// ListPlaylists is every playlist, by title. The collection is not paged, so
-// this is all of them.
+// ListPlaylists is every playlist, by title, read whole or a page at a time as
+// the server answers.
 func (c *Client) ListPlaylists(ctx context.Context) ([]PlaylistSummary, error) {
-	playlists := []PlaylistSummary{}
-	err := c.Get(ctx, "/api/v1/playlists", &playlists)
-	return playlists, err
+	return all(ctx, c, "/api/v1/playlists", nil, func(playlist PlaylistSummary) string { return playlist.ID })
 }
 
 // Reference names a playlist to the server: its YouTube id, its title, or that
