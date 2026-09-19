@@ -9,5 +9,24 @@
     "plays": 1
   },
   "last_run": null,
-  "last_ok_run": null
+  "last_ok_run": null,
+  "sync": {
+    "interval_seconds": 300,
+    "quota": {
+      "date": "2026-09-17",
+      "units_spent": 0,
+      "units_limit": 10000,
+      "resets_at": "2026-09-18T07:00:00Z"
+    },
+    "pushes": [
+      {
+        "playlist_id": "PLB",
+        "title": "zulu",
+        "writes": 2,
+        "held": false
+      }
+    ],
+    "tracklist_reads_last_hour": 0,
+    "probe_misses_last_day": 0
+  }
 }

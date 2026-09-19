@@ -18,9 +18,9 @@ FROM alpine:3.22
 # because an operator setting TZ needs a zone database to resolve it against.
 RUN apk add --no-cache ca-certificates tzdata
 
-# yt-dlp ships in the image, pinned. ENRICH_VIDEOS_PER_RUN defaults to 30 and
-# the server refuses to start without the binary at any count above zero, so an
-# image without it would run only the one configuration that reads no video.
+# yt-dlp ships in the image, pinned. The server reads videos unless ENRICH_PACE
+# is off, and refuses to start without the binary when it does, so an image
+# without it would run only the one configuration that reads no video.
 #
 # Pinned rather than floating so the image is the whole answer to what a read
 # runs, and so a yt-dlp that starts failing is a version to move off rather than

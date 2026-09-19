@@ -27,7 +27,7 @@ func TestPlaylistsReadsEveryPage(t *testing.T) {
 	if len(playlists) != 55 {
 		t.Fatalf("playlists = %d, want 55", len(playlists))
 	}
-	want := Playlist{ID: "PL07", Title: "Playlist PL07", Description: "About PL07", Privacy: "private"}
+	want := Playlist{ID: "PL07", Title: "Playlist PL07", Description: "About PL07", Privacy: "private", ItemCount: 11}
 	if playlists[7] != want {
 		t.Fatalf("playlist 7 = %+v, want %+v", playlists[7], want)
 	}

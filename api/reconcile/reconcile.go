@@ -1,16 +1,19 @@
-// Package reconcile syncs the channel's playlists with the store both ways. A
-// run reads every playlist the channel owns and every item in each, merges each
-// read into the server's order of the playlist against the playlist's base,
-// pushes the server's order of every merged playlist back to YouTube, one write
-// at a time, and then reads tracklists for the videos enrichment has not read.
-// Every run leaves a sync_runs row saying how it ended and what it did.
+// Package reconcile syncs the channel's playlists with the store both ways, in
+// passes. A pass works through a queue of jobs, the earliest priority first:
+// a push of each playlist an edit changed, a probe listing every playlist and a
+// sync of each whose count moved, a push that stopped before it finished, a
+// sweep reading the playlist read longest ago, and the lengths of new videos.
+// A sync reads one playlist, merges the read into the server's order against
+// the playlist's base, and pushes the server's order back, one write at a time.
+// Every pass that did anything leaves a sync_runs row saying how it ended and
+// what it did, what enrichment read since the pass before included.
 //
 // The API writes playlists too, and a read can predate a write YouTube has
-// answered. So a run changes nothing a read could not yet show: it keeps the
+// answered. So a pass changes nothing a read could not yet show: it keeps the
 // details of a playlist the API wrote after a read began, keeps a playlist the
 // API created, does not restore one the API deleted, and leaves the items of a
-// playlist whose items were written within the lag of its read for the next
-// run. The next run, whose reads follow the write, stores what YouTube holds.
+// playlist whose items were written within the lag of its read for a later
+// pass, whose reads follow the write.
 //
 // A push write is recorded before it is sent, and settled with YouTube's answer
 // in the transaction that applies the answer to the playlist's base and entries.
@@ -47,20 +50,15 @@ import (
 	"github.com/datapointchris/ypl/api/youtube"
 )
 
-// ErrReadsExceedQuota is the failure of a run whose interval, at this run's
-// read cost, makes more reads a day than the day's quota allows. Such a day's
-// later runs draw YouTube's quota refusal.
-var ErrReadsExceedQuota = errors.New("a day of runs at this interval reads more than the day's quota")
-
 // ErrAbsenceNotConfirmed is the failure of a playlist whose read lacks an item
 // that a read of the item by id finds. The playlist changed between the pages of
-// its read, so the run leaves it for the next.
+// its read, so the pass leaves it for a later one.
 var ErrAbsenceNotConfirmed = errors.New("an item missing from the playlist's read is still on YouTube")
 
-// ErrAllowanceSpent is the failure of a run that stopped pushing because the
-// day's quota has no room for another write beside the reads of the day's
-// remaining runs.
-var ErrAllowanceSpent = errors.New("the day's quota has no room for another write beside the reads of the day's remaining runs")
+// ErrAllowanceSpent is the failure of a push that stopped because the day's
+// quota has no room for another write of its priority beside the reads of the
+// day's remaining passes.
+var ErrAllowanceSpent = errors.New("the day's quota has no room for another write beside the reads of the day's remaining passes")
 
 // ErrPushHeld is the failure of a playlist whose push waits, because YouTube
 // refused a write of it this Pacific day for a reason that is not the video or
@@ -68,10 +66,11 @@ var ErrAllowanceSpent = errors.New("the day's quota has no room for another writ
 // changed since, so the same write would be refused again.
 var ErrPushHeld = errors.New("the push waits on a write YouTube refused today")
 
-// DailyQuota is the units YouTube allows the Cloud project each Pacific day.
-const DailyQuota = 10_000
+// EditReserve is the units no job but an edit's push spends, so a long push
+// running in the background leaves room for the next edit.
+const EditReserve = 1_000
 
-// Channel is what a run reads and writes YouTube through, as youtube.Channel
+// Channel is what a pass reads and writes YouTube through, as youtube.Channel
 // does.
 type Channel interface {
 	Playlists(ctx context.Context) ([]youtube.Playlist, error)
@@ -87,42 +86,41 @@ type Channel interface {
 	Units() int64
 }
 
-// Enricher reads tracklists for the videos waiting for them, as
-// *enrich.Enricher does.
-type Enricher interface {
-	Run(ctx context.Context) (enrich.Report, error)
-}
-
-// Runner makes sync runs against one store and one channel, one at a time.
+// Runner makes passes against one store and one channel, one at a time.
 type Runner struct {
-	store    *store.Store
-	channel  Channel
-	enricher Enricher
-	// interval is the wait between one run ending and the next beginning, and
-	// runsPerDay the most runs a day the worker makes at it. A run takes time of
-	// its own, most of it enrichment's reads, so the worker makes fewer. The
-	// quota guard reads runsPerDay, and counting runs that are never made errs
-	// toward refusing a write, which is the safe direction.
-	interval   time.Duration
-	runsPerDay int64
+	store   *store.Store
+	channel Channel
+	// tally is what enrichment read since the last pass, which each pass
+	// records.
+	tally *enrich.Tally
+	// edits is the playlists an edit changed and no pass has taken up yet.
+	edits *Edits
+	// interval is the mean wait between two ticks, which the quota guard counts
+	// the day's remaining probes and sweeps by.
+	interval time.Duration
+	// lengthsDue is when a tick next reads the lengths of videos. A live or
+	// upcoming stream has none to give and is asked for at each read, so the
+	// reads are hourly rather than every tick.
+	lengthsDue time.Time
 	now        func() time.Time
 }
 
-// NewRunner is a Runner for runs every interval, each ending with enricher's.
-func NewRunner(st *store.Store, channel Channel, enricher Enricher, interval time.Duration) *Runner {
-	return &Runner{
-		store:      st,
-		channel:    channel,
-		enricher:   enricher,
-		interval:   interval,
-		runsPerDay: int64((24*time.Hour + interval - 1) / interval),
-		now:        time.Now,
-	}
+// lengthsEvery is how often a tick reads the lengths of new videos.
+const lengthsEvery = time.Hour
+
+// NewRunner is a Runner ticking every interval on average, recording what
+// tally holds with each pass, and pushing what edits holds first. tally and
+// edits may each be nil.
+func NewRunner(st *store.Store, channel Channel, tally *enrich.Tally, edits *Edits, interval time.Duration) *Runner {
+	return &Runner{store: st, channel: channel, tally: tally, edits: edits, interval: interval, now: time.Now}
 }
 
-// Report is what one run did, as its sync_runs row records it. VideoReads,
+// Report is what one pass did, as its sync_runs row records it. VideoReads,
 // VideosEnriched, TracksFound, VideosUnreadable, RateLimited and
-// EnrichmentPaused are what its enrichment did, as enrich.Report names them.
+// EnrichmentPaused are what enrichment did since the pass before, as
+// enrich.Report names them. ProbeMisses counts the playlists its sweep found
+// changed on YouTube that the probe had not flagged, and Retry the playlists an
+// edit changed whose sync has to wait for YouTube to show a recent write.
 type Report struct {
 	RunID             int64
 	Outcome           string
@@ -142,13 +140,15 @@ type Report struct {
 	VideosUnreadable  int
 	RateLimited       bool
 	EnrichmentPaused  bool
+	ProbeMisses       int
 	Failures          []Failure
+	Retry             []string
 }
 
-// Failure is one thing that went wrong in a run. Stage is which half of the run
-// it happened in, Playlist the playlist a failure of the sync is about, and
-// Video the video a failure of enrichment is about. A failure of a whole stage
-// names neither, which is why it names the stage.
+// Failure is one thing that went wrong in a pass. Stage is which half of the
+// work it happened in, Playlist the playlist a failure of the sync is about,
+// and Video the video a failure of enrichment is about. A failure of a whole
+// stage names neither, which is why it names the stage.
 type Failure struct {
 	Stage    string
 	Playlist youtube.PlaylistID
@@ -156,58 +156,76 @@ type Failure struct {
 	Err      error
 }
 
-// Run makes one run and records it. The error is only for a run that could not
-// be recorded: whatever went wrong inside the run is in the report.
+// Run makes a full pass: every playlist the channel lists is read and synced,
+// whatever its count, and the lengths of new videos are read. The worker makes
+// one as it starts, which is what the probes after it compare their counts
+// with. The error is only for a pass that could not be recorded: whatever went
+// wrong inside it is in the report.
 func (r *Runner) Run(ctx context.Context) (Report, error) {
-	run := &run{
-		Runner:    r,
-		ctx:       ctx,
-		started:   r.now(),
-		stage:     store.StageSync,
-		requests0: r.channel.Requests(),
-		units0:    r.channel.Units(),
+	r.lengthsDue = r.now().Add(lengthsEvery)
+	return r.pass(ctx, []Job{
+		{Kind: KindProbe, Priority: PriorityChanged, Full: true},
+		{Kind: KindLengths, Priority: PriorityLengths},
+	})
+}
+
+// Tick makes the pass the worker makes each interval: the probe, the sweep of
+// the playlist read longest ago, every push that stopped before it finished,
+// and, once lengthsEvery has passed, the lengths of new videos.
+func (r *Runner) Tick(ctx context.Context) (Report, error) {
+	jobs := []Job{{Kind: KindProbe, Priority: PriorityChanged}}
+	if now := r.now(); !now.Before(r.lengthsDue) {
+		r.lengthsDue = now.Add(lengthsEvery)
+		jobs = append(jobs, Job{Kind: KindLengths, Priority: PriorityLengths})
 	}
-	run.date = youtube.QuotaDate(run.started)
-	run.execute()
-	run.enrich()
+	pending, err := r.readPending(ctx)
+	if err != nil {
+		return r.failedPass(ctx, err)
+	}
+	for _, p := range pending {
+		if !p.Held {
+			jobs = append(jobs, Job{Kind: KindSync, Priority: PriorityUnfinished, Playlist: p.PlaylistID})
+		}
+	}
+	return r.pass(ctx, jobs)
+}
+
+// Pass makes a pass of whatever is waiting: the playlists edits changed, and
+// what enrichment did since the last pass, which a refusal of its reads wants
+// recorded at once.
+func (r *Runner) Pass(ctx context.Context) (Report, error) {
+	return r.pass(ctx, nil)
+}
+
+func (r *Runner) pass(ctx context.Context, jobs []Job) (Report, error) {
+	run := r.begin(ctx)
+	run.execute(jobs)
 	return run.record()
 }
 
-// enrich reads tracklists once the sync is done. A sync YouTube refused for the
-// day's quota leaves reads through yt-dlp as they were, so enrichment follows
-// it, and follows no sync that ended any other way before its end.
-func (run *run) enrich() {
-	if run.ended != nil && !errors.Is(run.ended, youtube.ErrQuotaSpent) {
-		return
-	}
-	run.stage = store.StageEnrichment
-	report, err := run.enricher.Run(run.ctx)
-	run.report.VideoReads = report.Reads
-	run.report.VideosEnriched = report.Enriched
-	run.report.TracksFound = report.Tracks
-	run.report.VideosUnreadable = report.Unreadable
-	run.report.RateLimited = report.RateLimited
-	run.report.EnrichmentPaused = report.Paused
-	for _, failure := range report.Failures {
-		run.report.Failures = append(run.report.Failures, Failure{
-			Stage: run.stage, Video: youtube.VideoID(failure.VideoID), Err: failure.Err,
-		})
-	}
-	if err == nil {
-		return
-	}
-	// A run that already ended records that ending as its outcome, so an error
-	// from enrichment reaches the row only as a failure of it. The ending
-	// enrichment runs after is a quota refusal, which makes that the ordinary
-	// case rather than the rare one.
-	if run.ended == nil {
-		run.ended = err
-		return
-	}
-	run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Err: err})
+// failedPass records a pass that failed before its first job.
+func (r *Runner) failedPass(ctx context.Context, err error) (Report, error) {
+	run := r.begin(ctx)
+	run.ended = err
+	return run.record()
 }
 
-// run is the state of one run while it is made.
+func (r *Runner) begin(ctx context.Context) *run {
+	started := r.now()
+	return &run{
+		Runner:    r,
+		ctx:       ctx,
+		started:   started,
+		date:      youtube.QuotaDate(started),
+		stage:     store.StageSync,
+		requests0: r.channel.Requests(),
+		units0:    r.channel.Units(),
+		listed:    map[string]youtube.Playlist{},
+		synced:    map[string]bool{},
+	}
+}
+
+// run is the state of one pass while it is made.
 type run struct {
 	*Runner
 	ctx       context.Context
@@ -216,93 +234,206 @@ type run struct {
 	requests0 int64
 	units0    int64
 	report    Report
-	// merged is each playlist merged, in the order it was read, for the push.
-	merged []merged
-	// readUnits is what the run's reads cost.
-	readUnits int64
-	// ended is why the run stopped before its end: YouTube's quota refusal, the
-	// context ending, or a failure of the whole run.
+	// listed is each playlist the pass's probe listed, and listedAt when the
+	// listing was sent. A sync of a playlist no probe listed keeps the details
+	// the store holds.
+	listed   map[string]youtube.Playlist
+	listedAt time.Time
+	// synced is each playlist the pass has synced, which its sweep passes over.
+	synced map[string]bool
+	// perTick is what one tick's probe and sweep read, once the pass has asked.
+	perTick int64
+	// idle is a pass that sent nothing, since a pass before it drew the day's
+	// quota refusal.
+	idle bool
+	// ended is why the pass stopped before its end: YouTube's quota refusal, the
+	// context ending, or a failure of the whole pass.
 	ended error
-	// stage is which half of the run is happening, which every failure it
+	// stage is which half of the work is happening, which every failure it
 	// records names.
 	stage string
 }
 
-func (run *run) execute() {
+func (run *run) execute(jobs []Job) {
 	refused, err := run.store.Queries.CountQuotaSpentRuns(run.ctx, run.date)
 	if err != nil {
 		run.ended = err
 		return
 	}
 	if refused > 0 {
-		run.ended = fmt.Errorf("%w: a run on %s already drew the refusal", youtube.ErrQuotaSpent, run.date)
+		// A pass that drew the day's refusal is recorded, and those after it
+		// send nothing until the quota resets. A playlist an edit changed
+		// meanwhile is found again by the first tick after it.
+		run.edits.take()
+		run.idle = true
+		run.ended = fmt.Errorf("%w: a pass on %s already drew the refusal", youtube.ErrQuotaSpent, run.date)
 		return
 	}
-
-	listedAt := run.now()
-	listed, err := run.channel.Playlists(run.ctx)
-	if err != nil {
-		run.ended = err
-		return
+	q := &queue{}
+	for _, j := range jobs {
+		q.add(j)
 	}
-	if err := run.deleteUnlisted(listed); err != nil {
-		run.ended = err
-		return
-	}
-	for _, playlist := range listed {
-		if err := run.mergePlaylist(playlist, listedAt); err != nil {
+	for {
+		for _, id := range run.edits.take() {
+			q.add(Job{Kind: KindSync, Priority: PriorityEdit, Playlist: id})
+		}
+		job, ok := q.next()
+		if !ok {
+			return
+		}
+		if err := run.do(job, q); err != nil {
 			run.ended = err
 			return
 		}
-	}
-
-	run.readUnits = run.channel.Units() - run.units0
-	if run.runsPerDay*run.readUnits > DailyQuota {
-		run.report.Failures = append(run.report.Failures, Failure{
-			Stage: run.stage,
-			Err:   fmt.Errorf("%w: %d runs a day at %d units each", ErrReadsExceedQuota, run.runsPerDay, run.readUnits),
-		})
-	}
-
-	for _, playlist := range run.merged {
-		err := run.push(playlist)
-		if errors.Is(err, ErrAllowanceSpent) {
-			run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Playlist: youtube.PlaylistID(playlist.id), Err: err})
-			return
-		}
-		if err != nil {
-			run.ended = err
-			return
-		}
-	}
-
-	// A failed read of lengths costs the run nothing it came for, so it is a
-	// failure of the run rather than its end, unless it is the day's quota or
-	// the run itself was stopped.
-	if err := run.measureLengths(); err != nil {
-		if errors.Is(err, youtube.ErrQuotaSpent) || run.ctx.Err() != nil {
-			run.ended = err
-			return
-		}
-		run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Err: err})
 	}
 }
 
-// lengthsPerRun is the most videos a run reads the length of. The Data API
-// reads 50 a unit, so the most a run spends on lengths is 20 units.
-const lengthsPerRun = 1000
+// do makes one job. The error is one that ends the pass.
+func (run *run) do(job Job, q *queue) error {
+	if err := run.ctx.Err(); err != nil {
+		return err
+	}
+	switch job.Kind {
+	case KindProbe:
+		return run.probe(job.Full, q)
+	case KindSync:
+		return run.sync(job)
+	case KindLengths:
+		return run.lengths()
+	}
+	return fmt.Errorf("a job of kind %d, which a pass does not make", job.Kind)
+}
 
-// measureLengths reads the length of each video a playlist holds that the
-// store holds none for, from the Data API. A length otherwise arrives with the
-// video's tracklist read, which paces through the library a few dozen videos a
-// run, and until then a filter or an order by length passes the video over.
+// probe lists every playlist the channel owns and queues a sync of each whose
+// count moved since its last read, of each the store has never read, and of
+// every one when full. A pass that is not full also queues the sweep: the
+// playlist read longest ago that nothing else queued. A failed listing ends
+// the pass.
+func (run *run) probe(full bool, q *queue) error {
+	listedAt := run.now()
+	listed, err := run.channel.Playlists(run.ctx)
+	if err != nil {
+		return err
+	}
+	run.listedAt = listedAt
+	for _, playlist := range listed {
+		run.listed[string(playlist.ID)] = playlist
+	}
+	if err := run.deleteUnlisted(listed); err != nil {
+		return err
+	}
+	reads, err := run.store.Queries.ListPlaylistReads(run.ctx)
+	if err != nil {
+		return err
+	}
+	counted := map[string]sql.NullInt64{}
+	for _, read := range reads {
+		counted[read.PlaylistID] = read.ReadItemCount
+	}
+	for _, playlist := range listed {
+		count, known := counted[string(playlist.ID)]
+		if full || !known || !count.Valid || count.Int64 != playlist.ItemCount {
+			q.add(Job{Kind: KindSync, Priority: PriorityChanged, Playlist: string(playlist.ID)})
+			continue
+		}
+		if err := run.storeDetails(playlist); err != nil {
+			return err
+		}
+	}
+	if full {
+		return nil
+	}
+	for _, read := range reads {
+		_, isListed := run.listed[read.PlaylistID]
+		if isListed && !q.holds(read.PlaylistID) && !run.synced[read.PlaylistID] {
+			q.add(Job{Kind: KindSync, Priority: PrioritySweep, Playlist: read.PlaylistID})
+			break
+		}
+	}
+	return nil
+}
+
+// storeDetails stores a listed playlist's title, description and privacy,
+// unless the API wrote the playlist later than the listing can show.
+func (run *run) storeDetails(playlist youtube.Playlist) error {
+	return run.store.InTx(run.ctx, func(tx *store.Tx) error {
+		_, written, err := store.WriteNewerThanRead(run.ctx, tx.Queries, string(playlist.ID), run.listedAt)
+		if err != nil || written {
+			return err
+		}
+		return tx.UpsertPlaylist(run.ctx, generated.UpsertPlaylistParams{
+			PlaylistID: string(playlist.ID), Title: playlist.Title, Description: playlist.Description, Privacy: playlist.Privacy,
+		})
+	})
+}
+
+// sync reads one playlist, merges it and pushes it. A push that stopped before
+// it finished is not read until the day's quota has room for one of its
+// writes, since a read it cannot act on is spent for nothing. A playlist an
+// edit changed whose read cannot yet show a recent write is retried once it
+// can. The error is one that ends the pass.
 //
-// It runs after the push and outside the reads the quota guard counts. Once the
-// library is measured it reads the videos new since the last run and those
-// YouTube reports no length for, live and upcoming streams, at a unit per 50.
-func (run *run) measureLengths() error {
-	stored, err := run.store.Queries.ListVideosWithoutLength(run.ctx, lengthsPerRun)
+// The read is stamped as taken up whatever came of it, so the sweep moves past
+// a playlist whose reads keep failing rather than taking it every tick.
+func (run *run) sync(job Job) error {
+	if job.Priority == PriorityUnfinished {
+		room, err := run.allows(job.Priority, youtube.WriteUnits)
+		if err != nil || !room {
+			return err
+		}
+	}
+	run.synced[job.Playlist] = true
+	takenAt := run.now()
+	m, result, outcome, err := run.mergePlaylist(job.Playlist)
+	if err != nil {
+		return err
+	}
+	if err := run.store.Queries.SetPlaylistReadTs(run.ctx, generated.SetPlaylistReadTsParams{
+		PlaylistID: job.Playlist, ReadTs: sql.NullString{String: store.Timestamp(takenAt), Valid: true},
+	}); err != nil {
+		return err
+	}
+	switch outcome {
+	case mergeStored:
+		if job.Priority == PrioritySweep && result.Added+result.Removed > 0 {
+			run.report.ProbeMisses++
+		}
+		err := run.push(m, job.Priority)
+		if errors.Is(err, ErrAllowanceSpent) {
+			run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Playlist: youtube.PlaylistID(m.id), Err: err})
+			return nil
+		}
+		return err
+	case mergeDeferred, mergeNotYet:
+		if job.Priority == PriorityEdit {
+			run.report.Retry = append(run.report.Retry, job.Playlist)
+		}
+	}
+	return nil
+}
+
+// lengthsPerPass is the most videos a pass reads the length of. The Data API
+// reads 50 a unit, so the most a pass spends on lengths is 20 units.
+const lengthsPerPass = 1000
+
+// lengths reads the length of each video a playlist holds that the store holds
+// none for, from the Data API, when the day's quota has room beside the
+// reserves. A length otherwise arrives with the video's tracklist read, which
+// paces through the library, and until then a filter or an order by length
+// passes the video over.
+//
+// Once the library is measured it reads the videos new since the last pass and
+// those YouTube reports no length for, live and upcoming streams, at a unit per
+// 50. A failed read costs the pass nothing it came for, so it is a failure of
+// the pass rather than its end, unless it is the day's quota or the pass itself
+// was stopped.
+func (run *run) lengths() error {
+	stored, err := run.store.Queries.ListVideosWithoutLength(run.ctx, lengthsPerPass)
 	if err != nil || len(stored) == 0 {
+		return err
+	}
+	room, err := run.allows(PriorityLengths, int64(len(stored)+49)/50)
+	if err != nil || !room {
 		return err
 	}
 	ids := make([]youtube.VideoID, len(stored))
@@ -310,8 +441,12 @@ func (run *run) measureLengths() error {
 		ids[i] = youtube.VideoID(id)
 	}
 	videos, err := run.channel.Videos(run.ctx, ids)
-	if err != nil {
-		return fmt.Errorf("read the lengths of %d videos: %w", len(ids), err)
+	switch {
+	case errors.Is(err, youtube.ErrQuotaSpent) || (err != nil && run.ctx.Err() != nil):
+		return err
+	case err != nil:
+		run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Err: fmt.Errorf("read the lengths of %d videos: %w", len(ids), err)})
+		return nil
 	}
 	for _, video := range videos {
 		if video.DurationSeconds == nil {
@@ -345,10 +480,10 @@ func (run *run) deleteUnlisted(listed []youtube.Playlist) error {
 		_, err := run.channel.Playlist(run.ctx, youtube.PlaylistID(id))
 		switch {
 		case err == nil:
-			// YouTube still has the playlist, so the listing missed it, and the
-			// next run's listing is read instead.
+			// YouTube still has the playlist, so the listing missed it, and a
+			// later pass's listing is read instead.
 		case errors.Is(err, youtube.ErrPlaylistNotFound):
-			if err := run.deleteGone(id, readAt); err != nil {
+			if _, err := run.deleteGone(id, readAt); err != nil {
 				return err
 			}
 		case errors.Is(err, youtube.ErrQuotaSpent) || run.ctx.Err() != nil:
@@ -361,8 +496,9 @@ func (run *run) deleteUnlisted(listed []youtube.Playlist) error {
 }
 
 // deleteGone deletes the stored playlist id, which a read sent at readAt found
-// gone, unless the API wrote it later than that read can show.
-func (run *run) deleteGone(id string, readAt time.Time) error {
+// gone, unless the API wrote it later than that read can show. It returns
+// whether it deleted it.
+func (run *run) deleteGone(id string, readAt time.Time) (bool, error) {
 	deleted := false
 	err := run.store.InTx(run.ctx, func(tx *store.Tx) error {
 		_, written, err := store.WriteNewerThanRead(run.ctx, tx.Queries, id, readAt)
@@ -373,21 +509,21 @@ func (run *run) deleteGone(id string, readAt time.Time) error {
 		return tx.DeletePlaylist(run.ctx, id)
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if deleted {
 		run.report.PlaylistsDeleted++
 	}
-	return nil
+	return deleted, nil
 }
 
-// skip records a failure about the playlist alone, which the run passes over.
+// skip records a failure about the playlist alone, which the pass passes over.
 func (run *run) skip(playlist youtube.PlaylistID, err error) {
 	run.report.PlaylistsSkipped++
 	run.report.Failures = append(run.report.Failures, Failure{Stage: run.stage, Playlist: playlist, Err: err})
 }
 
-// merged is a playlist a run merged, as the push starts from it: the revision
+// merged is a playlist a pass merged, as the push starts from it: the revision
 // the merge left, how YouTube orders it, what YouTube holds, the server's order
 // with every entry's id, and the push write YouTube refused.
 type merged struct {
@@ -399,28 +535,56 @@ type merged struct {
 	refusedWriteID sql.NullInt64
 }
 
-// mergePlaylist reads one listed playlist's items and merges them into the
-// store, in one transaction: its details as YouTube holds them, and its items
-// into the server's order against its base. listedAt is when the listing that
-// named it was sent. A failure about this playlist alone is recorded and
-// returns nil; the error is for one that ends the run.
-func (run *run) mergePlaylist(playlist youtube.Playlist, listedAt time.Time) error {
-	if err := run.ctx.Err(); err != nil {
-		return err
+// mergeOutcome is what a merge of one playlist did.
+type mergeOutcome int
+
+const (
+	// mergeSkipped stored nothing: the API deleted the playlist, YouTube has
+	// deleted it, or the read failed in a way recorded as the playlist's
+	// failure.
+	mergeSkipped mergeOutcome = iota
+	// mergeDeferred stored the playlist's details and left its items for a
+	// later pass, since the API wrote them within the lag of the read.
+	mergeDeferred
+	// mergeNotYet stored nothing, since YouTube does not yet show a playlist
+	// the API created or changed within the lag of the read.
+	mergeNotYet
+	// mergeStored stored the playlist's details and merged its items.
+	mergeStored
+)
+
+// mergePlaylist reads one playlist's items and merges them into the store, in
+// one transaction: its details as the pass's listing gave them, and its items
+// into the server's order against its base. A failure about this playlist
+// alone is recorded; the error is for one that ends the pass.
+func (run *run) mergePlaylist(id string) (merged, merge.Result, mergeOutcome, error) {
+	listing, isListed := run.listed[id]
+	if !isListed {
+		_, err := run.store.Queries.GetPlaylistState(run.ctx, id)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// The API deleted the playlist after it was queued.
+			return merged{}, merge.Result{}, mergeSkipped, nil
+		case err != nil:
+			return merged{}, merge.Result{}, mergeSkipped, err
+		}
 	}
-	id := string(playlist.ID)
 	readAt := run.now()
-	items, err := run.channel.Items(run.ctx, playlist.ID)
+	items, err := run.channel.Items(run.ctx, youtube.PlaylistID(id))
 	switch {
 	case errors.Is(err, youtube.ErrPlaylistNotFound):
-		// The playlist was deleted after the channel listed it, or created so
+		// The playlist was deleted after it was listed or queued, or created so
 		// recently that YouTube does not yet list its items.
-		return run.deleteGone(id, readAt)
+		deleted, err := run.deleteGone(id, readAt)
+		if err != nil || deleted {
+			return merged{}, merge.Result{}, mergeSkipped, err
+		}
+		return merged{}, merge.Result{}, mergeNotYet, nil
 	case errors.Is(err, youtube.ErrQuotaSpent) || (err != nil && run.ctx.Err() != nil):
-		return err
+		return merged{}, merge.Result{}, mergeSkipped, err
 	case err != nil:
-		run.skip(playlist.ID, err)
-		return nil
+		run.skip(youtube.PlaylistID(id), err)
+		return merged{}, merge.Result{}, mergeSkipped, nil
 	}
 	read := make([]merge.Item, len(items))
 	for i, item := range items {
@@ -429,42 +593,43 @@ func (run *run) mergePlaylist(playlist youtube.Playlist, listedAt time.Time) err
 
 	deferred, err := store.ItemWritesSince(run.ctx, run.store.Queries, id, readAt)
 	if err != nil {
-		return err
+		return merged{}, merge.Result{}, mergeSkipped, err
 	}
 	var base []store.BaseItem
 	if !deferred {
 		base, err = store.Base(run.ctx, run.store.Queries, id)
 		if err != nil {
-			return err
+			return merged{}, merge.Result{}, mergeSkipped, err
 		}
-		confirmed, err := run.confirmAbsences(playlist.ID, base, read)
+		confirmed, err := run.confirmAbsences(youtube.PlaylistID(id), base, read)
 		if err != nil || !confirmed {
-			return err
+			return merged{}, merge.Result{}, mergeSkipped, err
 		}
 	}
 
 	var result merge.Result
 	var stored merged
-	var outcome mergeOutcome
+	outcome := mergeSkipped
 	err = run.store.InTx(run.ctx, func(tx *store.Tx) error {
-		method, written, err := store.WriteNewerThanRead(run.ctx, tx.Queries, id, listedAt)
-		switch {
-		case err != nil:
-			return err
-		case written && method == youtube.MethodPlaylistsDelete:
-			// The API deleted the playlist later than the listing can show.
-			outcome = mergeSkipped
-			return nil
-		case !written:
-			err := tx.UpsertPlaylist(run.ctx, generated.UpsertPlaylistParams{
-				PlaylistID: id, Title: playlist.Title, Description: playlist.Description, Privacy: playlist.Privacy,
-			})
-			if err != nil {
+		if isListed {
+			method, written, err := store.WriteNewerThanRead(run.ctx, tx.Queries, id, run.listedAt)
+			switch {
+			case err != nil:
 				return err
+			case written && method == youtube.MethodPlaylistsDelete:
+				// The API deleted the playlist later than the listing can show.
+				return nil
+			case !written:
+				// A playlist the API created or updated later than the listing
+				// can show keeps the details the API stored.
+				err := tx.UpsertPlaylist(run.ctx, generated.UpsertPlaylistParams{
+					PlaylistID: id, Title: listing.Title, Description: listing.Description, Privacy: listing.Privacy,
+				})
+				if err != nil {
+					return err
+				}
 			}
 		}
-		// A playlist the API created or updated later than the listing can show
-		// keeps the details the API stored.
 		for _, item := range items {
 			if err := upsertVideo(run.ctx, tx, item); err != nil {
 				return err
@@ -478,40 +643,33 @@ func (run *run) mergePlaylist(playlist youtube.Playlist, listedAt time.Time) err
 		if err != nil {
 			return err
 		}
+		if isListed {
+			if err := tx.SetPlaylistReadCount(run.ctx, generated.SetPlaylistReadCountParams{
+				PlaylistID: id, ReadItemCount: sql.NullInt64{Int64: listing.ItemCount, Valid: true},
+			}); err != nil {
+				return err
+			}
+		}
 		outcome = mergeStored
 		return nil
 	})
 	if errors.Is(err, errBaseMoved) {
-		run.skip(playlist.ID, err)
-		return nil
+		run.skip(youtube.PlaylistID(id), err)
+		return merged{}, merge.Result{}, mergeSkipped, nil
 	}
 	if err != nil {
-		return err
+		return merged{}, merge.Result{}, mergeSkipped, err
 	}
 	switch outcome {
 	case mergeStored:
-		run.merged = append(run.merged, stored)
 		run.report.Playlists++
 		run.report.ItemsAdded += result.Added
 		run.report.ItemsRemoved += result.Removed
 	case mergeDeferred:
 		run.report.PlaylistsDeferred++
 	}
-	return nil
+	return stored, result, outcome, nil
 }
-
-// mergeOutcome is what a merge of one playlist did.
-type mergeOutcome int
-
-const (
-	// mergeSkipped stored nothing, since the API deleted the playlist.
-	mergeSkipped mergeOutcome = iota
-	// mergeDeferred stored the playlist's details and left its items for the
-	// next run.
-	mergeDeferred
-	// mergeStored stored the playlist's details and merged its items.
-	mergeStored
-)
 
 // errBaseMoved is the failure of a playlist whose base changed between the
 // absences confirmed against it and the merge.
@@ -519,7 +677,7 @@ var errBaseMoved = errors.New("the playlist's base changed while its absences we
 
 // confirmAbsences reads by id each item of base that read lacks. It returns
 // false, having recorded the playlist as skipped, when YouTube still has one or
-// the read fails; the error is for a failure that ends the run.
+// the read fails; the error is for a failure that ends the pass.
 func (run *run) confirmAbsences(playlist youtube.PlaylistID, base []store.BaseItem, read []merge.Item) (bool, error) {
 	var absent []youtube.ItemID
 	for _, item := range base {
@@ -686,12 +844,24 @@ func upsertVideo(ctx context.Context, tx *store.Tx, item youtube.Item) error {
 	})
 }
 
-// record writes the run and its failures, on a context the run's own ending
-// does not cancel.
+// record writes the pass and its failures, with what enrichment did since the
+// pass before, on a context the pass's own ending does not cancel. A pass that
+// sent nothing and failed at nothing, or sent nothing because the day's quota
+// is spent, writes no row unless enrichment has something to record.
 func (run *run) record() (Report, error) {
 	rep := &run.report
 	rep.Requests = run.channel.Requests() - run.requests0
 	rep.Units = run.channel.Units() - run.units0
+	read := run.tally.Take()
+	rep.VideoReads = read.Reads
+	rep.VideosEnriched = read.Enriched
+	rep.TracksFound = read.Tracks
+	rep.VideosUnreadable = read.Unreadable
+	rep.RateLimited = read.RateLimited
+	rep.EnrichmentPaused = read.Paused
+	for _, failure := range read.Failures {
+		rep.Failures = append(rep.Failures, Failure{Stage: store.StageEnrichment, Video: youtube.VideoID(failure.VideoID), Err: failure.Err})
+	}
 	switch {
 	case errors.Is(run.ended, youtube.ErrQuotaSpent):
 		rep.Outcome = store.OutcomeQuotaSpent
@@ -704,6 +874,10 @@ func (run *run) record() (Report, error) {
 		rep.Outcome = store.OutcomePartial
 	default:
 		rep.Outcome = store.OutcomeOK
+	}
+	quiet := rep.Requests == 0 && len(rep.Failures) == 0 && rep.Outcome == store.OutcomeOK
+	if read.Reads == 0 && len(read.Failures) == 0 && (quiet || run.idle) {
+		return *rep, nil
 	}
 
 	ctx := context.WithoutCancel(run.ctx)
@@ -729,6 +903,7 @@ func (run *run) record() (Report, error) {
 			VideosUnreadable:  int64(rep.VideosUnreadable),
 			IsRateLimited:     rep.RateLimited,
 			EnrichmentPaused:  rep.EnrichmentPaused,
+			ProbeMisses:       int64(rep.ProbeMisses),
 		})
 		if err != nil {
 			return err

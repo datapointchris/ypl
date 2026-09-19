@@ -83,8 +83,11 @@ of, rather than by a sentence saying nothing was found.
 asks for it, and so does `ypl playlists delete`, which asks first and needs `--yes` where there is
 nobody to ask. `--no-input` forbids the question everywhere and takes that path from a terminal.
 
-`ypl playlists edit` is the one changing verb that does not reach YouTube: it sets the order the
-server holds, and the next sync run pushes that order. Where an edit is refused, the buffer is kept
+`ypl playlists edit` is the one changing verb that does not reach YouTube itself: it sets the order
+the server holds, and the server pushes that order to YouTube as soon as it is saved, ahead of
+anything else it has waiting. A reorder is a write of 50 quota units for each video moved, so a
+large one can take more than a day's quota, and `ypl server status` lists what is left to push.
+Where an edit is refused, the buffer is kept
 in a file and the refusal names it, because by then the editor has closed and that file is the only
 copy of the rearranging.
 
@@ -109,7 +112,9 @@ Every read takes `--json`, which writes a stable shape to stdout and nothing els
 nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
 success, 2 for an invocation the CLI would not accept, and 1 for a command that ran and failed;
 `ypl auth status` and `ypl next` exit 1 to report a real state rather than a failure, so a status bar
-can run either unguarded.
+can run either unguarded. `ypl server status` exits 3 when the server's latest ok sync is older
+than an hour, or older than twelve of its ticks where those are longer, which is a state for a
+person to look at rather than a command that failed.
 
 ## License
 

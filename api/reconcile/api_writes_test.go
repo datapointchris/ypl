@@ -18,7 +18,7 @@ import (
 // api is the API's routes over st, writing playlists through f.
 func api(st *store.Store, f *fakeChannel) *http.ServeMux {
 	mux := http.NewServeMux()
-	handlers.New(st, f, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
+	handlers.New(st, f, handlers.Sync{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
 	return mux
 }
 

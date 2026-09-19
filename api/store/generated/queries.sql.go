@@ -136,6 +136,32 @@ func (q *Queries) CountLibrary(ctx context.Context) (CountLibraryRow, error) {
 	return i, err
 }
 
+const countPlaylistPages = `-- name: CountPlaylistPages :one
+SELECT
+    CAST(count(*) AS INTEGER) AS playlists,
+    CAST(coalesce(sum(max(1, (counted.entries + 49) / 50)), 0) AS INTEGER) AS pages
+FROM (
+    SELECT count(pe.entry_id) AS entries
+    FROM playlists AS p
+    LEFT JOIN playlist_entries AS pe ON p.playlist_id = pe.playlist_id
+    GROUP BY p.playlist_id
+) AS counted
+`
+
+type CountPlaylistPagesRow struct {
+	Playlists int64
+	Pages     int64
+}
+
+// How many playlists the store holds, and how many pages of 50 a read of every
+// one's items takes, an empty playlist taking one.
+func (q *Queries) CountPlaylistPages(ctx context.Context) (CountPlaylistPagesRow, error) {
+	row := q.db.QueryRowContext(ctx, countPlaylistPages)
+	var i CountPlaylistPagesRow
+	err := row.Scan(&i.Playlists, &i.Pages)
+	return i, err
+}
+
 const countQuotaSpentRuns = `-- name: CountQuotaSpentRuns :one
 SELECT count(*) FROM sync_runs
 WHERE quota_date = ? AND outcome = 'quota_spent'
@@ -144,20 +170,6 @@ WHERE quota_date = ? AND outcome = 'quota_spent'
 // How many runs on quota_date ended on YouTube's quota refusal.
 func (q *Queries) CountQuotaSpentRuns(ctx context.Context, quotaDate string) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countQuotaSpentRuns, quotaDate)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countRateLimitedRunsSince = `-- name: CountRateLimitedRunsSince :one
-SELECT count(*) FROM sync_runs
-WHERE is_rate_limited = 1 AND finished_ts > ?1
-`
-
-// How many runs that finished after since had YouTube refuse their reads of
-// videos for now.
-func (q *Queries) CountRateLimitedRunsSince(ctx context.Context, since string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countRateLimitedRunsSince, since)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -307,7 +319,8 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused
+    enrichment_paused,
+    probe_misses
 FROM sync_runs
 WHERE outcome = ?
 ORDER BY run_id DESC
@@ -339,6 +352,7 @@ func (q *Queries) GetLatestSyncRunWithOutcome(ctx context.Context, outcome strin
 		&i.VideosUnreadable,
 		&i.IsRateLimited,
 		&i.EnrichmentPaused,
+		&i.ProbeMisses,
 	)
 	return i, err
 }
@@ -431,9 +445,20 @@ FROM playlists
 WHERE playlist_id = ?
 `
 
-func (q *Queries) GetPlaylist(ctx context.Context, playlistID string) (Playlist, error) {
+type GetPlaylistRow struct {
+	PlaylistID        string
+	Title             string
+	Description       string
+	Privacy           string
+	Revision          int64
+	Sort              string
+	UnansweredWriteID sql.NullInt64
+	RefusedWriteID    sql.NullInt64
+}
+
+func (q *Queries) GetPlaylist(ctx context.Context, playlistID string) (GetPlaylistRow, error) {
 	row := q.db.QueryRowContext(ctx, getPlaylist, playlistID)
-	var i Playlist
+	var i GetPlaylistRow
 	err := row.Scan(
 		&i.PlaylistID,
 		&i.Title,
@@ -542,7 +567,8 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused
+    enrichment_paused,
+    probe_misses
 FROM sync_runs
 WHERE run_id = ?
 `
@@ -572,6 +598,7 @@ func (q *Queries) GetSyncRun(ctx context.Context, runID int64) (SyncRun, error) 
 		&i.VideosUnreadable,
 		&i.IsRateLimited,
 		&i.EnrichmentPaused,
+		&i.ProbeMisses,
 	)
 	return i, err
 }
@@ -776,9 +803,10 @@ const insertSyncRun = `-- name: InsertSyncRun :one
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
     playlists_deferred, items_added, items_removed, requests, units, writes, write_units,
-    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited, enrichment_paused
+    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited, enrichment_paused,
+    probe_misses
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id
 `
 
@@ -803,6 +831,7 @@ type InsertSyncRunParams struct {
 	VideosUnreadable  int64
 	IsRateLimited     bool
 	EnrichmentPaused  bool
+	ProbeMisses       int64
 }
 
 func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (int64, error) {
@@ -827,6 +856,7 @@ func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (i
 		arg.VideosUnreadable,
 		arg.IsRateLimited,
 		arg.EnrichmentPaused,
+		arg.ProbeMisses,
 	)
 	var run_id int64
 	err := row.Scan(&run_id)
@@ -977,6 +1007,20 @@ func (q *Queries) LatestPlaylistWriteSettledAfter(ctx context.Context, arg Lates
 	var i LatestPlaylistWriteSettledAfterRow
 	err := row.Scan(&i.Method, &i.Outcome)
 	return i, err
+}
+
+const latestRateLimitedRunFinished = `-- name: LatestRateLimitedRunFinished :one
+SELECT CAST(coalesce(max(finished_ts), '') AS TEXT) AS finished_ts FROM sync_runs
+WHERE is_rate_limited = 1
+`
+
+// When the latest run that had YouTube refuse its reads of videos for now
+// finished, and empty when none has.
+func (q *Queries) LatestRateLimitedRunFinished(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, latestRateLimitedRunFinished)
+	var finished_ts string
+	err := row.Scan(&finished_ts)
+	return finished_ts, err
 }
 
 const listBaseItems = `-- name: ListBaseItems :many
@@ -1254,7 +1298,8 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused
+    enrichment_paused,
+    probe_misses
 FROM sync_runs
 ORDER BY run_id DESC
 LIMIT ?1
@@ -1292,6 +1337,7 @@ func (q *Queries) ListNewestSyncRuns(ctx context.Context, maxRows int64) ([]Sync
 			&i.VideosUnreadable,
 			&i.IsRateLimited,
 			&i.EnrichmentPaused,
+			&i.ProbeMisses,
 		); err != nil {
 			return nil, err
 		}
@@ -1394,6 +1440,46 @@ func (q *Queries) ListPlaylistIDs(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		items = append(items, playlist_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlaylistReads = `-- name: ListPlaylistReads :many
+SELECT
+    playlist_id,
+    read_ts,
+    read_item_count
+FROM playlists
+ORDER BY read_ts IS NOT NULL, read_ts, playlist_id
+`
+
+type ListPlaylistReadsRow struct {
+	PlaylistID    string
+	ReadTs        sql.NullString
+	ReadItemCount sql.NullInt64
+}
+
+// Every playlist with when its items were last read and the listing's count
+// then, those never read first and then the one read longest ago.
+func (q *Queries) ListPlaylistReads(ctx context.Context) ([]ListPlaylistReadsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaylistReads)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlaylistReadsRow
+	for rows.Next() {
+		var i ListPlaylistReadsRow
+		if err := rows.Scan(&i.PlaylistID, &i.ReadTs, &i.ReadItemCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -1801,7 +1887,8 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused
+    enrichment_paused,
+    probe_misses
 FROM sync_runs
 WHERE run_id < ?1
 ORDER BY run_id DESC
@@ -1845,6 +1932,7 @@ func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBefore
 			&i.VideosUnreadable,
 			&i.IsRateLimited,
 			&i.EnrichmentPaused,
+			&i.ProbeMisses,
 		); err != nil {
 			return nil, err
 		}
@@ -2285,6 +2373,40 @@ func (q *Queries) SetEntryItem(ctx context.Context, arg SetEntryItemParams) (int
 	return result.RowsAffected()
 }
 
+const setPlaylistReadCount = `-- name: SetPlaylistReadCount :exec
+UPDATE playlists SET read_item_count = ?1
+WHERE playlist_id = ?2
+`
+
+type SetPlaylistReadCountParams struct {
+	ReadItemCount sql.NullInt64
+	PlaylistID    string
+}
+
+// Records the count the listing gave a playlist before a read of it that
+// merged.
+func (q *Queries) SetPlaylistReadCount(ctx context.Context, arg SetPlaylistReadCountParams) error {
+	_, err := q.db.ExecContext(ctx, setPlaylistReadCount, arg.ReadItemCount, arg.PlaylistID)
+	return err
+}
+
+const setPlaylistReadTs = `-- name: SetPlaylistReadTs :exec
+UPDATE playlists SET read_ts = ?1
+WHERE playlist_id = ?2
+`
+
+type SetPlaylistReadTsParams struct {
+	ReadTs     sql.NullString
+	PlaylistID string
+}
+
+// Records when a sync took up a read of a playlist's items, whatever the read
+// did.
+func (q *Queries) SetPlaylistReadTs(ctx context.Context, arg SetPlaylistReadTsParams) error {
+	_, err := q.db.ExecContext(ctx, setPlaylistReadTs, arg.ReadTs, arg.PlaylistID)
+	return err
+}
+
 const setPlaylistSort = `-- name: SetPlaylistSort :exec
 UPDATE playlists SET sort = ?1
 WHERE playlist_id = ?2
@@ -2449,6 +2571,28 @@ func (q *Queries) SumRunReadUnits(ctx context.Context, quotaDate string) (int64,
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const sumRunsSince = `-- name: SumRunsSince :one
+SELECT
+    CAST(coalesce(sum(video_reads), 0) AS INTEGER) AS video_reads,
+    CAST(coalesce(sum(probe_misses), 0) AS INTEGER) AS probe_misses
+FROM sync_runs
+WHERE finished_ts > ?1
+`
+
+type SumRunsSinceRow struct {
+	VideoReads  int64
+	ProbeMisses int64
+}
+
+// The tracklist reads and the probe misses of the runs that finished after
+// since.
+func (q *Queries) SumRunsSince(ctx context.Context, since string) (SumRunsSinceRow, error) {
+	row := q.db.QueryRowContext(ctx, sumRunsSince, since)
+	var i SumRunsSinceRow
+	err := row.Scan(&i.VideoReads, &i.ProbeMisses)
+	return i, err
 }
 
 const sumWriteUnits = `-- name: SumWriteUnits :one

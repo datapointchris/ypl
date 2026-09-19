@@ -72,7 +72,7 @@ therefore treated as untrusted input and given as little of the host as possible
 If yt-dlp egressed something it should not, what it holds is the video ids the server is reading
 and the address it reads from. It is given no credential, no cookie and no part of the store.
 
-The server needs yt-dlp only when it is configured to read videos. `ENRICH_VIDEOS_PER_RUN=0` is a
+The server needs yt-dlp only when it is configured to read videos. `ENRICH_PACE=off` is a
 supported configuration and starts without one.
 
 ## Classifying another program's prose is the fragile part
@@ -83,8 +83,8 @@ turns a pause into a block, so a rate limit is looked for first and a bare "Vide
 read as neither — YouTube words its rate limit beginning with that sentence.
 
 The marker lists are a judgment about wording nobody here controls, so nothing is allowed to
-depend on them alone. `api/enrich` stops a run after three reads fail in a row whatever they
-failed with, which holds however YouTube words the next refusal.
+depend on them alone. `api/enrich` stops reading for an hour after three reads fail in a row
+whatever they failed with, which holds however YouTube words the next refusal.
 
 ## A verdict about a video always has a way out
 

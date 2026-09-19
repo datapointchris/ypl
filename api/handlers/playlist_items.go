@@ -71,8 +71,9 @@ func (h *Handlers) showPlaylistItems(w http.ResponseWriter, r *http.Request) {
 }
 
 // replacePlaylistItems sets the server's order of a stored playlist to the
-// order the body names, if If-Match matches the order's current ETag. The sync
-// pushes the new order to YouTube on its next run. Each video takes the earliest
+// order the body names, if If-Match matches the order's current ETag, and tells
+// the sync, which pushes the new order to YouTube ahead of anything else it has
+// waiting. Each video takes the earliest
 // entry holding it that no earlier video took, keeping the YouTube item that
 // entry is held in, and a video no entry is left for takes a new entry. A video
 // the store has never seen is read from YouTube.
@@ -151,6 +152,7 @@ func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var revision int64
+	changed := false
 	err = h.store.InTx(ctx, func(tx *store.Tx) error {
 		state, err := tx.GetPlaylistState(ctx, id)
 		switch {
@@ -182,6 +184,7 @@ func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) 
 		if revision, err = tx.ReplaceOrder(ctx, id, state.Revision, ordered); err != nil || revision == state.Revision {
 			return err
 		}
+		changed = true
 		// The edit tries positions again on a playlist YouTube refused one in,
 		// which YouTube may since have let the channel order by hand.
 		return tx.SetPlaylistSort(ctx, generated.SetPlaylistSortParams{PlaylistID: id, Sort: store.SortManual})
@@ -196,6 +199,9 @@ func (h *Handlers) replacePlaylistItems(w http.ResponseWriter, r *http.Request) 
 	case err != nil:
 		h.writeItemError(w, r, err, "playlist "+ref)
 	default:
+		if changed && h.sync.Edits != nil {
+			h.sync.Edits.Edited(id)
+		}
 		writeOrder(w, revision, playlistOrder{VideoIDs: body.VideoIDs})
 	}
 }

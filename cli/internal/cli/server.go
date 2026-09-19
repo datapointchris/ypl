@@ -5,6 +5,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -36,7 +37,11 @@ func (a *app) serverStatusCommand() *cobra.Command {
 		Long: "A video with a tracklist holds at least one track, videos_with_tracklist in\n" +
 			"--json. One read for a tracklist has been searched for its tracks, whether or\n" +
 			"not it held any, enriched_videos. The last sync is last_run, and the last ok\n" +
-			"one last_ok_run.",
+			"one last_ok_run. The day's YouTube quota and each playlist waiting to be\n" +
+			"pushed to YouTube are under sync.\n\n" +
+			"Exits 3 when the server has not finished an ok sync in the last hour, or in\n" +
+			"twelve of its ticks where those are longer, a state a person has to look\n" +
+			"at. Exits 1 when the server could not be asked.",
 		Example: "  ypl server status         the library's size and the last sync\n" +
 			"  ypl server status --json  the same, for a check on a timer",
 		Args: usageArgs(cobra.NoArgs),
@@ -49,10 +54,18 @@ func (a *app) serverStatusCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
+			now := time.Now()
 			if asJSON {
-				return emitJSON(cmd.OutOrStdout(), status)
+				if err := emitJSON(cmd.OutOrStdout(), status); err != nil {
+					return err
+				}
+			} else {
+				printStatus(cmd.OutOrStdout(), status, now)
 			}
-			printStatus(cmd.OutOrStdout(), status)
+			if stale(status, now) {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "The server has not finished an ok sync in the last %s.\n", window(staleAfter(status)))
+				return exitCode(3)
+			}
 			return nil
 		},
 	}
@@ -114,7 +127,7 @@ func (a *app) serverSyncsListCommand() *cobra.Command {
 	return cmd
 }
 
-func printStatus(out io.Writer, status api.Status) {
+func printStatus(out io.Writer, status api.Status, now time.Time) {
 	library := status.Library
 	_, _ = fmt.Fprintf(out, "%s, %s, %s, %s\n",
 		count(library.Playlists, "playlist"), count(library.Videos, "video"),
@@ -142,12 +155,68 @@ func printStatus(out io.Writer, status api.Status) {
 	for _, failure := range status.LastRun.Failures {
 		_, _ = fmt.Fprintf(out, "  %s %s: %s\n", failure.Stage, failedOn(failure), failure.Error)
 	}
+	quota := status.Sync.Quota
+	if quota.UnitsLimit > 0 {
+		_, _ = fmt.Fprintf(out, "Quota         %d of %d units spent today%s\n", quota.UnitsSpent, quota.UnitsLimit, resets(quota, now))
+	}
+	for i, push := range status.Sync.Pushes {
+		label := "To push     "
+		if i > 0 {
+			label = "            "
+		}
+		line := fmt.Sprintf("%s  %s, %s", label, push.Title, count(push.Writes, "write"))
+		if push.Held {
+			line += ", waiting on a write YouTube refused today"
+		}
+		_, _ = fmt.Fprintln(out, line)
+	}
+	if misses := status.Sync.ProbeMissesLastDay; misses > 0 {
+		_, _ = fmt.Fprintf(out, "The sweep found %s on YouTube in the last day that the probe missed.\n", count(misses, "changed playlist"))
+	}
 }
 
-// backlog is how many videos still wait for a tracklist read, and how many
-// syncs reading at the last one's pace that takes. The count is videos less
-// those read and those YouTube will not serve, so it is close rather than
-// exact: a video can be both read and unavailable.
+// resets is when the quota resets, as how long from now, and nothing where
+// the server did not say.
+func resets(quota api.Quota, now time.Time) string {
+	at, err := time.Parse(time.RFC3339, quota.ResetsAt)
+	if err != nil || !at.After(now) {
+		return ""
+	}
+	left := at.Sub(now).Round(time.Minute)
+	return fmt.Sprintf(", resets in %dh %02dm", int(left.Hours()), int(left.Minutes())%60)
+}
+
+// staleAfter is how long after its last ok sync a server reads as stale: an
+// hour, or twelve of its ticks where those are longer.
+func staleAfter(status api.Status) time.Duration {
+	return max(time.Hour, 12*time.Duration(status.Sync.IntervalSeconds)*time.Second)
+}
+
+// window is d as the end of "in the last ...": "hour", "3 hours", "90m0s".
+func window(d time.Duration) string {
+	switch {
+	case d == time.Hour:
+		return "hour"
+	case d%time.Hour == 0:
+		return count(int64(d/time.Hour), "hour")
+	}
+	return d.String()
+}
+
+// stale is whether the server has finished no ok sync within staleAfter of
+// now.
+func stale(status api.Status, now time.Time) bool {
+	if status.LastOKRun == nil {
+		return true
+	}
+	finished, err := time.Parse(time.RFC3339, status.LastOKRun.FinishedTs)
+	return err != nil || now.Sub(finished) > staleAfter(status)
+}
+
+// backlog is how many videos still wait for a tracklist read, and how long
+// reading at the last hour's pace takes. The count is videos less those read
+// and those YouTube will not serve, so it is close rather than exact: a video
+// can be both read and unavailable.
 func backlog(status api.Status) string {
 	library := status.Library
 	left := max(0, library.Videos-library.EnrichedVideos-library.UnavailableVideos)
@@ -155,9 +224,8 @@ func backlog(status api.Status) string {
 		return "Every video has been read for a tracklist."
 	}
 	line := fmt.Sprintf("About %s not yet read for a tracklist", count(left, "video"))
-	if status.LastRun != nil && status.LastRun.VideoReads > 0 {
-		pace := status.LastRun.VideoReads
-		line += fmt.Sprintf(", %s at %d a sync", count((left+pace-1)/pace, "more sync"), pace)
+	if pace := status.Sync.TracklistReadsLastHour; pace > 0 {
+		line += fmt.Sprintf(", about %s at %d an hour", count((left+pace-1)/pace, "hour"), pace)
 	}
 	return line + "."
 }

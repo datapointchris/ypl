@@ -42,6 +42,7 @@ import (
 type Handlers struct {
 	store   *store.Store
 	youtube PlaylistWriter
+	sync    Sync
 	log     *slog.Logger
 	now     func() time.Time
 	// writing holds a token while a request has the turn to write playlists.
@@ -51,13 +52,28 @@ type Handlers struct {
 	drainOnce sync.Once
 }
 
+// Sync is what the API knows of the server's sync: who to tell that an edit
+// changed a playlist's order, which may be nil, and the mean wait between its
+// ticks.
+type Sync struct {
+	Edits    EditNotifier
+	Interval time.Duration
+}
+
+// EditNotifier is told the id of each playlist whose order an edit changed, as
+// *reconcile.Edits is.
+type EditNotifier interface {
+	Edited(playlistID string)
+}
+
 // New is Handlers over st, reading and writing playlists on YouTube through
-// youtube. Every answer with a 5xx is made by refuseAndLog, which logs its
-// cause to log.
-func New(st *store.Store, youtube PlaylistWriter, log *slog.Logger) *Handlers {
+// youtube and telling sync of each edit. Every answer with a 5xx is made by
+// refuseAndLog, which logs its cause to log.
+func New(st *store.Store, youtube PlaylistWriter, sync Sync, log *slog.Logger) *Handlers {
 	return &Handlers{
 		store:    st,
 		youtube:  youtube,
+		sync:     sync,
 		log:      log,
 		now:      time.Now,
 		writing:  make(chan struct{}, 1),

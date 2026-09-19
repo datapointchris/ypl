@@ -28,6 +28,7 @@ type SyncRun struct {
 	VideosUnreadable  int64         `json:"videos_unreadable"`
 	IsRateLimited     bool          `json:"is_rate_limited"`
 	EnrichmentPaused  bool          `json:"enrichment_paused"`
+	ProbeMisses       int64         `json:"probe_misses"`
 	Failures          []SyncFailure `json:"failures"`
 }
 
@@ -39,12 +40,45 @@ type SyncFailure struct {
 	Error      string  `json:"error"`
 }
 
-// Status is what the store holds, the latest run, and the latest run that ended
-// ok. Either run is null before there has been one.
+// Status is what the store holds, the latest run, the latest run that ended
+// ok, and what the sync spends and has waiting. Either run is null before
+// there has been one.
 type Status struct {
-	Library   Library  `json:"library"`
-	LastRun   *SyncRun `json:"last_run"`
-	LastOKRun *SyncRun `json:"last_ok_run"`
+	Library   Library   `json:"library"`
+	LastRun   *SyncRun  `json:"last_run"`
+	LastOKRun *SyncRun  `json:"last_ok_run"`
+	Sync      SyncState `json:"sync"`
+}
+
+// SyncState is how the sync runs and what it has waiting: the mean wait
+// between its ticks, the day's quota, each playlist whose order YouTube does
+// not yet hold, the tracklist reads of the last hour, and the changes its
+// sweeps found on YouTube in the last day that its probe missed.
+type SyncState struct {
+	IntervalSeconds        int64         `json:"interval_seconds"`
+	Quota                  Quota         `json:"quota"`
+	Pushes                 []PendingPush `json:"pushes"`
+	TracklistReadsLastHour int64         `json:"tracklist_reads_last_hour"`
+	ProbeMissesLastDay     int64         `json:"probe_misses_last_day"`
+}
+
+// Quota is the Pacific day's YouTube quota: the units spent, the most it
+// allows, and when it resets, in RFC 3339.
+type Quota struct {
+	Date       string `json:"date"`
+	UnitsSpent int64  `json:"units_spent"`
+	UnitsLimit int64  `json:"units_limit"`
+	ResetsAt   string `json:"resets_at"`
+}
+
+// PendingPush is a playlist whose order YouTube does not yet hold, and the
+// writes a push of it plans. Held says the push waits on a write YouTube
+// refused today.
+type PendingPush struct {
+	PlaylistID string `json:"playlist_id"`
+	Title      string `json:"title"`
+	Writes     int64  `json:"writes"`
+	Held       bool   `json:"held"`
 }
 
 // Library counts what the store holds. Videos are the ones some playlist holds,
