@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -34,6 +35,7 @@ type wireSyncRun struct {
 	VideosUnreadable  int64             `json:"videos_unreadable"`
 	IsRateLimited     bool              `json:"is_rate_limited"`
 	EnrichmentPaused  bool              `json:"enrichment_paused"`
+	ProbeMisses       int64             `json:"probe_misses"`
 	Failures          []wireSyncFailure `json:"failures"`
 }
 
@@ -45,9 +47,10 @@ type wireSyncFailure struct {
 }
 
 type wireStatus struct {
-	Library   wireLibrary  `json:"library"`
-	LastRun   *wireSyncRun `json:"last_run"`
-	LastOKRun *wireSyncRun `json:"last_ok_run"`
+	Library   wireLibrary     `json:"library"`
+	LastRun   *wireSyncRun    `json:"last_run"`
+	LastOKRun *wireSyncRun    `json:"last_ok_run"`
+	Sync      json.RawMessage `json:"sync"`
 }
 
 type wireLibrary struct {

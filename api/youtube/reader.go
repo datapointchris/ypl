@@ -26,12 +26,15 @@ type ItemID string
 // VideoID is YouTube's id for a video.
 type VideoID string
 
-// Playlist is one playlist the channel owns, as YouTube reports it.
+// Playlist is one playlist the channel owns, as YouTube reports it. ItemCount
+// is YouTube's own count of its items, which a read costs one unit for every
+// playlist at once rather than one a page of each.
 type Playlist struct {
 	ID          PlaylistID
 	Title       string
 	Description string
 	Privacy     string
+	ItemCount   int64
 }
 
 // Item is one slot in a playlist.
@@ -51,7 +54,7 @@ type Item struct {
 // Playlists is every playlist the channel owns, in the order YouTube lists
 // them.
 func (c *Channel) Playlists(ctx context.Context) ([]Playlist, error) {
-	call := c.service.Playlists.List([]string{"snippet", "status"}).Mine(true).MaxResults(pageSize)
+	call := c.service.Playlists.List(playlistParts).Mine(true).MaxResults(pageSize)
 	// The total a playlists page reports counts more playlists than the list
 	// returns, so it is compared across pages and never with the length.
 	playlists, _, err := readPages(func(token string) (page[Playlist], error) {
@@ -64,7 +67,7 @@ func (c *Channel) Playlists(ctx context.Context) ([]Playlist, error) {
 		}
 		p := page[Playlist]{total: response.PageInfo.TotalResults, next: response.NextPageToken}
 		for _, resource := range response.Items {
-			playlist, err := playlistFrom(resource)
+			playlist, err := readPlaylistFrom(resource)
 			if err != nil {
 				return page[Playlist]{}, err
 			}
@@ -244,9 +247,28 @@ func (c *Channel) Items(ctx context.Context, playlistID PlaylistID) ([]Item, err
 	return items, nil
 }
 
+// playlistParts is what the listing of the channel's playlists asks for. A
+// list costs one unit whatever parts it names.
+var playlistParts = []string{"contentDetails", "snippet", "status"}
+
+// readPlaylistFrom is a playlist the listing returned, which asked for its
+// count.
+func readPlaylistFrom(resource *ytapi.Playlist) (Playlist, error) {
+	if resource.ContentDetails == nil {
+		return Playlist{}, fmt.Errorf("%w: playlist %s lacks its content details", ErrUnexpectedResponse, resource.Id)
+	}
+	return playlistFrom(resource)
+}
+
+// playlistFrom is a playlist YouTube answered with. Only the listing asks for a
+// count, so ItemCount is 0 in any other.
 func playlistFrom(resource *ytapi.Playlist) (Playlist, error) {
 	if resource.Snippet == nil || resource.Status == nil {
 		return Playlist{}, fmt.Errorf("%w: playlist %s lacks its snippet or status", ErrUnexpectedResponse, resource.Id)
+	}
+	var count int64
+	if resource.ContentDetails != nil {
+		count = resource.ContentDetails.ItemCount
 	}
 	switch resource.Status.PrivacyStatus {
 	case "public", "unlisted", "private":
@@ -258,6 +280,7 @@ func playlistFrom(resource *ytapi.Playlist) (Playlist, error) {
 		Title:       resource.Snippet.Title,
 		Description: resource.Snippet.Description,
 		Privacy:     resource.Status.PrivacyStatus,
+		ItemCount:   count,
 	}, nil
 }
 

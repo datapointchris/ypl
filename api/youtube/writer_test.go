@@ -408,7 +408,7 @@ func TestUpdatePlaylistSetsTheDetailsAndKeepsThePrivacy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Playlists: %v", err)
 	}
-	want := Playlist{ID: "PLA", Title: "Renamed", Description: "About PLA", Privacy: "private"}
+	want := Playlist{ID: "PLA", Title: "Renamed", Description: "About PLA", Privacy: "private", ItemCount: 11}
 	if !slices.Equal(listed, []Playlist{want}) {
 		t.Fatalf("playlists %+v, want %+v", listed, want)
 	}

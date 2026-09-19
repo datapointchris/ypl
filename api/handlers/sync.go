@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/wire"
+	"github.com/datapointchris/ypl/api/youtube"
 )
 
 // syncRun is one run of the sync: when it ran, the Pacific date whose quota it
@@ -44,6 +46,7 @@ type syncRun struct {
 	VideosUnreadable  int64         `json:"videos_unreadable"`
 	IsRateLimited     bool          `json:"is_rate_limited"`
 	EnrichmentPaused  bool          `json:"enrichment_paused"`
+	ProbeMisses       int64         `json:"probe_misses"`
 	Failures          []syncFailure `json:"failures"`
 }
 
@@ -54,12 +57,44 @@ type syncFailure struct {
 	Error      string  `json:"error"`
 }
 
-// status is where the server stands: what the store holds, the latest run, and
-// the latest run that ended ok.
+// status is where the server stands: what the store holds, the latest run, the
+// latest run that ended ok, and what the sync spends and has waiting.
 type status struct {
-	Library   library  `json:"library"`
-	LastRun   *syncRun `json:"last_run"`
-	LastOKRun *syncRun `json:"last_ok_run"`
+	Library   library   `json:"library"`
+	LastRun   *syncRun  `json:"last_run"`
+	LastOKRun *syncRun  `json:"last_ok_run"`
+	Sync      syncState `json:"sync"`
+}
+
+// syncState is how the sync runs and what it has waiting: the mean wait
+// between its ticks, the day's quota, each playlist whose order YouTube does
+// not yet hold, the tracklist reads of the last hour, and the changes its
+// sweeps found on YouTube in the last day that the probe missed.
+type syncState struct {
+	IntervalSeconds        int64         `json:"interval_seconds"`
+	Quota                  quota         `json:"quota"`
+	Pushes                 []pendingPush `json:"pushes"`
+	TracklistReadsLastHour int64         `json:"tracklist_reads_last_hour"`
+	ProbeMissesLastDay     int64         `json:"probe_misses_last_day"`
+}
+
+// quota is the Pacific day's quota: the units recorded against it, the most it
+// allows, and when it resets.
+type quota struct {
+	Date       string `json:"date"`
+	UnitsSpent int64  `json:"units_spent"`
+	UnitsLimit int64  `json:"units_limit"`
+	ResetsAt   string `json:"resets_at"`
+}
+
+// pendingPush is a playlist whose order YouTube does not yet hold, and the
+// writes a push of it plans. held says the push waits on a write YouTube
+// refused today.
+type pendingPush struct {
+	PlaylistID string `json:"playlist_id"`
+	Title      string `json:"title"`
+	Writes     int    `json:"writes"`
+	Held       bool   `json:"held"`
 }
 
 // library counts what the store holds. Videos are those some playlist holds,
@@ -150,6 +185,9 @@ func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
 			Tracks:              counts.Tracks,
 			Plays:               counts.Plays,
 		}
+		if shown.Sync, err = h.syncState(ctx, q); err != nil {
+			return err
+		}
 		latest, err := q.ListNewestSyncRuns(ctx, 1)
 		if err != nil {
 			return err
@@ -176,6 +214,48 @@ func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
 	wire.JSON(w, http.StatusOK, shown)
 }
 
+// syncState is what the sync spends and has waiting, as of now.
+func (h *Handlers) syncState(ctx context.Context, q *generated.Queries) (syncState, error) {
+	now := h.now()
+	date := youtube.QuotaDate(now)
+	spent, err := store.Spent(ctx, q, date)
+	if err != nil {
+		return syncState{}, err
+	}
+	state := syncState{
+		IntervalSeconds: int64(h.sync.Interval / time.Second),
+		Quota: quota{
+			Date:       date,
+			UnitsSpent: spent,
+			UnitsLimit: youtube.DailyQuota,
+			ResetsAt:   store.Timestamp(youtube.QuotaReset(now)),
+		},
+		Pushes: []pendingPush{},
+	}
+	pending, err := store.PendingPushes(ctx, q, now)
+	if err != nil {
+		return syncState{}, err
+	}
+	for _, p := range pending {
+		playlist, err := q.GetPlaylist(ctx, p.PlaylistID)
+		if err != nil {
+			return syncState{}, err
+		}
+		state.Pushes = append(state.Pushes, pendingPush{PlaylistID: p.PlaylistID, Title: playlist.Title, Writes: p.Writes, Held: p.Held})
+	}
+	hour, err := q.SumRunsSince(ctx, store.Timestamp(now.Add(-time.Hour)))
+	if err != nil {
+		return syncState{}, err
+	}
+	day, err := q.SumRunsSince(ctx, store.Timestamp(now.Add(-24*time.Hour)))
+	if err != nil {
+		return syncState{}, err
+	}
+	state.TracklistReadsLastHour = hour.VideoReads
+	state.ProbeMissesLastDay = day.ProbeMisses
+	return state, nil
+}
+
 // syncRunFrom is row with no failures attached.
 func syncRunFrom(row generated.SyncRun) syncRun {
 	return syncRun{
@@ -200,6 +280,7 @@ func syncRunFrom(row generated.SyncRun) syncRun {
 		VideosUnreadable:  row.VideosUnreadable,
 		IsRateLimited:     row.IsRateLimited,
 		EnrichmentPaused:  row.EnrichmentPaused,
+		ProbeMisses:       row.ProbeMisses,
 		Failures:          []syncFailure{},
 	}
 }

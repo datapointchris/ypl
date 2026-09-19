@@ -294,6 +294,38 @@ WHERE playlist_id = ?;
 UPDATE playlists SET revision = revision + 1
 WHERE playlist_id = sqlc.arg(playlist_id) AND revision = sqlc.arg(revision);
 
+-- name: SetPlaylistRead :exec
+-- Records when a read of a playlist's items was merged, and the count the
+-- listing before it gave the playlist. A read no listing came before keeps the
+-- count stored.
+UPDATE playlists SET
+    read_ts = sqlc.arg(read_ts),
+    read_item_count = coalesce(sqlc.narg(read_item_count), read_item_count)
+WHERE playlist_id = sqlc.arg(playlist_id);
+
+-- name: ListPlaylistReads :many
+-- Every playlist with when its items were last read and the listing's count
+-- then, those never read first and then the one read longest ago.
+SELECT
+    playlist_id,
+    read_ts,
+    read_item_count
+FROM playlists
+ORDER BY read_ts IS NOT NULL, read_ts, playlist_id;
+
+-- name: CountPlaylistPages :one
+-- How many playlists the store holds, and how many pages of 50 a read of every
+-- one's items takes, an empty playlist taking one.
+SELECT
+    CAST(count(*) AS INTEGER) AS playlists,
+    CAST(coalesce(sum(max(1, (counted.entries + 49) / 50)), 0) AS INTEGER) AS pages
+FROM (
+    SELECT count(pe.entry_id) AS entries
+    FROM playlists AS p
+    LEFT JOIN playlist_entries AS pe ON p.playlist_id = pe.playlist_id
+    GROUP BY p.playlist_id
+) AS counted;
+
 -- name: SetPlaylistSort :exec
 UPDATE playlists SET sort = sqlc.arg(sort)
 WHERE playlist_id = sqlc.arg(playlist_id);
@@ -373,20 +405,30 @@ ON CONFLICT (stage) DO UPDATE SET description = excluded.description;
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
     playlists_deferred, items_added, items_removed, requests, units, writes, write_units,
-    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited, enrichment_paused
+    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited, enrichment_paused,
+    probe_misses
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id;
 
 -- name: InsertSyncFailure :exec
 INSERT INTO sync_failures (run_id, playlist_id, video_id, error, stage)
 VALUES (?, ?, ?, ?, ?);
 
--- name: CountRateLimitedRunsSince :one
--- How many runs that finished after since had YouTube refuse their reads of
--- videos for now.
-SELECT count(*) FROM sync_runs
-WHERE is_rate_limited = 1 AND finished_ts > sqlc.arg(since);
+-- name: LatestRateLimitedRunFinished :one
+-- When the latest run that had YouTube refuse its reads of videos for now
+-- finished, and empty when none has.
+SELECT CAST(coalesce(max(finished_ts), '') AS TEXT) AS finished_ts FROM sync_runs
+WHERE is_rate_limited = 1;
+
+-- name: SumRunsSince :one
+-- The tracklist reads and the probe misses of the runs that finished after
+-- since.
+SELECT
+    CAST(coalesce(sum(video_reads), 0) AS INTEGER) AS video_reads,
+    CAST(coalesce(sum(probe_misses), 0) AS INTEGER) AS probe_misses
+FROM sync_runs
+WHERE finished_ts > sqlc.arg(since);
 
 -- name: GetSyncRun :one
 SELECT
@@ -410,7 +452,8 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused
+    enrichment_paused,
+    probe_misses
 FROM sync_runs
 WHERE run_id = ?;
 
@@ -693,7 +736,8 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused
+    enrichment_paused,
+    probe_misses
 FROM sync_runs
 ORDER BY run_id DESC
 LIMIT sqlc.arg(max_rows);
@@ -721,7 +765,8 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused
+    enrichment_paused,
+    probe_misses
 FROM sync_runs
 WHERE run_id < sqlc.arg(run_id)
 ORDER BY run_id DESC
@@ -762,7 +807,8 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused
+    enrichment_paused,
+    probe_misses
 FROM sync_runs
 WHERE outcome = ?
 ORDER BY run_id DESC

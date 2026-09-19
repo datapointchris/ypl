@@ -258,84 +258,6 @@ func TestTheShutdownGraceOutlastsAPlaylistWrite(t *testing.T) {
 	}
 }
 
-func TestSyncIntervalDefaultsToAnHourAndRefusesAnythingButAPositiveDuration(t *testing.T) {
-	t.Setenv("SYNC_INTERVAL", "")
-	if got, err := syncInterval(); err != nil || got != time.Hour {
-		t.Fatalf("syncInterval unset = %v, %v, want 1h", got, err)
-	}
-	t.Setenv("SYNC_INTERVAL", "30m")
-	if got, err := syncInterval(); err != nil || got != 30*time.Minute {
-		t.Fatalf("syncInterval 30m = %v, %v, want 30m", got, err)
-	}
-	for _, raw := range []string{"0s", "-1h", "hourly"} {
-		t.Setenv("SYNC_INTERVAL", raw)
-		if _, err := syncInterval(); err == nil {
-			t.Errorf("syncInterval %q succeeded, want a refusal", raw)
-		}
-	}
-}
-
-func TestTheREADMEStatesTheEnrichmentDefaults(t *testing.T) {
-	readme, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := strings.Join(strings.Fields(string(readme)), " ")
-	want := fmt.Sprintf("at most `ENRICH_VIDEOS_PER_RUN` videos, %d when unset, `ENRICH_PACE` apart, %d seconds when unset", defaultEnrichVideos, int(defaultEnrichPace.Seconds()))
-	if !strings.Contains(text, want) {
-		t.Fatalf("the README does not say %q", want)
-	}
-}
-
-func TestEnrichmentDefaultsAndRefusesAnythingButAPositivePaceAndACount(t *testing.T) {
-	t.Setenv("ENRICH_PACE", "")
-	t.Setenv("ENRICH_VIDEOS_PER_RUN", "")
-	limits, err := enrichment(defaultSyncInterval)
-	if err != nil || limits.Pace != defaultEnrichPace || limits.Batch != defaultEnrichVideos {
-		t.Fatalf("enrichment unset = %+v, %v, want %v and %d", limits, err, defaultEnrichPace, defaultEnrichVideos)
-	}
-	if limits.Budget != defaultSyncInterval/enrichShareOfInterval {
-		t.Fatalf("the budget in a %v sync = %v, want %v", defaultSyncInterval, limits.Budget, defaultSyncInterval/enrichShareOfInterval)
-	}
-	t.Setenv("ENRICH_PACE", "30s")
-	t.Setenv("ENRICH_VIDEOS_PER_RUN", "0")
-	if limits, err := enrichment(defaultSyncInterval); err != nil || limits.Pace != 30*time.Second || limits.Batch != 0 {
-		t.Fatalf("enrichment of 30s and 0 = %+v, %v, want 30s and no videos", limits, err)
-	}
-	for name, env := range map[string][2]string{
-		"no pace":       {"0s", "30"},
-		"a pace behind": {"-10s", "30"},
-		"a pace word":   {"slow", "30"},
-		"a count below": {"10s", "-1"},
-		"a count word":  {"10s", "thirty"},
-	} {
-		t.Setenv("ENRICH_PACE", env[0])
-		t.Setenv("ENRICH_VIDEOS_PER_RUN", env[1])
-		if _, err := enrichment(defaultSyncInterval); err == nil {
-			t.Errorf("enrichment with %s succeeded, want a refusal", name)
-		}
-	}
-}
-
-// A run's reads happen inside it, so the pace and the count set the period
-// between two syncs as surely as the interval does. A pair that cannot finish
-// inside the run's share of the interval is refused at startup rather than
-// quietly stretching it.
-func TestEnrichmentRefusesReadsThatCannotFinishInsideTheSync(t *testing.T) {
-	t.Setenv("ENRICH_PACE", "30s")
-	t.Setenv("ENRICH_VIDEOS_PER_RUN", "200")
-	if _, err := enrichment(time.Hour); err == nil {
-		t.Fatal("200 videos 30s apart in an hourly sync was accepted, want a refusal")
-	}
-	if _, err := enrichment(8 * time.Hour); err != nil {
-		t.Fatalf("200 videos 30s apart in an 8 hour sync = %v, want them accepted", err)
-	}
-	t.Setenv("ENRICH_VIDEOS_PER_RUN", "0")
-	if _, err := enrichment(time.Minute); err != nil {
-		t.Fatalf("reading no video in a one minute sync = %v, want it accepted", err)
-	}
-}
-
 func TestIdentityProviderRequiresAnIssuerAndDefaultsThePrefix(t *testing.T) {
 	t.Setenv("OIDC_ISSUER", "")
 	if _, _, err := identityProvider(); err == nil {
@@ -372,7 +294,7 @@ func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer func() { _ = st.Close() }()
-	h := handler(handlers.New(st, nil, slog.Default()), acceptOnly("good"))
+	h := handler(handlers.New(st, nil, handlers.Sync{}, slog.Default()), acceptOnly("good"))
 
 	cases := []struct {
 		path, token string
@@ -504,7 +426,7 @@ func TestAServiceReadingNoVideoStartsWithNoYtdlp(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts the service as a child process")
 	}
-	c := startChild(t, "http://127.0.0.1:1", "ENRICH_VIDEOS_PER_RUN=0", "YTDLP_PATH="+filepath.Join(t.TempDir(), "absent"), "PATH=")
+	c := startChild(t, "http://127.0.0.1:1", "ENRICH_PACE=off", "YTDLP_PATH="+filepath.Join(t.TempDir(), "absent"), "PATH=")
 
 	if code, _ := c.get(t, "/health", ""); code != http.StatusOK {
 		t.Errorf("/health = %d, want 200 from a service with no yt-dlp and no video to read", code)

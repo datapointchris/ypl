@@ -6,6 +6,9 @@ import (
 	_ "time/tzdata" // the quota day is Pacific, whatever zone the host is in
 )
 
+// DailyQuota is the units YouTube allows the Cloud project each Pacific day.
+const DailyQuota = 10_000
+
 // pacific is the zone YouTube's daily quota resets in.
 var pacific = mustLoadLocation("America/Los_Angeles")
 

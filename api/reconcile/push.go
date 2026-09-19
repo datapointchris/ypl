@@ -30,15 +30,17 @@ const WriteDuration = recordTimeout + youtubeTimeout + recordTimeout
 
 // push makes the writes that bring YouTube to the server's order of one merged
 // playlist, one at a time. It stops at the first write that does not do what the
-// plan expects, since the positions of the writes after it assume it did, and
-// the next run plans again from what YouTube then holds. It stops too once the
+// plan expects, since the positions of the writes after it assume it did, and a
+// later pass plans again from what YouTube then holds. It stops too once the
 // playlist's order changes after the merge, or the API deletes the playlist.
+// A push made for anything but an edit also stops once an edit is waiting, so
+// the edit goes next and a later tick carries on from where this one stopped.
 //
 // A playlist whose push YouTube refused on this Pacific day, with nothing
 // changed since, is recorded as held and not pushed. The error is
-// ErrAllowanceSpent when the day's quota has no room for the next write, or a
-// failure that ends the run.
-func (run *run) push(m merged) error {
+// ErrAllowanceSpent when the day's quota has no room for the next write at
+// priority, or a failure that ends the pass.
+func (run *run) push(m merged, priority Priority) error {
 	held, err := run.held(m)
 	if err != nil || held {
 		return err
@@ -57,7 +59,10 @@ func (run *run) push(m merged) error {
 		if err := run.ctx.Err(); err != nil {
 			return err
 		}
-		room, err := run.allows()
+		if priority != PriorityEdit && run.edits.waiting() {
+			return nil
+		}
+		room, err := run.allows(priority, youtube.WriteUnits)
 		if err != nil {
 			return err
 		}
@@ -95,26 +100,39 @@ func (run *run) held(m merged) (bool, error) {
 	return true, nil
 }
 
-// allows is whether the day's quota has room for one more write beside what the
-// day has spent and a read at this run's cost for every run left before the
-// quota resets.
-func (run *run) allows() (bool, error) {
+// allows is whether the day's quota has room for units more at priority,
+// beside what the day has spent and the reads of every tick left before the
+// quota resets. Anything but an edit leaves EditReserve on top of that. As
+// the reset nears the ticks left fall, so what a push stopped for comes back.
+func (run *run) allows(priority Priority, units int64) (bool, error) {
 	now := run.now()
-	date := youtube.QuotaDate(now)
-	written, err := run.store.Queries.SumWriteUnits(run.ctx, date)
+	spent, err := store.Spent(run.ctx, run.store.Queries, youtube.QuotaDate(now))
 	if err != nil {
 		return false, err
 	}
-	recorded, err := run.store.Queries.SumRunReadUnits(run.ctx, date)
+	if youtube.QuotaDate(now) == run.date {
+		spent += run.channel.Units() - run.units0 - run.report.WriteUnits
+	}
+	if run.perTick == 0 {
+		if run.perTick, err = readsPerTick(run.ctx, run.store.Queries); err != nil {
+			return false, err
+		}
+	}
+	floor := (int64(youtube.QuotaReset(now).Sub(now)/run.interval) + 1) * run.perTick
+	if priority != PriorityEdit {
+		floor += EditReserve
+	}
+	return spent+units+floor <= youtube.DailyQuota, nil
+}
+
+// readsPerTick is what one tick reads: the listing, and a sweep of a playlist of
+// the library's average number of pages.
+func readsPerTick(ctx context.Context, q *generated.Queries) (int64, error) {
+	pages, err := q.CountPlaylistPages(ctx)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	spent := written.Units + written.Pending*youtube.WriteUnits + recorded
-	if date == run.date {
-		spent += run.readUnits
-	}
-	runsLeft := int64(youtube.QuotaReset(now).Sub(now) / run.interval)
-	return spent+youtube.WriteUnits+runsLeft*run.readUnits <= DailyQuota, nil
+	return 1 + (pages.Pages+max(pages.Playlists, 1)-1)/max(pages.Playlists, 1), nil
 }
 
 // write records w as pending and as the playlist's unanswered write, sends it,

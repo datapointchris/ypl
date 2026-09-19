@@ -382,54 +382,6 @@ func TestARefusedWriteWaitsForTheNextDayOrAChange(t *testing.T) {
 	settledOn(t, st, f, "PLA")
 }
 
-// spend records a write sent at at that cost units.
-func spend(t *testing.T, st *store.Store, units int64, at time.Time) {
-	t.Helper()
-	ctx := context.Background()
-	err := st.InTx(ctx, func(tx *store.Tx) error {
-		id, err := tx.BeginWrite(ctx, store.Write{Method: youtube.MethodPlaylistsUpdate, PlaylistID: "PLother", SentAt: at})
-		if err != nil {
-			return err
-		}
-		return tx.SettleWrite(ctx, store.Settlement{WriteID: id, PlaylistID: "PLother", Outcome: store.WriteApplied, SettledAt: at, Requests: 1, Units: units})
-	})
-	if err != nil {
-		t.Fatalf("record %d units: %v", units, err)
-	}
-}
-
-// A run reads 2 units, and 16 hourly runs are left before midnight Pacific, so
-// a write needs 50 units beside what the day spent and a reserve of 32. The first
-// run's 2 units are recorded. So 9,920 units of writes leave 9,924 spent, and
-// 9,924 + 50 + 32 is past the quota, while without the reserve it is not.
-func TestTheAllowanceKeepsTheReadsOfTheDaysRemainingRuns(t *testing.T) {
-	for _, c := range []struct {
-		spent   int64
-		outcome string
-		writes  int
-	}{
-		{9_900, store.OutcomeOK, 1},
-		{9_920, store.OutcomePartial, 0},
-	} {
-		t.Run(strconv.FormatInt(c.spent, 10), func(t *testing.T) {
-			f := newFakeChannel(map[youtube.PlaylistID]string{"PLA": "ab"})
-			r, st, clock := newRunner(t, f)
-			ctx := context.Background()
-			mustRun(t, ctx, r, store.OutcomeOK)
-			editOrder(t, api(st, f), "PLA", "ba")
-			spend(t, st, c.spent, clock.now)
-
-			report := mustRun(t, ctx, r, c.outcome)
-			if report.Writes != c.writes {
-				t.Fatalf("the run made %d writes, want %d", report.Writes, c.writes)
-			}
-			if c.writes == 0 && !errors.Is(report.Failures[0].Err, ErrAllowanceSpent) {
-				t.Fatalf("failures %v, want ErrAllowanceSpent", report.Failures)
-			}
-		})
-	}
-}
-
 // The order is edited again while the push makes its first move, so the push
 // stops and the next run pushes the newer order.
 func TestAnEditDuringAPushStopsIt(t *testing.T) {

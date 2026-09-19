@@ -2,15 +2,14 @@
 // startup, syncs the channel's playlists as the channel YOUTUBE_CLIENT_ID,
 // YOUTUBE_CLIENT_SECRET and YOUTUBE_REFRESH_TOKEN name, answers liveness and
 // readiness probes, logs JSON to stdout, and drains in-flight requests and the
-// sync run on SIGINT or SIGTERM. It waits SYNC_INTERVAL (an hour when unset)
-// between one run ending and the next beginning.
+// sync on SIGINT or SIGTERM. The sync makes a full pass as it starts, then a
+// tick every SYNC_INTERVAL (5m when unset) give or take a fifth, and a pass at
+// once whenever an edit arrives.
 //
-// Each sync run ends by reading tracklists with the yt-dlp binary YTDLP_PATH
-// names (yt-dlp on PATH when unset): at most ENRICH_VIDEOS_PER_RUN videos (30
-// when unset), ENRICH_PACE apart (10s when unset) or up to half as long again.
-// Those reads are part of the run, so they lengthen the wait between syncs: a
-// pace and a count whose reads cannot finish in the run's share of the interval
-// are refused here. Reading no video needs no yt-dlp.
+// Beside the sync it reads tracklists with the yt-dlp binary YTDLP_PATH names
+// (yt-dlp on PATH when unset), one video at a time, at least ENRICH_PACE apart
+// (90s when unset) and up to twice that at random. ENRICH_PACE=off reads no
+// video, and reading no video needs no yt-dlp.
 //
 // It answers /api/v1 only to a request carrying an access token the identity
 // provider OIDC_ISSUER signed for a client whose id starts with
@@ -28,7 +27,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -51,10 +49,14 @@ import (
 // timeout has to be longer still.
 const shutdownGrace = max(handlers.WriteDuration, reconcile.WriteDuration) + 5*time.Second
 
-// defaultSyncInterval is the wait between sync runs when SYNC_INTERVAL is unset.
-// A run reads every page of every playlist at a unit a page, so a day of runs
-// has to fit the day's quota.
-const defaultSyncInterval = time.Hour
+// defaultSyncInterval is the mean wait between ticks when SYNC_INTERVAL is
+// unset. A tick reads the listing and one playlist, a few units, so a day of
+// them spends under a tenth of the quota.
+const defaultSyncInterval = 5 * time.Minute
+
+// leastSyncInterval is the shortest SYNC_INTERVAL the server takes. A day of
+// ticks any closer spends on reads alone what the pushes need.
+const leastSyncInterval = time.Minute
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -81,14 +83,14 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	limits, err := enrichment(interval)
+	limits, reads, err := enrichment()
 	if err != nil {
 		return err
 	}
 	// A configuration that reads no video needs no yt-dlp, so the binary is
-	// looked for only where a run would run it.
+	// looked for only where the reading would run it.
 	var reader enrich.Reader
-	if limits.Batch > 0 {
+	if reads {
 		reader, err = ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp"))
 		if err != nil {
 			return fmt.Errorf("%w: install yt-dlp or set YTDLP_PATH to it", err)
@@ -115,14 +117,19 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runner := reconcile.NewRunner(st, syncChannel, enrich.New(st, reader, limits), interval)
+	tally := enrich.NewTally()
+	edits := reconcile.NewEdits()
+	runner := reconcile.NewRunner(st, syncChannel, tally, edits, interval)
 	worker := reconcile.NewWorker(runner, interval, slog.Default())
 	provider := auth.NewConnecting(issuer, clientIDPrefix)
-	api := handlers.New(st, apiChannel, slog.Default())
+	api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, slog.Default())
 	work := func(ctx context.Context) {
 		var wg sync.WaitGroup
 		wg.Go(func() { worker.Run(ctx) })
 		wg.Go(func() { provider.Run(ctx, slog.Default()) })
+		if reads {
+			wg.Go(func() { _ = enrich.New(st, reader, limits, tally).Run(ctx) })
+		}
 		wg.Wait()
 	}
 	return run(ctx, ":"+envOr("PORT", "8080"), handler(api, provider), work, api.Drain)
@@ -150,58 +157,37 @@ func syncInterval() (time.Duration, error) {
 		return defaultSyncInterval, nil
 	}
 	interval, err := time.ParseDuration(raw)
-	if err != nil || interval <= 0 {
-		return 0, fmt.Errorf("SYNC_INTERVAL %q is not a positive duration, such as 1h or 30m", raw)
+	if err != nil || interval < leastSyncInterval {
+		return 0, fmt.Errorf("SYNC_INTERVAL %q is not a duration of at least %v, such as 5m", raw, leastSyncInterval)
 	}
 	return interval, nil
 }
 
-const (
-	// defaultEnrichPace is the least time between two reads of videos when
-	// ENRICH_PACE is unset. yt-dlp reads from the server's own address, which
-	// YouTube throttles after reads that come too fast.
-	defaultEnrichPace = 10 * time.Second
-	// defaultEnrichVideos is the most videos a run reads when
-	// ENRICH_VIDEOS_PER_RUN is unset, which holds a run's reads to a few
-	// minutes.
-	defaultEnrichVideos = 30
-	// enrichShareOfInterval is how much of the wait between sync runs
-	// enrichment may spend reading. A run's reads happen inside it, so the
-	// period between two syncs is the interval plus however long they take, and
-	// this is what bounds the second half of that.
-	enrichShareOfInterval = 2
-)
+// defaultEnrichPace is the least time between two reads of videos when
+// ENRICH_PACE is unset, about 26 reads an hour once each wait adds its jitter.
+// yt-dlp reads from the server's own address, which YouTube throttles after
+// reads that come too fast.
+const defaultEnrichPace = 90 * time.Second
 
-// enrichment is the limits a run's enrichment reads within, from ENRICH_PACE
-// and ENRICH_VIDEOS_PER_RUN, or defaultEnrichPace and defaultEnrichVideos for
-// each unset. The budget is a share of interval, and a pace and a count whose
-// reads cannot finish inside it are refused here rather than quietly setting
-// the period of the sync.
-func enrichment(interval time.Duration) (enrich.Limits, error) {
-	limits := enrich.Limits{Pace: defaultEnrichPace, Batch: defaultEnrichVideos, Budget: interval / enrichShareOfInterval}
-	if raw := os.Getenv("ENRICH_PACE"); raw != "" {
-		pace, err := time.ParseDuration(raw)
-		if err != nil || pace <= 0 {
-			return enrich.Limits{}, fmt.Errorf("ENRICH_PACE %q is not a positive duration, such as 10s", raw)
-		}
-		limits.Pace = pace
-	}
+// enrichment is the limits the reading of videos keeps to, from ENRICH_PACE or
+// defaultEnrichPace when it is unset, and whether to read videos at all, which
+// ENRICH_PACE=off says not to.
+func enrichment() (enrich.Limits, bool, error) {
 	if raw := os.Getenv("ENRICH_VIDEOS_PER_RUN"); raw != "" {
-		videos, err := strconv.Atoi(raw)
-		if err != nil || videos < 0 {
-			return enrich.Limits{}, fmt.Errorf("ENRICH_VIDEOS_PER_RUN %q is not a count of videos, such as 30, or 0 to read none", raw)
-		}
-		limits.Batch = videos
+		return enrich.Limits{}, false, fmt.Errorf("ENRICH_VIDEOS_PER_RUN %q is not a setting this server reads: videos are read one at a time, ENRICH_PACE apart, and ENRICH_PACE=off reads none", raw)
 	}
-	// Each read but the first waits the pace and up to half as long again, so
-	// this is the longest a batch takes when every read answers at once.
-	paced := time.Duration(limits.Batch-1) * (limits.Pace + limits.Pace/2)
-	if paced >= limits.Budget {
-		return enrich.Limits{}, fmt.Errorf(
-			"%d videos %v apart take %v to read, longer than the %v enrichment may spend inside a %v sync: lower ENRICH_VIDEOS_PER_RUN or ENRICH_PACE, or raise SYNC_INTERVAL",
-			limits.Batch, limits.Pace, paced, limits.Budget, interval)
+	raw := os.Getenv("ENRICH_PACE")
+	switch raw {
+	case "":
+		return enrich.Limits{Pace: defaultEnrichPace}, true, nil
+	case "off":
+		return enrich.Limits{}, false, nil
 	}
-	return limits, nil
+	pace, err := time.ParseDuration(raw)
+	if err != nil || pace <= 0 {
+		return enrich.Limits{}, false, fmt.Errorf("ENRICH_PACE %q is not a positive duration, such as 90s, or off to read no video", raw)
+	}
+	return enrich.Limits{Pace: pace}, true, nil
 }
 
 // run binds addr and serves h on it, doing work beside the server. A port that

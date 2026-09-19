@@ -114,8 +114,6 @@ func TestAFailedReadCostsTheRunOnlyWhatItWasFor(t *testing.T) {
 	f.add("PLB", "e", 1)
 	f.itemsErrors["PLA"] = fmt.Errorf("%w: moved", youtube.ErrInconsistentRead)
 	f.videosError = errors.New("connection reset")
-	enricher := r.enricher.(*fakeEnricher)
-	runs := enricher.runs
 
 	report := mustRun(t, context.Background(), r, store.OutcomePartial)
 	if videos, _ := stored(t, st, "PLA"); videos != "abc" || report.PlaylistsSkipped != 1 {
@@ -130,9 +128,6 @@ func TestAFailedReadCostsTheRunOnlyWhatItWasFor(t *testing.T) {
 	}
 	if video, err := st.Queries.GetVideo(context.Background(), "e"); err != nil || video.DurationSeconds.Valid {
 		t.Fatalf("video e = %+v, %v, want it stored without a length", video, err)
-	}
-	if enricher.runs != runs+1 {
-		t.Fatalf("enrichment ran %d times, want once after the failed read of lengths", enricher.runs-runs)
 	}
 }
 
@@ -160,9 +155,6 @@ func TestYouTubesQuotaRefusalEndsTheRunAndTheDay(t *testing.T) {
 		f.quota = quota
 
 		mustRun(t, context.Background(), r, store.OutcomeQuotaSpent)
-		if runs := r.enricher.(*fakeEnricher).runs; quota == 3 && runs != 1 {
-			t.Fatalf("with the lengths refused, enrichment ran %d times, want once", runs)
-		}
 
 		requests := f.requests
 		c.now = c.now.Add(time.Hour)
@@ -241,33 +233,6 @@ func TestARunRecordsItsOwnRequestsAndUnitsAgainstThePacificDate(t *testing.T) {
 	}
 	if run.Requests != f.requests-requests || run.Units != f.units-units || run.Units != 3 {
 		t.Errorf("recorded %+v, want the run's own 3 requests and 3 units", run)
-	}
-}
-
-// The fake reads 2 units a run. Hourly runs read 48 a day, and runs every 8
-// seconds read 21,600, past the day's quota.
-func TestAnIntervalWhoseRunsOutreadTheQuotaIsReported(t *testing.T) {
-	for _, c := range []struct {
-		interval time.Duration
-		outcome  string
-	}{
-		{time.Hour, store.OutcomeOK},
-		{8 * time.Second, store.OutcomePartial},
-	} {
-		t.Run(c.interval.String(), func(t *testing.T) {
-			f := newFakeChannel(map[youtube.PlaylistID]string{"PLA": "abc"})
-			st, err := store.Open(context.Background(), t.TempDir()+"/api.db")
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = st.Close() })
-
-			report := mustRun(t, context.Background(), NewRunner(st, f, &fakeEnricher{}, c.interval), c.outcome)
-			exceeds := slices.ContainsFunc(report.Failures, func(f Failure) bool { return errors.Is(f.Err, ErrReadsExceedQuota) })
-			if exceeds != (c.outcome == store.OutcomePartial) || report.Playlists != 1 {
-				t.Fatalf("report %+v, want the playlist stored and ErrReadsExceedQuota reported only when the day's reads pass the quota", report)
-			}
-		})
 	}
 }
 

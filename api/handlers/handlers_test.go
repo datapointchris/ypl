@@ -46,7 +46,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	f := &fixture{st: st, mux: http.NewServeMux(), logs: &bytes.Buffer{}, now: arrival, youtube: newFakeYouTube()}
-	f.h = New(st, f.youtube, slog.New(slog.NewTextHandler(f.logs, nil)))
+	f.h = New(st, f.youtube, Sync{Interval: 5 * time.Minute}, slog.New(slog.NewTextHandler(f.logs, nil)))
 	f.h.now = func() time.Time { return f.now }
 	f.h.Register(f.mux)
 	return f
@@ -251,7 +251,7 @@ func readme(t *testing.T) string {
 // The README's endpoint table has a row for every route and no other.
 func TestTheREADMEListsEveryRoute(t *testing.T) {
 	var want []string
-	for _, rt := range New(nil, nil, nil).routes() {
+	for _, rt := range New(nil, nil, Sync{}, nil).routes() {
 		want = append(want, rt.method+" "+rt.path)
 	}
 	row := regexp.MustCompile("(?m)^\\| `([A-Z]+ /api/v1/[^`]*)` \\|")

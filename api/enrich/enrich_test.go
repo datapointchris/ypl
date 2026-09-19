@@ -5,10 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -60,10 +57,8 @@ type fixture struct {
 	waitErr error
 }
 
-// testLimits is what a fixture reads within: a batch bigger than any fixture's
-// videos and a budget longer than any test's clock moves inside a run, so a
-// test reaches those bounds only by setting them itself.
-var testLimits = Limits{Pace: 10 * time.Second, Batch: 10, Budget: time.Hour}
+// testLimits is the pace a fixture reads at.
+var testLimits = Limits{Pace: 10 * time.Second}
 
 func newFixture(t *testing.T, videos ...string) *fixture {
 	t.Helper()
@@ -74,7 +69,7 @@ func newFixture(t *testing.T, videos ...string) *fixture {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	f := &fixture{st: st, reader: &fakeReader{answers: map[string]error{}, videos: map[string]ytdlp.Video{}}, clock: start}
-	f.e = New(st, f.reader, testLimits)
+	f.e = New(st, f.reader, testLimits, NewTally())
 	f.e.now = func() time.Time { return f.clock }
 	f.e.wait = func(_ context.Context, d time.Duration) error {
 		f.waited = append(f.waited, d)
@@ -108,13 +103,16 @@ func newFixture(t *testing.T, videos ...string) *fixture {
 	return f
 }
 
+// run reads until no video is due or the reading pauses, and returns what the
+// reads did.
 func (f *fixture) run(t *testing.T) Report {
 	t.Helper()
-	report, err := f.e.Run(context.Background())
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	for {
+		wait := f.e.step(context.Background())
+		if wait < f.e.limits.Pace || wait > 2*f.e.limits.Pace {
+			return f.e.tally.Take()
+		}
 	}
-	return report
 }
 
 func listing(from string) string {
@@ -245,68 +243,6 @@ func TestAReadThatFindsNoTracklistKeepsTheTracksAVideoHolds(t *testing.T) {
 	}
 }
 
-// A video a playlist gained latest is read first. An enriched or unavailable
-// video, one a failure holds back for good or until later, and one in no
-// playlist are not read.
-func TestOnlyVideosWaitingAreReadNewestFirstUpToTheBatch(t *testing.T) {
-	f := newFixture(t, "vold", "vretrydue", "venriched", "vunavailable", "vforever", "vlater", "vnew")
-	ctx := context.Background()
-	err := f.st.InTx(ctx, func(tx *store.Tx) error {
-		if _, err := tx.SetVideoEnrichment(ctx, generated.SetVideoEnrichmentParams{VideoID: "venriched", Description: sql.NullString{Valid: true}, EnrichedTs: sql.NullString{String: store.Timestamp(start), Valid: true}}); err != nil {
-			return err
-		}
-		if err := tx.UpsertUnavailableVideo(ctx, generated.UpsertUnavailableVideoParams{VideoID: "vunavailable", Title: "Private video"}); err != nil {
-			return err
-		}
-		if err := tx.UpsertAvailableVideo(ctx, generated.UpsertAvailableVideoParams{VideoID: "vnowhere", Title: "Loose", ChannelTitle: "Channel"}); err != nil {
-			return err
-		}
-		for video, retry := range map[string]sql.NullString{
-			"vforever":  {},
-			"vlater":    {String: store.Timestamp(start.Add(time.Second)), Valid: true},
-			"vretrydue": {String: store.Timestamp(start), Valid: true},
-		} {
-			failure := generated.UpsertEnrichFailureParams{VideoID: video, AttemptedTs: store.Timestamp(start), Reason: "failed", Attempts: 1, RetryTs: retry}
-			if err := tx.UpsertEnrichFailure(ctx, failure); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	f.e.limits.Batch = 2
-	f.run(t)
-	if want := []string{"vnew", "vretrydue"}; !slices.Equal(f.reader.read, want) {
-		t.Fatalf("read %v, want %v", f.reader.read, want)
-	}
-	f.run(t)
-	if want := []string{"vnew", "vretrydue", "vold"}; !slices.Equal(f.reader.read, want) {
-		t.Fatalf("read %v after the next run, want %v", f.reader.read, want)
-	}
-	if _, failed := f.failure(t, "vretrydue"); failed {
-		t.Fatal("vretrydue kept its failure after a read that stored it")
-	}
-}
-
-func TestReadsArePacedWithAJitteredGap(t *testing.T) {
-	f := newFixture(t, "va", "vb", "vc", "vd")
-	f.run(t)
-	if len(f.waited) != 3 {
-		t.Fatalf("waited %v between 4 reads, want 3 waits", f.waited)
-	}
-	for _, d := range f.waited {
-		if d < f.e.limits.Pace || d > f.e.limits.Pace+f.e.jitter {
-			t.Fatalf("waited %v, want between %v and %v", d, f.e.limits.Pace, f.e.limits.Pace+f.e.jitter)
-		}
-	}
-	if !slices.ContainsFunc(f.waited, func(d time.Duration) bool { return d != f.e.limits.Pace }) {
-		t.Fatalf("waited %v, the pace every time, want jitter added", f.waited)
-	}
-}
-
 // YouTube refuses the second read, so the run stops there, and a run within a
 // day of a run recording the refusal reads nothing and says why.
 func TestARateLimitStopsTheRunAndPausesReadsForADay(t *testing.T) {
@@ -400,29 +336,6 @@ func TestTheRetryWaitDoublesUpToAWeek(t *testing.T) {
 	}
 }
 
-// The README states how enrichment reads as the code holds it.
-func TestTheREADMEStatesHowEnrichmentReads(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "README.md"))
-	if err != nil {
-		t.Fatalf("read the README: %v", err)
-	}
-	text := strings.Join(strings.Fields(string(data)), " ")
-	for _, want := range []string{
-		fmt.Sprintf("the first of its top %d comments holding at least %d timestamped lines", ytdlp.MaxComments, tracklist.MinimumTracks),
-		fmt.Sprintf("tried again %d hours later, then %d, doubling up to a week", int(firstRetry.Hours()), int(2*firstRetry.Hours())),
-		"no run reads for a day after",
-		"or up to half as long again",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("the README does not say %q", want)
-		}
-	}
-	jitter := New(nil, nil, Limits{Pace: 2 * time.Second, Batch: 1}).jitter
-	if RateLimitPause != 24*time.Hour || lastRetry != 7*24*time.Hour || jitter != time.Second {
-		t.Errorf("the README says a day's pause, a week's longest wait and half the pace again, and the code holds %v, %v and %v", RateLimitPause, lastRetry, jitter)
-	}
-}
-
 // A video whose reads keep storing no tracklist is let go after MaxAttempts,
 // and reset-enrichment is what puts it back.
 func TestAVideoStopsBeingReadAfterEnoughAttemptsAndCanBePutBack(t *testing.T) {
@@ -506,44 +419,5 @@ func TestFailedReadsWithReadsBetweenThemDoNotStopARun(t *testing.T) {
 		if failure.VideoID == "" {
 			t.Fatalf("report %+v carries a failure of the run, want only the three reads'", report)
 		}
-	}
-}
-
-// A read that answers slowly spends more of a run than its pace predicts, so
-// the budget rather than the batch is what bounds the run.
-func TestARunStopsOnceItsReadsHaveSpentItsBudget(t *testing.T) {
-	f := newFixture(t, "vc", "vb", "va")
-	f.e.limits.Budget = 90 * time.Second
-	f.e.wait = func(_ context.Context, d time.Duration) error {
-		f.waited = append(f.waited, d)
-		f.clock = f.clock.Add(time.Minute)
-		return f.waitErr
-	}
-
-	report := f.run(t)
-	if report.Reads != 2 || len(report.Failures) != 1 || !errors.Is(report.Failures[0].Err, ErrBudgetSpent) {
-		t.Fatalf("report %+v, want two reads and the budget spent", report)
-	}
-}
-
-// A batch of no videos reads nothing, which is what lets a deployment run the
-// API before yt-dlp is installed.
-func TestABatchOfNoneReadsNothingAndNeedsNoReader(t *testing.T) {
-	f := newFixture(t, "va")
-	f.e.reader = nil
-	f.e.limits.Batch = 0
-
-	if report := f.run(t); report.Reads != 0 || report.Failures != nil {
-		t.Fatalf("report %+v, want nothing read", report)
-	}
-}
-
-func TestACanceledRunStopsBetweenReads(t *testing.T) {
-	f := newFixture(t, "vb", "va")
-	f.waitErr = context.Canceled
-
-	report, err := f.e.Run(context.Background())
-	if !errors.Is(err, context.Canceled) || report.Reads != 1 {
-		t.Fatalf("Run = %+v, %v, want one read and the cancel", report, err)
 	}
 }

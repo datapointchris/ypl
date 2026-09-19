@@ -34,6 +34,11 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 	if played.Code != http.StatusCreated {
 		t.Fatalf("storing a play answered %d: %s", played.Code, played.Body)
 	}
+	// An edit no sync has pushed, so the status document lists a push rather
+	// than none.
+	if edited := f.editItems("PLB", []string{"e", "c", "b"}, "*"); edited.Code != http.StatusOK {
+		t.Fatalf("editing PLB answered %d: %s", edited.Code, edited.Body)
+	}
 
 	for _, doc := range []struct {
 		name   string

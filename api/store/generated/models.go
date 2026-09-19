@@ -45,6 +45,8 @@ type Playlist struct {
 	Sort              string
 	UnansweredWriteID sql.NullInt64
 	RefusedWriteID    sql.NullInt64
+	ReadTs            sql.NullString
+	ReadItemCount     sql.NullInt64
 }
 
 type PlaylistEntry struct {
@@ -104,6 +106,7 @@ type SyncRun struct {
 	VideosUnreadable  int64
 	IsRateLimited     bool
 	EnrichmentPaused  bool
+	ProbeMisses       int64
 }
 
 type SyncStage struct {
