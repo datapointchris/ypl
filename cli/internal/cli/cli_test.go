@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -76,6 +77,7 @@ func newFixture(t *testing.T, answer http.HandlerFunc) *fixture {
 			return f.store
 		},
 		terminal: isTerminal,
+		width:    widthOf,
 	}
 	return f
 }
@@ -431,6 +433,33 @@ func TestVideosShowReadsTheTracklist(t *testing.T) {
 	}
 	if len(got.Artists) != 1 || got.Artists[0] != "Björk" {
 		t.Fatalf("artists = %+v", got.Artists)
+	}
+}
+
+// A row that runs past the terminal wraps into the rows under it. Cutting a
+// title keeps the row readable; cutting an id leaves nothing to type into the
+// next command, so only prose columns give up width, the widest first.
+func TestFitCutsDetailsThenProseAndOnlyUntilTheRowFits(t *testing.T) {
+	library := []column{whole("VIDEO"), prose("TITLE"), whole("LENGTH"), detail("ARTISTS")}
+	tracks := []column{whole("#"), prose("ARTIST"), prose("TITLE"), whole("FROM")}
+	for _, c := range []struct {
+		name    string
+		columns []column
+		natural []int
+		width   int
+		want    []int
+	}{
+		{"a row that fits keeps every width", library, []int{11, 30, 7, 20}, 80, []int{11, 30, 7, 20}},
+		{"a detail alone gives way when that is enough", library, []int{11, 40, 7, 30}, 80, []int{11, 40, 7, 16}},
+		{"the title gives way once the detail is at its floor", library, []int{11, 60, 7, 20}, 80, []int{11, 44, 7, shortestProse}},
+		{"two prose columns end up level", tracks, []int{3, 60, 50, 11}, 80, []int{3, 30, 30, 11}},
+		{"nothing is cut below the floor", library, []int{11, 60, 7, 50}, 30, []int{11, shortestProse, 7, shortestProse}},
+	} {
+		widths := slices.Clone(c.natural)
+		fit(widths, c.columns, c.width)
+		if !slices.Equal(widths, c.want) {
+			t.Errorf("%s: fit(%v, %d) = %v, want %v", c.name, c.natural, c.width, widths, c.want)
+		}
 	}
 }
 

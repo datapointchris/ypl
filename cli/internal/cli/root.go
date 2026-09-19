@@ -12,8 +12,10 @@ import (
 	"github.com/datapointchris/goclilogin"
 	"github.com/datapointchris/goselfupdate/autoupdate"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
+	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
 
 // version is set at build time with -ldflags.
@@ -49,7 +51,7 @@ func splitReadingFromChanging(cmd *cobra.Command) {
 
 // NewRootCommand returns the ypl command tree.
 func NewRootCommand() *cobra.Command {
-	return newRootCommand(&app{client: newAPIClient, tokens: goclilogin.NewTokenStore, terminal: isTerminal})
+	return newRootCommand(&app{client: newAPIClient, tokens: goclilogin.NewTokenStore, terminal: isTerminal, width: widthOf})
 }
 
 func newRootCommand(a *app) *cobra.Command {
@@ -85,7 +87,12 @@ func newRootCommand(a *app) *cobra.Command {
 			return requireSubcommand(cmd, args)
 		},
 	}
-	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return goclikit.UsageError(err) })
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		if id, ok := dashedVideoID(err); ok {
+			err = fmt.Errorf("%w; a video id that starts with a dash goes after --: `%s -- %s`", err, cmd.CommandPath(), id)
+		}
+		return goclikit.UsageError(err)
+	})
 	useHelp(root)
 
 	// Cobra's automatic version flag claims -v, which is the counted verbosity
@@ -124,6 +131,21 @@ func newRootCommand(a *app) *cobra.Command {
 	)
 	noFiles(root)
 	return root
+}
+
+// dashedVideoID is the video id a flag parser refused as a flag, and false when
+// err refused anything else. A YouTube id can open with a dash, and one copied
+// from a list then reads as a run of unknown short flags.
+func dashedVideoID(err error) (string, bool) {
+	var unknown *pflag.NotExistError
+	if !errors.As(err, &unknown) {
+		return "", false
+	}
+	token := "--" + unknown.GetSpecifiedName()
+	if shorts := unknown.GetSpecifiedShortnames(); shorts != "" {
+		token = "-" + shorts
+	}
+	return token, youtube.IsVideoID(token)
 }
 
 // Execute runs the command tree and returns the process exit code, writing

@@ -10,6 +10,7 @@ require (
 	github.com/datapointchris/goclilogin v0.3.0
 	github.com/datapointchris/goselfupdate v0.11.0
 	github.com/google/uuid v1.6.0
+	github.com/mattn/go-runewidth v0.0.30
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -18,6 +19,7 @@ require (
 )
 
 require (
+	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect

@@ -186,7 +186,10 @@ func printSyncs(out io.Writer, runs []api.SyncRun) {
 			strconv.Itoa(len(run.Failures)),
 		}
 	}
-	table(out, []string{"SYNC", "FINISHED", "OUTCOME", "PLAYLISTS", "CHANGED", "READS", "TRACKS", "QUOTA", "FAILURES"}, rows)
+	table(out, 0, []column{
+		whole("SYNC"), whole("FINISHED"), whole("OUTCOME"), whole("PLAYLISTS"), whole("CHANGED"),
+		whole("READS"), whole("TRACKS"), whole("QUOTA"), whole("FAILURES"),
+	}, rows)
 	for _, run := range runs {
 		if len(run.Failures) == 0 {
 			continue

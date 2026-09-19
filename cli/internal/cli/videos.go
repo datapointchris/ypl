@@ -62,7 +62,7 @@ func (a *app) videosListCommand() *cobra.Command {
 				nothing(cmd, "No video matches. `ypl videos list` with no flags is the whole library.")
 				return nil
 			}
-			printVideos(cmd.OutOrStdout(), videos)
+			printVideos(cmd.OutOrStdout(), a.width(cmd.OutOrStdout()), videos)
 			return nil
 		},
 	}
@@ -104,7 +104,7 @@ func (a *app) videosShowCommand() *cobra.Command {
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), video)
 			}
-			printVideo(cmd.OutOrStdout(), video)
+			printVideo(cmd.OutOrStdout(), a.width(cmd.OutOrStdout()), video)
 			return nil
 		},
 	}
@@ -145,7 +145,7 @@ func secondsIn(cmd *cobra.Command, flag string, given int64) *int64 {
 	return &seconds
 }
 
-func printVideos(out io.Writer, videos []api.LibraryVideo) {
+func printVideos(out io.Writer, width int, videos []api.LibraryVideo) {
 	rows := make([][]string, len(videos))
 	for i, video := range videos {
 		rows[i] = []string{
@@ -157,7 +157,7 @@ func printVideos(out io.Writer, videos []api.LibraryVideo) {
 			firstArtists(video.Artists),
 		}
 	}
-	table(out, []string{"VIDEO", "TITLE", "CHANNEL", "LENGTH", "TRACKS", "ARTISTS"}, rows)
+	table(out, width, []column{whole("VIDEO"), prose("TITLE"), detail("CHANNEL"), whole("LENGTH"), whole("TRACKS"), detail("ARTISTS")}, rows)
 }
 
 // shownArtists is how many artists a row of the library names. A mix's
@@ -173,7 +173,7 @@ func firstArtists(artists []string) string {
 	return fmt.Sprintf("%s +%d", strings.Join(artists[:shownArtists], ", "), len(artists)-shownArtists)
 }
 
-func printVideo(out io.Writer, video api.Video) {
+func printVideo(out io.Writer, width int, video api.Video) {
 	_, _ = fmt.Fprintf(out, "%s  %s\n", video.Title, video.ID)
 	_, _ = fmt.Fprintf(out, "%s", video.ChannelTitle)
 	if length := clock(video.DurationSeconds); length != "" {
@@ -213,7 +213,7 @@ func printVideo(out io.Writer, video api.Video) {
 			track.Source,
 		}
 	}
-	table(out, []string{"#", "AT", "ARTIST", "TITLE", "FROM"}, rows)
+	table(out, width, []column{whole("#"), whole("AT"), prose("ARTIST"), prose("TITLE"), whole("FROM")}, rows)
 	if len(video.Tracks) == 0 {
 		_, _ = fmt.Fprintln(out, "The server read this video and found no tracklist in it.")
 	}
