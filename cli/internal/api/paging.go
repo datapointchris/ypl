@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 )
@@ -37,9 +38,13 @@ type Page[T any] struct {
 	More bool
 }
 
-// collect reads pages of path, asked with pairs, until it holds limit rows or
-// the server says none follow. cursor names the row a page starts after, taken
-// from the last row of the page before it.
+// collect reads the collection at path, asked with pairs, until it holds limit
+// rows or the server says none follow. A page is followed with cursor, which
+// names the row the next starts after.
+//
+// A server that answers the collection whole, as a JSON array, is read too and
+// cut at limit. A client and a server are released apart, so a client that read
+// only one shape would fail against the other until somebody updated it.
 //
 // The rows come back as a list at every size, including none, so a caller
 // filtering the JSON writes one filter rather than a filter and a null guard.
@@ -49,11 +54,28 @@ func collect[T any](ctx context.Context, c *Client, path string, pairs [][2]stri
 	// A limit of nothing is a request a caller can mean, and it needs no
 	// request to answer.
 	for len(read.Rows) < limit {
-		want := min(limit-len(read.Rows), PageSize)
-		var got page[T]
-		target := query(path, slices.Concat(pairs, [][2]string{{"limit", strconv.Itoa(want)}, {"starting_after", after}})...)
-		if err := c.Get(ctx, target, &got); err != nil {
+		asked := slices.Concat(pairs, [][2]string{{"starting_after", after}})
+		if limit != every {
+			asked = append(asked, [2]string{"limit", strconv.Itoa(min(limit-len(read.Rows), PageSize))})
+		}
+		var raw json.RawMessage
+		target := query(path, asked...)
+		if err := c.Get(ctx, target, &raw); err != nil {
 			return Page[T]{}, err
+		}
+		if trimmed := bytes.TrimSpace(raw); len(trimmed) > 0 && trimmed[0] == '[' {
+			var rows []T
+			if err := json.Unmarshal(raw, &rows); err != nil {
+				return Page[T]{}, fmt.Errorf("decode %s: %w", path, err)
+			}
+			kept := min(len(rows), limit-len(read.Rows))
+			read.Rows = append(read.Rows, rows[:kept]...)
+			read.More = len(rows) > kept
+			return read, nil
+		}
+		var got page[T]
+		if err := json.Unmarshal(raw, &got); err != nil {
+			return Page[T]{}, fmt.Errorf("decode %s: %w", path, err)
 		}
 		read.Rows = append(read.Rows, got.Data...)
 		read.More = got.HasMore
@@ -65,38 +87,13 @@ func collect[T any](ctx context.Context, c *Client, path string, pairs [][2]stri
 	return read, nil
 }
 
-// all reads every row of the collection at path, asked with pairs, whether the
-// server answers it whole, as a JSON array, or a page at a time. A page is
-// followed with cursor, which names the row the next starts after.
-//
-// Both answers are in service at once, because a client and a server are
-// released apart, and a client that read only one would fail against the other
-// until somebody updated it.
+// every is the limit that reads every row. Its requests carry no limit, so the
+// server answers with its own page size, and a whole read never rests on
+// PageSize matching the server's maximum.
+const every = math.MaxInt
+
+// all reads every row of the collection at path, asked with pairs.
 func all[T any](ctx context.Context, c *Client, path string, pairs [][2]string, cursor func(T) string) ([]T, error) {
-	var first json.RawMessage
-	if err := c.Get(ctx, query(path, pairs...), &first); err != nil {
-		return nil, err
-	}
-	rows := []T{}
-	if trimmed := bytes.TrimSpace(first); len(trimmed) > 0 && trimmed[0] == '[' {
-		if err := json.Unmarshal(first, &rows); err != nil {
-			return nil, fmt.Errorf("decode %s: %w", path, err)
-		}
-		return rows, nil
-	}
-	var got page[T]
-	if err := json.Unmarshal(first, &got); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", path, err)
-	}
-	for {
-		rows = append(rows, got.Data...)
-		if !got.HasMore || len(got.Data) == 0 {
-			return rows, nil
-		}
-		next := slices.Concat(pairs, [][2]string{{"starting_after", cursor(got.Data[len(got.Data)-1])}})
-		got = page[T]{}
-		if err := c.Get(ctx, query(path, next...), &got); err != nil {
-			return nil, err
-		}
-	}
+	read, err := collect(ctx, c, path, pairs, every, cursor)
+	return read.Rows, err
 }

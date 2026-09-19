@@ -114,7 +114,8 @@ func orderNames() string {
 // contains it ignoring case and accents, and sort names the order.
 //
 // A random order comes out new on every request, so it is a draw rather than a
-// page of a standing list: it answers limit videos and has no next page.
+// page of a standing list: it answers limit videos, every video when limit is
+// absent, and has no next page.
 func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	filter := generated.ListLibraryVideosParams{PlaylistID: optionalText(r, "playlist")}

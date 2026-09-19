@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -271,12 +272,17 @@ type pageSize struct {
 	fallback, most int64
 }
 
+// everyRow is a fallback that answers the whole list as one page. The library
+// lists are read and ordered whole in memory for every request, so a caller
+// reading all of one is served by one request rather than one per page.
+const everyRow = math.MaxInt64
+
 var (
 	playsPage       = pageSize{fallback: 20, most: 100}
 	runsPage        = pageSize{fallback: 20, most: 100}
 	suggestionsDraw = pageSize{fallback: 1, most: 100}
-	videosPage      = pageSize{fallback: 100, most: 100}
-	playlistsPage   = pageSize{fallback: 100, most: 100}
+	videosPage      = pageSize{fallback: everyRow, most: 100}
+	playlistsPage   = pageSize{fallback: everyRow, most: 100}
 )
 
 // pageAfter is the page of rows, in their order, that starts after the row
@@ -297,8 +303,7 @@ func pageAfter[T any](w http.ResponseWriter, rows []T, id func(T) string, after 
 		}
 		start = i + 1
 	}
-	rest := rows[start:]
-	return pageOf(rest[:min(int64(len(rest)), limit+1)], limit), true
+	return pageOf(rows[start:], limit), true
 }
 
 // limitParam is the query parameter limit as a count within size. ok is false

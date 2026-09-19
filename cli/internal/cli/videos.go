@@ -79,7 +79,7 @@ func (a *app) videosListCommand() *cobra.Command {
 	cmd.Flags().StringVar(&filter.Artist, "artist", "", "Only videos whose tracklist names an artist holding this, ignoring case and accents")
 	addMinutes(cmd, "min-minutes", &minMinutes, "Only videos at least this many minutes long; a video whose length is unknown is left out")
 	addMinutes(cmd, "max-minutes", &maxMinutes, "Only videos at most this many minutes long; a video whose length is unknown is left out")
-	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order: "+strings.Join(api.VideoSorts, ", ")+" (default "+api.VideoSorts[0]+"); newest and oldest go by upload date, and random draws at most "+strconv.Itoa(api.PageSize))
+	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order: "+strings.Join(api.VideoSorts, ", ")+" (default "+api.VideoSorts[0]+"); newest and oldest go by upload date, and random under --limit draws at most "+strconv.Itoa(api.PageSize))
 	addLimit(cmd, &limit, 0, "How many videos to list, in the order asked for; every one when not given")
 	completeFlag(cmd, "playlist", a.completePlaylists)
 	completeFlag(cmd, "sort", cobra.FixedCompletions(api.VideoSorts, cobra.ShellCompDirectiveNoFileComp))

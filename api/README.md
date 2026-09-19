@@ -126,7 +126,8 @@ for a video or a playlist alike, since part of a title can match hundreds of mix
 `GET /api/v1/videos` narrows by `playlist`, `min_seconds`, `max_seconds` and `artist`, which
 matches part of an artist's name ignoring case and accents. `sort` is one of `longest`, `shortest`,
 `newest`, `oldest`, `title` or `random`. The first is the order when `sort` is absent. A random
-order comes out new on every request, so it answers one page and has no next.
+order comes out new on every request, so it answers one page, of `limit` videos or every one, and
+has no next.
 `GET /api/v1/suggestions` takes `playlist`, and a `limit` of up to 100 that is one when absent.
 
 A play's `id` is a UUIDv7 the client generates, written lowercase with hyphens, so sending the
@@ -178,9 +179,10 @@ On SIGTERM the server begins no new playlist write, answering 503 `shutting_down
 requests in flight up to 30 seconds to finish. A container's stop timeout has to be longer.
 
 A paged list answers `{"data": [...], "has_more": true}`. The next page is the same request with
-`starting_after` set to the last id on this one. `limit` sets the page size, at most 100, and when
-absent 100 for videos and playlists and 20 for plays and sync runs. A `starting_after` naming no row
-of the list is refused, since the list has changed since the page before.
+`starting_after` set to the last id on this one. `limit` sets the page size, at most 100. When it is
+absent, videos and playlists answer the whole list as one page, and plays and sync runs answer 20. A
+`starting_after` naming no row of the list is refused, since the list has changed since the page
+before.
 
 A refused request answers `{"error": "<sentence>", "code": "<code>"}`. The sentence is for a person
 and can change. The code is for a client to branch on, and `api/wire` lists every one.
