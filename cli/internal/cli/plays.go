@@ -98,7 +98,7 @@ func (a *app) playsAddCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "add <video>",
 		GroupID: groupChanging,
-		Short:   "Record a video heard somewhere else, by its link, id or title",
+		Short:   "Record a video heard elsewhere, by its link, id or title",
 		Long: "`ypl play` records what it plays. This is for a video heard in a browser or on\n" +
 			"a phone, and records it as heard now. Name the video as `ypl videos show` does.",
 		Example: "  ypl plays add dQw4w9WgXcQ                          record one by id\n" +
