@@ -29,15 +29,16 @@ func (a *app) videosListCommand() *cobra.Command {
 		filter     api.VideoFilter
 		minMinutes int64
 		maxMinutes int64
+		limit      int
 		asJSON     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List videos, filtered by length, artist or playlist",
-		Example: "  ypl videos list --min-minutes 180  videos three hours long or more\n" +
-			"  ypl videos list --artist bjork     videos whose tracklist names Björk\n" +
-			"  ypl videos list --sort newest      the latest uploads first\n" +
-			"  ypl videos list --json             the whole library, for a script",
+		Example: "  ypl videos list --min-minutes 180         videos three hours long or more\n" +
+			"  ypl videos list --artist bjork            videos whose tracklist names Björk\n" +
+			"  ypl videos list --sort newest --limit 10  the ten latest uploads\n" +
+			"  ypl videos list --json                    the whole library, for a script",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Absence comes from the parser, so a bound of zero is a bound
@@ -51,26 +52,35 @@ func (a *app) videosListCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			videos, err := client.ListVideos(cmd.Context(), filter)
+			read := api.Page[api.LibraryVideo]{}
+			if cmd.Flags().Changed("limit") {
+				read, err = client.ListVideosUpTo(cmd.Context(), filter, limit)
+			} else {
+				read.Rows, err = client.ListVideos(cmd.Context(), filter)
+			}
 			if err != nil {
 				return reported(namingPlaylists(cmd.Context(), client, err))
 			}
-			if asJSON {
-				return emitJSON(cmd.OutOrStdout(), videos)
-			}
-			if len(videos) == 0 {
+			switch {
+			case asJSON:
+				err = emitJSON(cmd.OutOrStdout(), read.Rows)
+			case len(read.Rows) == 0:
 				nothing(cmd, "No video matches. `ypl videos list` with no flags is the whole library.")
-				return nil
+			default:
+				printVideos(cmd.OutOrStdout(), a.width(cmd.OutOrStdout()), read.Rows)
 			}
-			printVideos(cmd.OutOrStdout(), a.width(cmd.OutOrStdout()), videos)
-			return nil
+			if read.More {
+				nothing(cmd, "More videos follow; a larger --limit reads them.")
+			}
+			return err
 		},
 	}
 	cmd.Flags().StringVar(&filter.Playlist, "playlist", "", "Only the videos this playlist holds, by title or id")
 	cmd.Flags().StringVar(&filter.Artist, "artist", "", "Only videos whose tracklist names an artist holding this, ignoring case and accents")
 	addMinutes(cmd, "min-minutes", &minMinutes, "Only videos at least this many minutes long; a video whose length is unknown is left out")
 	addMinutes(cmd, "max-minutes", &maxMinutes, "Only videos at most this many minutes long; a video whose length is unknown is left out")
-	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order: "+strings.Join(api.VideoSorts, ", ")+" (default "+api.VideoSorts[0]+"); newest and oldest go by upload date")
+	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order: "+strings.Join(api.VideoSorts, ", ")+" (default "+api.VideoSorts[0]+"); newest and oldest go by upload date, and random draws at most "+strconv.Itoa(api.PageSize))
+	addLimit(cmd, &limit, 0, "How many videos to list, in the order asked for; every one when not given")
 	completeFlag(cmd, "playlist", a.completePlaylists)
 	completeFlag(cmd, "sort", cobra.FixedCompletions(api.VideoSorts, cobra.ShellCompDirectiveNoFileComp))
 	addJSON(cmd, &asJSON, "the videos")

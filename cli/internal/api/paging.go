@@ -37,13 +37,13 @@ type Page[T any] struct {
 	More bool
 }
 
-// collect reads pages of path until it holds limit rows, or until the server
-// says none follow. cursor names the row a page starts after, taken from the
-// last row of the page before it.
+// collect reads pages of path, asked with pairs, until it holds limit rows or
+// the server says none follow. cursor names the row a page starts after, taken
+// from the last row of the page before it.
 //
 // The rows come back as a list at every size, including none, so a caller
 // filtering the JSON writes one filter rather than a filter and a null guard.
-func collect[T any](ctx context.Context, c *Client, path string, limit int, cursor func(T) string) (Page[T], error) {
+func collect[T any](ctx context.Context, c *Client, path string, pairs [][2]string, limit int, cursor func(T) string) (Page[T], error) {
 	read := Page[T]{Rows: []T{}}
 	after := ""
 	// A limit of nothing is a request a caller can mean, and it needs no
@@ -51,7 +51,7 @@ func collect[T any](ctx context.Context, c *Client, path string, limit int, curs
 	for len(read.Rows) < limit {
 		want := min(limit-len(read.Rows), PageSize)
 		var got page[T]
-		target := query(path, [2]string{"limit", strconv.Itoa(want)}, [2]string{"starting_after", after})
+		target := query(path, slices.Concat(pairs, [][2]string{{"limit", strconv.Itoa(want)}, {"starting_after", after}})...)
 		if err := c.Get(ctx, target, &got); err != nil {
 			return Page[T]{}, err
 		}
