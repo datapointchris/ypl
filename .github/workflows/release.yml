@@ -172,6 +172,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
       - run: go install github.com/caarlos0/svu/v3@v3.4.1
 
       # --v0 keeps a breaking change on a 0.x line a minor bump. Reaching 1.0
@@ -227,6 +228,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
 
       # The archive name is `ypl_<version>_<os>_<arch>`. goselfupdate, which
       # `ypl update` runs, matches the OS and the Go arch as delimited words in
