@@ -256,6 +256,14 @@ WHERE playlist_id = ?;
 SELECT playlist_id FROM playlists
 ORDER BY playlist_id;
 
+-- name: ListVideoReferences :many
+-- Every stored video by the two things a request can name it with.
+SELECT
+    video_id,
+    title
+FROM videos
+ORDER BY video_id;
+
 -- name: ListPlaylistReferences :many
 -- Every stored playlist by the two things a request can name it with.
 SELECT

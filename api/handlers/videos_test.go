@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
 	"maps"
 	"net/http"
 	"regexp"
@@ -8,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/wire"
 )
 
@@ -188,7 +192,36 @@ func TestAnUnavailableVideoShowsWithNoTracks(t *testing.T) {
 	}
 }
 
-func TestAVideoTheStoreDoesNotHoldIsNotFound(t *testing.T) {
+// A video is named by its id, its title, or part of its title, as a read of a
+// playlist names one. A whole title or its slug beats a title merely holding
+// it. Part of a title holding more than one is refused naming the first ten
+// and saying what narrows the rest, and a name matching nothing is not found.
+func TestAVideoIsNamedByItsIdTitleOrPartOfItsTitle(t *testing.T) {
 	f := newFixture(t)
+	f.withLibrary(t)
+	mixes := []generated.SeedVideoParams{{VideoID: "m", Title: "Mix", ChannelTitle: "Six"}}
+	for i := 1; i <= 11; i++ {
+		mixes = append(mixes, generated.SeedVideoParams{VideoID: fmt.Sprintf("m%02d", i), Title: fmt.Sprintf("Mix %02d", i), ChannelTitle: "Six"})
+	}
+	if err := f.st.InTx(context.Background(), func(tx *store.Tx) error {
+		for _, mix := range mixes {
+			if err := tx.SeedVideo(context.Background(), mix); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, want := range map[string]string{"a": "a", "Zebra": "a", "zeb": "a", "ZEBRA": "a", "Mix": "m", "MIX": "m"} {
+		if got := decode[wireVideo](t, f.get("/api/v1/videos/"+name), http.StatusOK); got.ID != want {
+			t.Errorf("video %q = %s, want %s", name, got.ID, want)
+		}
+	}
+	refusal := decode[wireRefusal](t, f.get("/api/v1/videos/mi"), http.StatusBadRequest)
+	if refusal.Code != string(wire.CodeAmbiguousReference) || strings.Count(refusal.Error, `"Mix`) != 10 || !strings.Contains(refusal.Error, "and 2 more") {
+		t.Errorf("refusal = %+v, want ten of the twelve named and the other two counted", refusal)
+	}
 	refused(t, f.get("/api/v1/videos/zzz"), http.StatusNotFound, wire.CodeNotFound)
 }

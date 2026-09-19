@@ -2089,6 +2089,43 @@ func (q *Queries) ListVideoPlaylists(ctx context.Context, videoID sql.NullString
 	return items, nil
 }
 
+const listVideoReferences = `-- name: ListVideoReferences :many
+SELECT
+    video_id,
+    title
+FROM videos
+ORDER BY video_id
+`
+
+type ListVideoReferencesRow struct {
+	VideoID string
+	Title   string
+}
+
+// Every stored video by the two things a request can name it with.
+func (q *Queries) ListVideoReferences(ctx context.Context) ([]ListVideoReferencesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listVideoReferences)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVideoReferencesRow
+	for rows.Next() {
+		var i ListVideoReferencesRow
+		if err := rows.Scan(&i.VideoID, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVideosToEnrich = `-- name: ListVideosToEnrich :many
 SELECT v.video_id
 FROM videos AS v

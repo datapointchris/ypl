@@ -112,6 +112,10 @@ rename, a delete, and both the read and the write of an order take the whole tit
 order is read as narrowly as it is written because that read is what an edit is made from, and a
 reference the write would refuse buys an editing session that is then thrown away.
 
+`GET /api/v1/videos/{id}` names a video the way a read names a playlist, through the same resolver:
+by its id, its title, or part of its title. A name matching several is refused naming the first 10,
+for a video or a playlist alike, since part of a title can match hundreds of mixes.
+
 `GET /api/v1/videos` narrows by `playlist`, `min_seconds`, `max_seconds` and `artist`, which
 matches part of an artist's name ignoring case and accents. `sort` is one of `longest`, `shortest`,
 `newest`, `oldest`, `title` or `random`. The first is the order when `sort` is absent.
