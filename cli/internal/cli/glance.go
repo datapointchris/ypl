@@ -47,8 +47,11 @@ func (a *app) glance(cmd *cobra.Command) error {
 		_, _ = fmt.Fprintln(out, nothingPlaying)
 	}
 	library := status.Library
-	_, _ = fmt.Fprintf(out, "\n%s, %s, %d read for a tracklist.\n",
-		count(library.Playlists, "playlist"), count(library.Videos, "video"), library.EnrichedVideos)
+	held := fmt.Sprintf("%d read for a tracklist", library.EnrichedVideos)
+	if library.VideosWithTracklist != nil {
+		held = fmt.Sprintf("%d with a tracklist", *library.VideosWithTracklist)
+	}
+	_, _ = fmt.Fprintf(out, "\n%s, %s, %s.\n", count(library.Playlists, "playlist"), count(library.Videos, "video"), held)
 	switch run := status.LastRun; {
 	case run == nil:
 		_, _ = fmt.Fprintln(out, "The server has not synced yet.")

@@ -33,7 +33,7 @@ func TestVersionNamesTheToolAndTheBuild(t *testing.T) {
 func TestABareYplSaysWhatIsPlayingAndWhereTheServerStands(t *testing.T) {
 	f := newFixture(t, serves(map[string]string{
 		"/api/v1/status": `{"library": {"playlists": 36, "videos": 1584, "unavailable_videos": 40,
-			"enriched_videos": 58, "tracks": 465, "plays": 0}, "last_run": ` + run(2, "ok") + `, "last_ok_run": ` + run(2, "ok") + `}`,
+			"enriched_videos": 58, "videos_with_tracklist": 51, "tracks": 465, "plays": 0}, "last_run": ` + run(2, "ok") + `, "last_ok_run": ` + run(2, "ok") + `}`,
 		"/api/v1/videos/dQw4w9WgXcQ": playingVideo,
 	}))
 	playingMpv(t, map[string]any{
@@ -47,7 +47,7 @@ func TestABareYplSaysWhatIsPlayingAndWhereTheServerStands(t *testing.T) {
 	if got.code != 0 {
 		t.Fatalf("exited %d: %s%s", got.code, got.out, got.err)
 	}
-	for _, value := range []string{"Second", "Six Hours Of House", "1584", "58", "2026-09-01T00:01:00Z"} {
+	for _, value := range []string{"Second", "Six Hours Of House", "1584", "51", "2026-09-01T00:01:00Z"} {
 		if !strings.Contains(got.out, value) {
 			t.Errorf("said\n%s\nwant it to carry %q", got.out, value)
 		}

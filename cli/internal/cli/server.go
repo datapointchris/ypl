@@ -32,9 +32,10 @@ func (a *app) serverStatusCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show what the server holds and how its last sync went",
-		Long: "A video read for a tracklist is one the server has searched for its tracks,\n" +
-			"enriched_videos in --json. The last sync is last_run, and the last ok one\n" +
-			"last_ok_run.",
+		Long: "A video with a tracklist holds at least one track, videos_with_tracklist in\n" +
+			"--json. One read for a tracklist has been searched for its tracks, whether or\n" +
+			"not it held any, enriched_videos. The last sync is last_run, and the last ok\n" +
+			"one last_ok_run.",
 		Example: "  ypl server status         the library's size and the last sync\n" +
 			"  ypl server status --json  the same, for a check on a timer",
 		Args: usageArgs(cobra.NoArgs),
@@ -117,8 +118,13 @@ func printStatus(out io.Writer, status api.Status) {
 	_, _ = fmt.Fprintf(out, "%s, %s, %s, %s\n",
 		count(library.Playlists, "playlist"), count(library.Videos, "video"),
 		count(library.Tracks, "track"), count(library.Plays, "play"))
-	_, _ = fmt.Fprintf(out, "%d videos read for a tracklist, %d unavailable\n\n",
-		library.EnrichedVideos, library.UnavailableVideos)
+	if held := library.VideosWithTracklist; held != nil {
+		_, _ = fmt.Fprintf(out, "%s with a tracklist, %d read for one, %d unavailable\n\n",
+			count(*held, "video"), library.EnrichedVideos, library.UnavailableVideos)
+	} else {
+		_, _ = fmt.Fprintf(out, "%s read for a tracklist, %d unavailable\n\n",
+			count(library.EnrichedVideos, "video"), library.UnavailableVideos)
+	}
 
 	if status.LastRun == nil {
 		_, _ = fmt.Fprintln(out, "The server has not synced yet.")
