@@ -38,7 +38,8 @@ func (a *app) playlistsListCommand() *cobra.Command {
 		Use:     "list",
 		GroupID: groupReading,
 		Short:   "List every playlist and its video count",
-		Long: "READ counts the videos the server has read for a tracklist.\n" +
+		Long: "PLAYLIST is the name to type, the one Tab offers: `ypl play be-happy`.\n" +
+			"READ counts the videos the server has read for a tracklist.\n" +
 			"UNAVAILABLE counts the videos YouTube will not serve, deleted or made private.",
 		Example: "  ypl playlists list         every playlist\n" +
 			"  ypl playlists list --json  the same, for a script",
@@ -97,12 +98,14 @@ func (a *app) playlistsShowCommand() *cobra.Command {
 	return cmd
 }
 
-// printPlaylists puts the title first, since a title is what the next command
-// is given.
+// printPlaylists leads with the handle, since that is what `ypl play` and the
+// next command are given without quoting, and Tab offers the same one.
 func printPlaylists(out io.Writer, playlists []api.PlaylistSummary) {
+	typed := handles(playlists)
 	rows := make([][]string, len(playlists))
 	for i, playlist := range playlists {
 		rows[i] = []string{
+			typed[i],
 			playlist.Title,
 			strconv.FormatInt(playlist.ItemCount, 10),
 			strconv.FormatInt(playlist.EnrichedCount, 10),
@@ -111,7 +114,7 @@ func printPlaylists(out io.Writer, playlists []api.PlaylistSummary) {
 			playlist.ID,
 		}
 	}
-	table(out, 0, []column{whole("TITLE"), whole("VIDEOS"), whole("READ"), whole("UNAVAILABLE"), whole("PRIVACY"), whole("ID")}, rows)
+	table(out, 0, []column{whole("PLAYLIST"), whole("TITLE"), whole("VIDEOS"), whole("READ"), whole("UNAVAILABLE"), whole("PRIVACY"), whole("ID")}, rows)
 }
 
 func printPlaylist(out io.Writer, width int, playlist api.Playlist) {

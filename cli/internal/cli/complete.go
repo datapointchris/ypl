@@ -79,26 +79,37 @@ func (a *app) completePlaylists(cmd *cobra.Command, _ []string, _ string) ([]cob
 	return playlistCandidates(playlists), cobra.ShellCompDirectiveNoFileComp
 }
 
-// playlistCandidates is each playlist as a completion: its title slugged, then
-// the title and how much it holds.
+// playlistCandidates is each playlist as a completion: its handle, then the
+// title and how much it holds.
 func playlistCandidates(playlists []api.PlaylistSummary) []cobra.Completion {
+	offered := handles(playlists)
+	candidates := make([]cobra.Completion, len(playlists))
+	for i, playlist := range playlists {
+		candidates[i] = cobra.CompletionWithDesc(offered[i],
+			fmt.Sprintf("%s, %s", playlist.Title, count(playlist.ItemCount, "video")))
+	}
+	return candidates
+}
+
+// handles is what each playlist is typed as: its title slugged, and its id
+// where no slug reaches it alone. Tab offers these and `ypl playlists list`
+// prints them, so the two always agree.
+func handles(playlists []api.PlaylistSummary) []string {
 	shared := map[string]int{}
 	for _, playlist := range playlists {
 		shared[slug(playlist.Title)]++
 	}
-	candidates := make([]cobra.Completion, len(playlists))
+	typed := make([]string, len(playlists))
 	for i, playlist := range playlists {
-		offered := slug(playlist.Title)
+		typed[i] = slug(playlist.Title)
 		// Two titles that differ only in case or punctuation slug the same,
 		// and the server refuses a reference naming two playlists. The id
 		// reaches exactly one.
-		if offered == "" || shared[offered] > 1 {
-			offered = playlist.ID
+		if typed[i] == "" || shared[typed[i]] > 1 {
+			typed[i] = playlist.ID
 		}
-		candidates[i] = cobra.CompletionWithDesc(offered,
-			fmt.Sprintf("%s, %s", playlist.Title, count(playlist.ItemCount, "video")))
 	}
-	return candidates
+	return typed
 }
 
 // namingPlaylists is err, with every playlist the server holds listed under it
