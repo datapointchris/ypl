@@ -4,7 +4,8 @@
 # back in its queue. Migrations are embedded in the binaries, so the runtime
 # stage holds those two, yt-dlp, and nothing else this repo produces.
 
-FROM golang:1.26.6-alpine AS builder
+# Unversioned: go.mod is where the Go version lives, and this tag is never older.
+FROM golang:alpine AS builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
