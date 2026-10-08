@@ -205,9 +205,9 @@ func TestARouteOutsideTheScopeReportsTheServersSentence(t *testing.T) {
 	}
 }
 
-// The fake provider grants whatever scope ypl asks for, so a scope the server
-// renamed, or a route it moved, passes every other test here and answers 403
-// to every scheduled run.
+// serviceIDP grants the scope this file spells, which is the CLI's own copy. So
+// a scope the server renamed, or a route it moved, passes every other test here
+// and answers 403 to every scheduled run.
 func TestServerStatusCallsARouteTheRequestedScopeReaches(t *testing.T) {
 	raw, err := os.ReadFile("../../../api/handlers/testdata/wire/service-scopes.json")
 	if err != nil {
