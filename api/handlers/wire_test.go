@@ -91,6 +91,15 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		t.Fatalf("encode the slugs: %v", err)
 	}
 	pinned(t, "slugs", "the title slugs", body)
+
+	// The routes each service scope reaches. The CLI requests a scope by name,
+	// and a name the server stops listing is a 403 on every call a service
+	// makes, with the CLI's fake provider granting the old name all the same.
+	body, err = json.Marshal(ServiceRoutes)
+	if err != nil {
+		t.Fatalf("encode the service routes: %v", err)
+	}
+	pinned(t, "service-scopes", "ServiceRoutes", body)
 }
 
 // pinned writes body as the wire document name under -update, and otherwise

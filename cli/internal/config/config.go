@@ -32,6 +32,16 @@ import (
 // so it keeps its spelling however those are renamed.
 const keyringService = "ypl-cli"
 
+// serviceScope is what a service client asks for. The provider grants only the
+// scopes a request names, and the server admits this one to what `ypl server
+// status` reads.
+const serviceScope = "ypl.status.read"
+
+// clientSecretEnv selects the client-credentials grant. It is read from the
+// environment alone, so it is never written to the config file, `ypl config
+// example` never asks for it, and `ypl config show` never prints it.
+const clientSecretEnv = "YPL_CLIENT_SECRET"
+
 // The key of every setting, spelled as the config file spells it.
 const (
 	KeyAPIBase  = "api_base"
@@ -113,6 +123,9 @@ type Config struct {
 	Path string
 	// Settings is every value the CLI resolves, in the order they are declared.
 	Settings []Setting
+	// ClientSecret is YPL_CLIENT_SECRET, set only where a service runs ypl with
+	// nobody present to approve a device login.
+	ClientSecret string
 }
 
 // Load resolves every setting. A config file that is not there is not a
@@ -123,7 +136,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{Path: path}
+	cfg := Config{Path: path, ClientSecret: os.Getenv(clientSecretEnv)}
 	var stored file
 	switch _, err := toml.DecodeFile(path, &stored); {
 	case errors.Is(err, fs.ErrNotExist):
@@ -192,6 +205,31 @@ func (c Config) Login() goclilogin.Config {
 		KeyringService: keyringService,
 		StateDir:       goclilogin.StateDir("ypl"),
 	}
+}
+
+// IsService reports whether ypl authenticates as a confidential service client
+// rather than as the person who logged this machine in.
+func (c Config) IsService() bool { return c.ClientSecret != "" }
+
+// Service is the goclilogin view of this config for the client-credentials
+// grant. Nothing it obtains is stored, so it names no keyring or state
+// directory.
+func (c Config) Service() goclilogin.ServiceClient {
+	return goclilogin.ServiceClient{Issuer: c.Issuer(), ClientID: c.ClientID(), Scopes: []string{serviceScope}}
+}
+
+// CheckService refuses a secret whose client id is the default, the person's
+// public ypl-cli-<host>, which no secret belongs to. Refusing here names
+// YPL_CLIENT_ID rather than relaying the provider's invalid_client.
+func (c Config) CheckService() error {
+	if !c.IsService() {
+		return nil
+	}
+	i := slices.IndexFunc(c.Settings, func(s Setting) bool { return s.Key == KeyClientID })
+	if i >= 0 && c.Settings[i].Layer == LayerDefault {
+		return fmt.Errorf("%s is set but the client id is still the default %s — set YPL_CLIENT_ID, or %s in the config file, to the service client the secret belongs to, such as ypl-svc-<machine>", clientSecretEnv, c.ClientID(), KeyClientID)
+	}
+	return nil
 }
 
 // Missing is every required setting that resolved to nothing.

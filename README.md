@@ -46,6 +46,19 @@ mode-600 file on a host that has none, and it is refreshed under a lock so two c
 cannot spend the same refresh token twice. The client id is `ypl-cli-<machine>`, one per machine, so
 a token can be revoked for one machine without touching the others.
 
+A service runs ypl with nobody present to approve a login. It sets `YPL_CLIENT_ID` to its own
+confidential client, `ypl-svc-<machine>`, and `YPL_CLIENT_SECRET` to that client's secret, both in
+the environment. ypl then requests a token through the client-credentials grant on each run, asking
+for `ypl.status.read`, and stores nothing. The server lets that token read `GET /api/v1/status`,
+which is what `ypl server status` calls, and refuses every other route with 403. `ypl auth login`
+and `ypl auth logout` refuse in that mode. A secret is refused while the client id is still the
+default, the person's `ypl-cli-<machine>`, so name the service client in `YPL_CLIENT_ID` or in the
+config file.
+`ypl auth status --json` names the credential it checked in `type`, `authorized_user` for a
+person's login or `service_account` for a service, as Google's credential files do. A service's
+status exits 1 unless the provider grants a token, and its `session` says why: `rejected` for a
+secret the provider refused, `unverified` for a provider it could not reach.
+
 A first run installs the newest `cli/v*` release, checks it against its checksums, and then tells it
 where the server is:
 

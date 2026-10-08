@@ -34,7 +34,7 @@ func requireSubcommand(cmd *cobra.Command, args []string) error {
 // `ypl help <name>` is answered with the same line, since a usage line for
 // name would describe a command that refuses to run.
 func moved(name, to string) *cobra.Command {
-	says := fmt.Sprintf("`ypl %s` is now `%s`", name, to)
+	says := fmt.Sprintf("%#q is now %#q", "ypl "+name, to)
 	cmd := &cobra.Command{
 		Use:                name,
 		Short:              "Now " + to,

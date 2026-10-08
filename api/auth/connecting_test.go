@@ -11,7 +11,7 @@ import (
 )
 
 func connecting(issuer string) *Connecting {
-	c := NewConnecting(issuer, "ypl-cli-")
+	c := NewConnecting(issuer, "ypl-cli-", "ypl-svc-")
 	c.firstRetry, c.lastRetry = time.Millisecond, 4*time.Millisecond
 	return c
 }

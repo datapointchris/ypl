@@ -11,6 +11,7 @@ import (
 	"github.com/datapointchris/goclilogin"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
+	"golang.org/x/oauth2"
 
 	"github.com/datapointchris/ypl/cli/internal/config"
 )
@@ -26,7 +27,10 @@ func (a *app) authCommand() *cobra.Command {
 		Short:   "Log this machine in to the server",
 		GroupID: groupSetup,
 		Long: "Logging in prints a code and a link. Approve it in a browser on any device,\n" +
-			"so it works over SSH too.",
+			"so it works over SSH too.\n\n" +
+			"With YPL_CLIENT_SECRET set, ypl is a service: it authenticates as the\n" +
+			"confidential client YPL_CLIENT_ID names through the client-credentials\n" +
+			"grant, requests a token per run, and stores nothing. There is no login.",
 		RunE: requireSubcommand,
 	}
 	splitReadingFromChanging(cmd)
@@ -55,6 +59,12 @@ func (a *app) authLoginCommand() *cobra.Command {
 			cfg, err := loginConfig()
 			if err != nil {
 				return err
+			}
+			if err := cfg.CheckService(); err != nil {
+				return err
+			}
+			if cfg.IsService() {
+				return fmt.Errorf("YPL_CLIENT_SECRET is set, so ypl authenticates as service client %s with no login — unset it to log in as a person", cfg.ClientID())
 			}
 			login := cfg.Login()
 			store := a.tokens(login)
@@ -121,6 +131,12 @@ func (a *app) authLogoutCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := cfg.CheckService(); err != nil {
+				return err
+			}
+			if cfg.IsService() {
+				return fmt.Errorf("YPL_CLIENT_SECRET is set, so ypl authenticates as service client %s and stores no token to remove — unset it to log out as a person", cfg.ClientID())
+			}
 			err = a.tokens(cfg.Login()).Delete(cfg.ClientID())
 			if errors.Is(err, goclilogin.ErrNotLoggedIn) {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Not logged in — there is nothing to remove.")
@@ -140,7 +156,8 @@ func (a *app) authTokenCommand() *cobra.Command {
 		Use:     "token",
 		GroupID: groupReading,
 		Short:   "Print an access token for calling the API directly",
-		Long:    "Exits 1 when this machine is not logged in.",
+		Long: "Exits 1 when this machine is not logged in. With YPL_CLIENT_SECRET set, it\n" +
+			"requests a new service token instead.",
 		Example: "  # the server's status, read with curl rather than ypl\n" +
 			"  base=$(ypl config show --json |\n" +
 			"    jq -r '.settings[] | select(.key == \"api_base\").value')\n" +
@@ -151,9 +168,8 @@ func (a *app) authTokenCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			login := cfg.Login()
-			source, err := goclilogin.TokenSource(cmd.Context(), login, a.tokens(login))
-			if errors.Is(err, goclilogin.ErrNotLoggedIn) {
+			source, err := tokenSource(cmd.Context(), cfg, a.tokens)
+			if errors.Is(err, errNeedsLogin) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Not logged in as %s. Run `ypl auth login`.\n", cfg.ClientID())
 				return exitCode(1)
 			}
@@ -161,6 +177,9 @@ func (a *app) authTokenCommand() *cobra.Command {
 				return err
 			}
 			token, err := source.Token()
+			if err != nil && cfg.IsService() {
+				return reported(err)
+			}
 			if err != nil {
 				return fmt.Errorf("get a valid token, which may mean the refresh failed — try `ypl auth login`: %w", err)
 			}
@@ -170,16 +189,35 @@ func (a *app) authTokenCommand() *cobra.Command {
 	}
 }
 
+// credentialType is whose credential `ypl auth status` checked, spelled as
+// Google's credential files spell a person's OAuth login and a service's.
+type credentialType string
+
+const (
+	// authorizedUser is the device-grant login a person made on this machine.
+	authorizedUser credentialType = "authorized_user"
+	// serviceAccount is the client-credentials grant YPL_CLIENT_SECRET selects.
+	serviceAccount credentialType = "service_account"
+)
+
 // authStatus is what `ypl auth status --json` writes. The token is opaque to
 // this CLI — the server is what reads its claims — so there is no identity to
 // report, only whether one is held and whether it has expired.
+//
+// For a service, logged_in is true only when the provider granted a token just
+// now. A service stores none, so nothing else says the next command will work.
+// session says why it is false: rejected is a secret to rotate, unverified a
+// provider to retry. A person's status never asks the provider, so its session
+// is empty.
 type authStatus struct {
-	LoggedIn  bool               `json:"logged_in"`
-	ClientID  string             `json:"client_id"`
-	Issuer    string             `json:"issuer"`
-	ExpiresAt string             `json:"expires_at,omitempty"`
-	Expired   bool               `json:"expired"`
-	Backend   goclilogin.Backend `json:"backend,omitempty"`
+	LoggedIn  bool                    `json:"logged_in"`
+	Type      credentialType          `json:"type"`
+	ClientID  string                  `json:"client_id"`
+	Issuer    string                  `json:"issuer"`
+	ExpiresAt string                  `json:"expires_at,omitempty"`
+	Expired   bool                    `json:"expired"`
+	Session   goclilogin.SessionState `json:"session"`
+	Backend   goclilogin.Backend      `json:"backend,omitempty"`
 }
 
 func (a *app) authStatusCommand() *cobra.Command {
@@ -196,30 +234,24 @@ func (a *app) authStatusCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			status := authStatus{ClientID: cfg.ClientID(), Issuer: cfg.Issuer()}
-			token, backend, err := a.tokens(cfg.Login()).Load(cfg.ClientID())
-			switch {
-			case errors.Is(err, goclilogin.ErrNotLoggedIn):
-				// Logged out is a state this command reports, not a failure.
-			case err != nil:
-				return fmt.Errorf("read the stored token: %w", err)
-			default:
-				status.LoggedIn = true
-				// The backend is a fact about where the token was stored, not
-				// about whether it expires. A provider may omit expires_in —
-				// RFC 6749 only recommends it — and on a host with no keyring
-				// this is the one line saying the token is in a plain file.
-				status.Backend = backend
-				if !token.Expiry.IsZero() {
-					status.ExpiresAt = token.Expiry.Format(time.RFC3339)
-					status.Expired = time.Now().After(token.Expiry)
-				}
+			if err := cfg.CheckService(); err != nil {
+				return err
 			}
-			if asJSON {
+			status := authStatus{Type: authorizedUser, ClientID: cfg.ClientID(), Issuer: cfg.Issuer()}
+			if cfg.IsService() {
+				status.Type = serviceAccount
+				serviceStatus(cmd.Context(), cfg, &status)
+			} else if err := a.loginStatus(cfg, &status); err != nil {
+				return err
+			}
+			switch {
+			case asJSON:
 				if err := emitJSON(cmd.OutOrStdout(), status); err != nil {
 					return err
 				}
-			} else {
+			case cfg.IsService():
+				printServiceStatus(cmd.OutOrStdout(), status)
+			default:
 				printAuthStatus(cmd.OutOrStdout(), status)
 			}
 			if !status.LoggedIn {
@@ -230,6 +262,60 @@ func (a *app) authStatusCommand() *cobra.Command {
 	}
 	addJSON(cmd, &asJSON, "the status")
 	return cmd
+}
+
+// loginStatus fills status from the token this machine logged in for.
+func (a *app) loginStatus(cfg config.Config, status *authStatus) error {
+	token, backend, err := a.tokens(cfg.Login()).Load(cfg.ClientID())
+	switch {
+	case errors.Is(err, goclilogin.ErrNotLoggedIn):
+		// Logged out is a state this command reports, not a failure.
+	case err != nil:
+		return fmt.Errorf("read the stored token: %w", err)
+	default:
+		status.LoggedIn = true
+		// The backend is a fact about where the token was stored, not about
+		// whether it expires. A provider may omit expires_in — RFC 6749 only
+		// recommends it — and on a host with no keyring this is the one line
+		// saying the token is in a plain file.
+		status.Backend = backend
+		if !token.Expiry.IsZero() {
+			status.ExpiresAt = token.Expiry.Format(time.RFC3339)
+			status.Expired = time.Now().After(token.Expiry)
+		}
+	}
+	return nil
+}
+
+// serviceStatus requests a token, because a service stores none that could say
+// whether its credentials still work, and reports what the provider answered.
+func serviceStatus(ctx context.Context, cfg config.Config, status *authStatus) {
+	source, err := goclilogin.ClientCredentialsTokenSource(ctx, cfg.Service(), cfg.ClientSecret)
+	var token *oauth2.Token
+	if err == nil {
+		token, err = source.Token()
+	}
+	status.Session, token = goclilogin.ClassifySession(token, err)
+	status.LoggedIn = status.Session == goclilogin.SessionLive
+	if token != nil && !token.Expiry.IsZero() {
+		status.ExpiresAt = token.Expiry.Format(time.RFC3339)
+	}
+}
+
+func printServiceStatus(out io.Writer, status authStatus) {
+	switch status.Session {
+	case goclilogin.SessionRejected:
+		_, _ = fmt.Fprintf(out, "Service client refused by %s.\nCheck YPL_CLIENT_ID and YPL_CLIENT_SECRET.\n", status.Issuer)
+	case goclilogin.SessionUnverified:
+		_, _ = fmt.Fprintf(out, "Service client configured, but %s could not be reached.\n", status.Issuer)
+	default:
+		_, _ = fmt.Fprintln(out, "Service client (client credentials)")
+	}
+	_, _ = fmt.Fprintf(out, "  client   %s\n", status.ClientID)
+	_, _ = fmt.Fprintf(out, "  issuer   %s\n", status.Issuer)
+	if status.ExpiresAt != "" {
+		_, _ = fmt.Fprintf(out, "  token    granted, valid until %s\n", status.ExpiresAt)
+	}
 }
 
 func printAuthStatus(out io.Writer, status authStatus) {
