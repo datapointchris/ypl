@@ -205,14 +205,18 @@ const (
 //
 // For a service, logged_in is true only when the provider granted a token just
 // now. A service stores none, so nothing else says the next command will work.
+// session says why it is false: rejected is a secret to rotate, unverified a
+// provider to retry. A person's status never asks the provider, so its session
+// is empty.
 type authStatus struct {
-	LoggedIn  bool               `json:"logged_in"`
-	Mode      authMode           `json:"mode"`
-	ClientID  string             `json:"client_id"`
-	Issuer    string             `json:"issuer"`
-	ExpiresAt string             `json:"expires_at,omitempty"`
-	Expired   bool               `json:"expired"`
-	Backend   goclilogin.Backend `json:"backend,omitempty"`
+	LoggedIn  bool                    `json:"logged_in"`
+	Mode      authMode                `json:"mode"`
+	ClientID  string                  `json:"client_id"`
+	Issuer    string                  `json:"issuer"`
+	ExpiresAt string                  `json:"expires_at,omitempty"`
+	Expired   bool                    `json:"expired"`
+	Session   goclilogin.SessionState `json:"session"`
+	Backend   goclilogin.Backend      `json:"backend,omitempty"`
 }
 
 func (a *app) authStatusCommand() *cobra.Command {
@@ -233,10 +237,9 @@ func (a *app) authStatusCommand() *cobra.Command {
 				return err
 			}
 			status := authStatus{Mode: modeLogin, ClientID: cfg.ClientID(), Issuer: cfg.Issuer()}
-			var session goclilogin.SessionState
 			if cfg.IsService() {
 				status.Mode = modeService
-				session = serviceStatus(cmd.Context(), cfg, &status)
+				serviceStatus(cmd.Context(), cfg, &status)
 			} else if err := a.loginStatus(cfg, &status); err != nil {
 				return err
 			}
@@ -246,7 +249,7 @@ func (a *app) authStatusCommand() *cobra.Command {
 					return err
 				}
 			case cfg.IsService():
-				printServiceStatus(cmd.OutOrStdout(), status, session)
+				printServiceStatus(cmd.OutOrStdout(), status)
 			default:
 				printAuthStatus(cmd.OutOrStdout(), status)
 			}
@@ -285,22 +288,21 @@ func (a *app) loginStatus(cfg config.Config, status *authStatus) error {
 
 // serviceStatus requests a token, because a service stores none that could say
 // whether its credentials still work, and reports what the provider answered.
-func serviceStatus(ctx context.Context, cfg config.Config, status *authStatus) goclilogin.SessionState {
+func serviceStatus(ctx context.Context, cfg config.Config, status *authStatus) {
 	source, err := goclilogin.ClientCredentialsTokenSource(ctx, cfg.Service(), cfg.ClientSecret)
 	var token *oauth2.Token
 	if err == nil {
 		token, err = source.Token()
 	}
-	session, token := goclilogin.ClassifySession(token, err)
-	status.LoggedIn = session == goclilogin.SessionLive
+	status.Session, token = goclilogin.ClassifySession(token, err)
+	status.LoggedIn = status.Session == goclilogin.SessionLive
 	if token != nil && !token.Expiry.IsZero() {
 		status.ExpiresAt = token.Expiry.Format(time.RFC3339)
 	}
-	return session
 }
 
-func printServiceStatus(out io.Writer, status authStatus, session goclilogin.SessionState) {
-	switch session {
+func printServiceStatus(out io.Writer, status authStatus) {
+	switch status.Session {
 	case goclilogin.SessionRejected:
 		_, _ = fmt.Fprintf(out, "Service client refused by %s.\nCheck YPL_CLIENT_ID and YPL_CLIENT_SECRET.\n", status.Issuer)
 	case goclilogin.SessionUnverified:

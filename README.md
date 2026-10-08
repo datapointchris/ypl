@@ -52,8 +52,9 @@ the environment. ypl then requests a token through the client-credentials grant 
 for `ypl.status.read`, and stores nothing. The server lets that token read `GET /api/v1/status`,
 which is what `ypl server status` calls, and refuses every other route with 403. `ypl auth login`
 and `ypl auth logout` refuse in that mode, and a secret with no `YPL_CLIENT_ID` is refused.
-`ypl auth status --json` names the grant it checked in `mode`, `login` or `service`, and a
-service's status exits 1 unless the provider grants a token.
+`ypl auth status --json` names the grant it checked in `mode`, `login` or `service`. A service's
+status exits 1 unless the provider grants a token, and its `session` says why: `rejected` for a
+secret the provider refused, `unverified` for a provider it could not reach.
 
 A first run installs the newest `cli/v*` release, checks it against its checksums, and then tells it
 where the server is:

@@ -104,8 +104,8 @@ func TestAServicesStatusAsksTheProvider(t *testing.T) {
 	got := f.run("auth", "status", "--json")
 	var status authStatus
 	decodeInto(t, got.out, &status)
-	if got.code != 0 || !status.LoggedIn || status.Mode != modeService || status.ExpiresAt == "" {
-		t.Errorf("status with a good secret: exit %d, %+v, want logged in as a service until an expiry", got.code, status)
+	if got.code != 0 || !status.LoggedIn || status.Mode != modeService || status.ExpiresAt == "" || sessionIn(t, got.out) != "live" {
+		t.Errorf("status with a good secret: exit %d, %s, want logged in as a service until an expiry, session live", got.code, got.out)
 	}
 
 	f.asService(idp.URL, "wrong-secret")
@@ -113,10 +113,15 @@ func TestAServicesStatusAsksTheProvider(t *testing.T) {
 	if got.code != 1 || !strings.Contains(got.out, "YPL_CLIENT_SECRET") || strings.Contains(got.out, "auth login") {
 		t.Errorf("status with a refused secret: exit %d, %q, want 1 and the secret named", got.code, got.out)
 	}
+	got = f.run("auth", "status", "--json")
+	if got.code != 1 || sessionIn(t, got.out) != "rejected" {
+		t.Errorf("status --json with a refused secret: exit %d, %s, want 1 and session rejected", got.code, got.out)
+	}
 }
 
-// A service stores no token, so a provider it cannot reach means the next
-// command fails, and a job gating on status has to see that.
+// A service stores no token, so with the provider down its next command fails
+// too. A job gating on status has to see that, and has to tell it from a
+// refused secret.
 func TestAServicesStatusWithTheProviderDownExitsOne(t *testing.T) {
 	f := newFixture(t, serves(nil))
 	f.asService("http://127.0.0.1:9", serviceSecret)
@@ -124,9 +129,18 @@ func TestAServicesStatusWithTheProviderDownExitsOne(t *testing.T) {
 	got := f.run("auth", "status", "--json")
 	var status authStatus
 	decodeInto(t, got.out, &status)
-	if got.code != 1 || status.LoggedIn || status.Mode != modeService {
-		t.Errorf("status with the provider down: exit %d, %+v, want 1 and not logged in", got.code, status)
+	if got.code != 1 || status.LoggedIn || status.Mode != modeService || sessionIn(t, got.out) != "unverified" {
+		t.Errorf("status with the provider down: exit %d, %s, want 1, not logged in, session unverified", got.code, got.out)
 	}
+}
+
+// sessionIn is the "session" key of a status document, read by name so a
+// renamed tag fails here rather than round-tripping through authStatus.
+func sessionIn(t *testing.T, out string) any {
+	t.Helper()
+	var keys map[string]any
+	decodeInto(t, out, &keys)
+	return keys["session"]
 }
 
 func TestAPersonsStatusNamesTheLoginMode(t *testing.T) {
