@@ -110,9 +110,12 @@ writes what it answers to `testdata/wire`, and `cli/internal/api` decodes those 
 requires every field it declares to arrive. Renaming a response field without regenerating is what
 that catches, and it is the one mistake a green build on both sides would otherwise hide.
 
-A value the server *enforces* is the harder half and is not solved. `PageSize` and `VideoSorts` are
-copies of numbers and words the server owns, with no door to read them through. A shape the client has wrong degrades — an unknown
-field is ignored — and a value it has wrong is a refusal the client reports as a failure.
+A value the server *enforces* is the harder half. A shape the client has wrong degrades, because an
+unknown field is ignored. A value it has wrong is a refusal the client reports as a failure. The
+title slug and the service client's scope are held: `api/handlers` writes `slugs.json` and
+`service-scopes.json` to `testdata/wire`, and the CLI's tests require agreement with both.
+`PageSize` and `VideoSorts` are still copies of a number and words the server owns, with no door to
+read them through.
 
 The slug a playlist is offered by on Tab is a derivation the server owns, and it is the one copy
 that is pinned: `api/handlers` writes its own slug of a set of titles to `testdata/wire/slugs.json`,

@@ -118,7 +118,9 @@ authenticated with the client-credentials grant. Its token speaks for no person,
 scopes as a non-empty `scp` list. A token from any other client is refused with 401.
 
 A service reaches only the routes its scopes list, and every other request it makes is refused with
-403 and `outside_service_scope`. The list is `serviceRoutes` in `api/main.go`:
+403 and `outside_service_scope`. The refusal's sentence names the routes the client's scopes do
+reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire test writes it to
+`testdata/wire/service-scopes.json`, which the CLI's tests hold its requested scope against:
 
 | Scope | Reaches |
 | --- | --- |

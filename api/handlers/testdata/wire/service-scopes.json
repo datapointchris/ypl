@@ -1,0 +1,5 @@
+{
+  "ypl.status.read": [
+    "GET /api/v1/status"
+  ]
+}

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/datapointchris/ypl/api/wire"
 )
@@ -31,6 +32,20 @@ func LimitServices(mux *http.ServeMux, routes map[string][]string, log *slog.Log
 			}
 		}
 		log.WarnContext(r.Context(), "service client outside its scopes", "client_id", identity.ClientID, "scopes", identity.Scopes, "pattern", pattern, "path", r.URL.Path)
-		wire.Refuse(w, http.StatusForbidden, wire.CodeOutsideServiceScope, "client %s may not reach %s %s", identity.ClientID, r.Method, r.URL.Path)
+		wire.Refuse(w, http.StatusForbidden, wire.CodeOutsideServiceScope, "client %s may not reach %s %s: %s", identity.ClientID, r.Method, r.URL.Path, reachable(routes, identity.Scopes))
 	})
+}
+
+// reachable says which patterns scopes reach in routes, so a refused client
+// reads what it may call from the table that refused it.
+func reachable(routes map[string][]string, scopes []string) string {
+	var patterns []string
+	for _, scope := range scopes {
+		patterns = append(patterns, routes[scope]...)
+	}
+	if len(patterns) == 0 {
+		return "its scopes reach no route"
+	}
+	slices.Sort(patterns)
+	return "its scopes reach only " + strings.Join(slices.Compact(patterns), ", ")
 }

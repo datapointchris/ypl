@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/datapointchris/ypl/api/wire"
@@ -64,6 +65,22 @@ func TestAServiceReachesOnlyTheRoutesItsScopesList(t *testing.T) {
 		var body wire.Refusal
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusForbidden || body.Code != wire.CodeOutsideServiceScope {
 			t.Errorf("%s: answered %d %s, want 403 %s", name, rec.Code, rec.Body, wire.CodeOutsideServiceScope)
+		}
+	}
+}
+
+func TestARefusedServiceIsToldWhatItsScopesReach(t *testing.T) {
+	for _, c := range []struct {
+		scopes []string
+		want   string
+	}{
+		{[]string{"ypl.status.read"}, "its scopes reach only GET /api/v1/status"},
+		{[]string{"ypl.playlists.write"}, "its scopes reach no route"},
+	} {
+		rec, _ := limited(&Identity{ClientID: "ypl-svc-worker", Service: true, Scopes: c.scopes}, http.MethodGet, "/api/v1/playlists")
+		var body wire.Refusal
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || !strings.Contains(body.Error, c.want) {
+			t.Errorf("scopes %v: refused with %s, want it to say %q", c.scopes, rec.Body, c.want)
 		}
 	}
 }

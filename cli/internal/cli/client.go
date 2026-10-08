@@ -76,13 +76,10 @@ func reported(err error) error {
 		}
 		return errors.Join(said...)
 	}
-	var refusal *api.Refusal
-	switch {
-	case errors.Is(err, errNeedsLogin):
+	if errors.Is(err, errNeedsLogin) {
 		return errors.New("not logged in — run `ypl auth login`")
-	case errors.As(err, &refusal) && refusal.Code == "outside_service_scope":
-		return fmt.Errorf("%w — a service client's scope covers `ypl server status` alone", err)
 	}
+	var refusal *api.Refusal
 	// A service has no login to renew, so it is pointed at its id and secret.
 	if cfg, loadErr := config.Load(); loadErr == nil && cfg.IsService() {
 		switch {

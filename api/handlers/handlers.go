@@ -109,6 +109,15 @@ func (h *Handlers) routes() []route {
 	}
 }
 
+// ServiceRoutes is every route a service client reaches, by the scope that
+// reaches it, written as Register registers them. A service client is refused
+// with 403 everywhere else. The CLI requests a scope by its name here, and
+// testdata/wire/service-scopes.json is what its tests hold that name against.
+var ServiceRoutes = map[string][]string{
+	// What `ypl server status` calls.
+	"ypl.status.read": {"GET /api/v1/status"},
+}
+
 // Register adds every route to mux. A path under /api/v1/ that no route
 // matches is a 404, and a method no route on its path takes is a 405 naming
 // the methods it does take.

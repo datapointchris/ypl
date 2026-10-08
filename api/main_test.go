@@ -339,14 +339,14 @@ func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
 	}
 }
 
-// A pattern in serviceRoutes that no route registers matches nothing, so the
-// scope it was written for reaches nothing and every call answers 403.
+// A pattern in handlers.ServiceRoutes that no route registers matches nothing,
+// so the scope it was written for reaches nothing and every call answers 403.
 func TestEveryServiceRouteIsARegisteredRoute(t *testing.T) {
 	mux := routes(alwaysReady)
 	handlers.New(nil, nil, handlers.Sync{}, slog.Default()).Register(mux)
 	wildcard := regexp.MustCompile(`\{[^}]*\}`)
 
-	for scope, patterns := range serviceRoutes {
+	for scope, patterns := range handlers.ServiceRoutes {
 		for _, pattern := range patterns {
 			method, path, ok := strings.Cut(pattern, " ")
 			if !ok {

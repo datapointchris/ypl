@@ -144,13 +144,6 @@ const defaultClientIDPrefix = "ypl-cli-"
 // tokens the API accepts when SERVICE_CLIENT_ID_PREFIX is unset.
 const defaultServiceClientIDPrefix = "ypl-svc-"
 
-// serviceRoutes is every route a service client reaches, by the scope that
-// reaches it. A service client is refused with 403 everywhere else.
-var serviceRoutes = map[string][]string{
-	// What `ypl server status` calls.
-	"ypl.status.read": {"GET /api/v1/status"},
-}
-
 // identityProvider is OIDC_ISSUER, which has no default, CLI_CLIENT_ID_PREFIX,
 // or defaultClientIDPrefix when it is unset, and SERVICE_CLIENT_ID_PREFIX, or
 // defaultServiceClientIDPrefix when it is unset.
@@ -275,11 +268,11 @@ type tokenGate interface {
 // handler is every route: the probes, which answer without a token so a
 // container healthcheck can call them, and the API, which answers only a
 // request carrying a token gate accepts. A service client's token reaches only
-// the routes serviceRoutes lists for its scopes.
+// the routes handlers.ServiceRoutes lists for its scopes.
 func handler(api *handlers.Handlers, gate tokenGate) http.Handler {
 	mux := routes(gate.Ready)
 	api.Register(mux)
-	return auth.RequireBearer(gate, slog.Default())(auth.LimitServices(mux, serviceRoutes, slog.Default()))
+	return auth.RequireBearer(gate, slog.Default())(auth.LimitServices(mux, handlers.ServiceRoutes, slog.Default()))
 }
 
 // routes serves /health, which answers once the listener is bound, and /ready,

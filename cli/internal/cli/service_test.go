@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/datapointchris/ypl/cli/internal/config"
 )
 
 const (
@@ -180,12 +182,57 @@ func TestTheSecretIsNeverPrintedOrAskedForInTheFile(t *testing.T) {
 	}
 }
 
-func TestARouteOutsideTheScopeSaysWhatTheScopeCovers(t *testing.T) {
-	f := newFixture(t, refuses(http.StatusForbidden, "outside_service_scope", "client ypl-svc-worker may not reach GET /api/v1/playlists"))
+func TestARouteOutsideTheScopeReportsTheServersSentence(t *testing.T) {
+	says := "client ypl-svc-worker may not reach GET /api/v1/playlists: its scopes reach only GET /api/v1/status"
+	f := newFixture(t, refuses(http.StatusForbidden, "outside_service_scope", says))
 	f.asService(serviceIDP(t).URL, serviceSecret)
 
 	got := f.run("playlists", "list")
-	if got.code != 1 || !strings.Contains(got.err, "ypl-svc-worker") || !strings.Contains(got.err, "ypl server status") {
-		t.Errorf("exited %d with %q, want the server's sentence and what the scope covers", got.code, got.err)
+	if got.code != 1 || !strings.Contains(got.err, says) || strings.Contains(got.err, "auth login") {
+		t.Errorf("exited %d with %q, want the server's sentence whole and no login suggested", got.code, got.err)
+	}
+}
+
+// The fake provider grants whatever scope ypl asks for, so a scope the server
+// renamed, or a route it moved, passes every other test here and answers 403
+// to every scheduled run.
+func TestServerStatusCallsARouteTheRequestedScopeReaches(t *testing.T) {
+	raw, err := os.ReadFile("../../../api/handlers/testdata/wire/service-scopes.json")
+	if err != nil {
+		t.Fatalf("read the server's service scopes — run `go test ./handlers -update` in the api module: %v", err)
+	}
+	var reaches map[string][]string
+	if err := json.Unmarshal(raw, &reaches); err != nil {
+		t.Fatalf("decode the server's service scopes: %v", err)
+	}
+
+	f := newFixture(t, serves(map[string]string{"/api/v1/status": freshStatus()}))
+	f.asService(serviceIDP(t).URL, serviceSecret)
+	if got := f.run("server", "status"); got.code != 0 {
+		t.Fatalf("exited %d: %s", got.code, got.err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load the config: %v", err)
+	}
+
+	scopes := cfg.Service().Scopes
+	listed := http.NewServeMux()
+	registered := make(map[string]bool)
+	for _, scope := range scopes {
+		for _, pattern := range reaches[scope] {
+			if !registered[pattern] {
+				registered[pattern] = true
+				listed.HandleFunc(pattern, func(http.ResponseWriter, *http.Request) {})
+			}
+		}
+	}
+	if len(f.sent) == 0 {
+		t.Fatal("`ypl server status` sent nothing to hold against the scopes")
+	}
+	for _, sent := range f.sent {
+		if _, pattern := listed.Handler(httptest.NewRequest(sent.Method, sent.URL.Path, http.NoBody)); pattern == "" {
+			t.Errorf("`ypl server status` sent %s %s, which the server lists for none of %v", sent.Method, sent.URL.Path, scopes)
+		}
 	}
 }
