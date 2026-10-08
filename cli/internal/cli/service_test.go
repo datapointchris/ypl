@@ -104,7 +104,7 @@ func TestAServicesStatusAsksTheProvider(t *testing.T) {
 	got := f.run("auth", "status", "--json")
 	var status authStatus
 	decodeInto(t, got.out, &status)
-	if got.code != 0 || !status.LoggedIn || status.Mode != modeService || status.ExpiresAt == "" || sessionIn(t, got.out) != "live" {
+	if got.code != 0 || !status.LoggedIn || keyIn(t, got.out, "type") != "service_account" || status.ExpiresAt == "" || keyIn(t, got.out, "session") != "live" {
 		t.Errorf("status with a good secret: exit %d, %s, want logged in as a service until an expiry, session live", got.code, got.out)
 	}
 
@@ -114,7 +114,7 @@ func TestAServicesStatusAsksTheProvider(t *testing.T) {
 		t.Errorf("status with a refused secret: exit %d, %q, want 1 and the secret named", got.code, got.out)
 	}
 	got = f.run("auth", "status", "--json")
-	if got.code != 1 || sessionIn(t, got.out) != "rejected" {
+	if got.code != 1 || keyIn(t, got.out, "session") != "rejected" {
 		t.Errorf("status --json with a refused secret: exit %d, %s, want 1 and session rejected", got.code, got.out)
 	}
 }
@@ -129,27 +129,25 @@ func TestAServicesStatusWithTheProviderDownExitsOne(t *testing.T) {
 	got := f.run("auth", "status", "--json")
 	var status authStatus
 	decodeInto(t, got.out, &status)
-	if got.code != 1 || status.LoggedIn || status.Mode != modeService || sessionIn(t, got.out) != "unverified" {
+	if got.code != 1 || status.LoggedIn || keyIn(t, got.out, "type") != "service_account" || keyIn(t, got.out, "session") != "unverified" {
 		t.Errorf("status with the provider down: exit %d, %s, want 1, not logged in, session unverified", got.code, got.out)
 	}
 }
 
-// sessionIn is the "session" key of a status document, read by name so a
-// renamed tag fails here rather than round-tripping through authStatus.
-func sessionIn(t *testing.T, out string) any {
+// keyIn is one key of a status document, read by name so a renamed tag fails
+// here rather than round-tripping through authStatus.
+func keyIn(t *testing.T, out, key string) any {
 	t.Helper()
 	var keys map[string]any
 	decodeInto(t, out, &keys)
-	return keys["session"]
+	return keys[key]
 }
 
-func TestAPersonsStatusNamesTheLoginMode(t *testing.T) {
+func TestAPersonsStatusIsAnAuthorizedUser(t *testing.T) {
 	f := newFixture(t, serves(nil))
 
-	var status authStatus
-	decodeInto(t, f.run("auth", "status", "--json").out, &status)
-	if status.Mode != modeLogin {
-		t.Errorf("mode = %q, want %q", status.Mode, modeLogin)
+	if got := keyIn(t, f.run("auth", "status", "--json").out, "type"); got != "authorized_user" {
+		t.Errorf("type = %v, want authorized_user", got)
 	}
 }
 

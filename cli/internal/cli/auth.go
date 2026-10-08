@@ -189,14 +189,15 @@ func (a *app) authTokenCommand() *cobra.Command {
 	}
 }
 
-// authMode is which grant `ypl auth status` checked.
-type authMode string
+// credentialType is whose credential `ypl auth status` checked, spelled as
+// Google's credential files spell a person's OAuth login and a service's.
+type credentialType string
 
 const (
-	// modeLogin is the token a person logged this machine in for.
-	modeLogin authMode = "login"
-	// modeService is the client-credentials grant YPL_CLIENT_SECRET selects.
-	modeService authMode = "service"
+	// authorizedUser is the device-grant login a person made on this machine.
+	authorizedUser credentialType = "authorized_user"
+	// serviceAccount is the client-credentials grant YPL_CLIENT_SECRET selects.
+	serviceAccount credentialType = "service_account"
 )
 
 // authStatus is what `ypl auth status --json` writes. The token is opaque to
@@ -210,7 +211,7 @@ const (
 // is empty.
 type authStatus struct {
 	LoggedIn  bool                    `json:"logged_in"`
-	Mode      authMode                `json:"mode"`
+	Type      credentialType          `json:"type"`
 	ClientID  string                  `json:"client_id"`
 	Issuer    string                  `json:"issuer"`
 	ExpiresAt string                  `json:"expires_at,omitempty"`
@@ -236,9 +237,9 @@ func (a *app) authStatusCommand() *cobra.Command {
 			if err := cfg.CheckService(); err != nil {
 				return err
 			}
-			status := authStatus{Mode: modeLogin, ClientID: cfg.ClientID(), Issuer: cfg.Issuer()}
+			status := authStatus{Type: authorizedUser, ClientID: cfg.ClientID(), Issuer: cfg.Issuer()}
 			if cfg.IsService() {
-				status.Mode = modeService
+				status.Type = serviceAccount
 				serviceStatus(cmd.Context(), cfg, &status)
 			} else if err := a.loginStatus(cfg, &status); err != nil {
 				return err
