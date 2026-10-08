@@ -19,8 +19,9 @@ import (
 var errNeedsLogin = errors.New("not logged in")
 
 // newAPIClient is a client for the configured server, signed in as this
-// machine. The oauth2 client adds the bearer token to every request and
-// refreshes it when it expires, so no command here holds one.
+// machine or as the service client YPL_CLIENT_SECRET selects. The oauth2 client
+// adds the bearer token to every request and renews it when it expires, so no
+// command here holds one.
 func newAPIClient(ctx context.Context) (*api.Client, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -29,15 +30,31 @@ func newAPIClient(ctx context.Context) (*api.Client, error) {
 	if err := cfg.Check(); err != nil {
 		return nil, err
 	}
-	login := cfg.Login()
-	source, err := goclilogin.TokenSource(ctx, login, goclilogin.NewTokenStore(login))
-	if errors.Is(err, goclilogin.ErrNotLoggedIn) {
-		return nil, errNeedsLogin
+	source, err := tokenSource(ctx, cfg, goclilogin.NewTokenStore)
+	if errors.Is(err, errNeedsLogin) {
+		return nil, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("prepare the API client: %w", err)
 	}
 	return api.New(cfg.APIBase(), oauth2.NewClient(ctx, source)), nil
+}
+
+// tokenSource is the client-credentials grant when YPL_CLIENT_SECRET is set,
+// and otherwise the token this machine logged in for, read from tokens.
+func tokenSource(ctx context.Context, cfg config.Config, tokens func(goclilogin.Config) *goclilogin.TokenStore) (oauth2.TokenSource, error) {
+	if err := cfg.CheckService(); err != nil {
+		return nil, err
+	}
+	if cfg.IsService() {
+		return goclilogin.ClientCredentialsTokenSource(ctx, cfg.Service(), cfg.ClientSecret)
+	}
+	login := cfg.Login()
+	source, err := goclilogin.TokenSource(ctx, login, tokens(login))
+	if errors.Is(err, goclilogin.ErrNotLoggedIn) {
+		return nil, errNeedsLogin
+	}
+	return source, err
 }
 
 // reported is err as the sentence a person reads. A session that has to be
@@ -63,6 +80,20 @@ func reported(err error) error {
 	switch {
 	case errors.Is(err, errNeedsLogin):
 		return errors.New("not logged in — run `ypl auth login`")
+	case errors.As(err, &refusal) && refusal.Code == "outside_service_scope":
+		return fmt.Errorf("%w — a service client's scope covers `ypl server status` alone", err)
+	}
+	// A service has no login to renew, so it is pointed at its id and secret.
+	if cfg, loadErr := config.Load(); loadErr == nil && cfg.IsService() {
+		switch {
+		case goclilogin.IsSessionRejected(err):
+			return fmt.Errorf("%s refused service client %s — check YPL_CLIENT_ID and YPL_CLIENT_SECRET", cfg.Issuer(), cfg.ClientID())
+		case errors.As(err, &refusal) && refusal.Unauthorized():
+			return fmt.Errorf("the server refused the token issued to service client %s", cfg.ClientID())
+		}
+		return err
+	}
+	switch {
 	// A refused refresh arrives as the transport error of whatever request
 	// triggered it, so without this the token endpoint's URL and its raw OAuth
 	// description are what reach the terminal.

@@ -157,6 +157,29 @@ func TestAConfigWithAServerAndAnIssuerPassesItsOwnCheck(t *testing.T) {
 	}
 }
 
+// The default client id is the person's ypl-cli-<host>, so a secret is refused
+// unless the environment or the file named the client it belongs to.
+func TestASecretNeedsTheClientItBelongsTo(t *testing.T) {
+	cases := []struct {
+		name, file, env, secret string
+		refused                 bool
+	}{
+		{"a person", "", "", "", false},
+		{"a service named in the environment", "", "ypl-svc-worker", "s3cret", false},
+		{"a service named in the file", `client_id = "ypl-svc-worker"`, "", "s3cret", false},
+		{"a secret with the person's default", "", "", "s3cret", true},
+	}
+	for _, c := range cases {
+		withFile(t, c.file)
+		t.Setenv("YPL_CLIENT_ID", c.env)
+		t.Setenv("YPL_CLIENT_SECRET", c.secret)
+		err := load(t).CheckService()
+		if refused := err != nil; refused != c.refused || (refused && !strings.Contains(err.Error(), "YPL_CLIENT_ID")) {
+			t.Errorf("%s: CheckService = %v, want refused %v naming YPL_CLIENT_ID", c.name, err, c.refused)
+		}
+	}
+}
+
 func settingOf(t *testing.T, cfg Config, key string) Setting {
 	t.Helper()
 	for _, setting := range cfg.Settings {

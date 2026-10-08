@@ -22,7 +22,7 @@ The CLI, on every workstation:
 | Door | Package | Reaches | Costs |
 | --- | --- | --- | --- |
 | The ypl server | `cli/internal/api` | The configured server, over HTTPS, with a bearer token | Nothing |
-| The identity provider | `goclilogin` | The configured issuer, for discovery and the device grant | Nothing, and it is reached on every command |
+| The identity provider | `goclilogin` | The configured issuer, for discovery and the device grant, or the client-credentials grant where `YPL_CLIENT_SECRET` is set | Nothing, and it is reached on every command |
 | This machine's keychain | `goclilogin` | The OS keychain, or a mode-600 file where there is none | The refresh token lives there |
 | A browser | `pkg/browser` | Whatever `xdg-open` or `open` resolves to, once, during `ypl auth login` | A subprocess |
 | An editor | `cli/internal/editbuffer` | Whatever `$VISUAL` or `$EDITOR` names, holding the terminal, during `ypl playlists edit` | A subprocess, and the terminal until it exits |
@@ -46,7 +46,8 @@ captured stream turns that interface into a string. Anything that needs more of 
 extends that package rather than running the binary somewhere else.
 
 The CLI is given no credential of the server's and no part of the store. What it holds is a token
-for one machine, revocable on its own without touching any other.
+for one machine, revocable on its own without touching any other. A service running the CLI holds
+its own client's secret instead, in its environment, and a token that lives only for the run.
 
 ## Why yt-dlp is a dependency, and what it is allowed to reach
 
