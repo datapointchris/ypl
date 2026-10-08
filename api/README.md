@@ -107,10 +107,22 @@ return, because it is private, removed, members-only or age-restricted, is not r
 `api/cmd/reset-enrichment` shows every video enrichment has stopped reading and puts them back.
 
 The server answers `/api/v1` only to a request carrying an access token, which `api/auth`
-verifies. The token is an RFC 9068 JWT that the identity provider `OIDC_ISSUER` signed for a client
-whose id starts with `CLI_CLIENT_ID_PREFIX`, which is `ypl-cli-` when unset. The server reads the
-provider beside the sync, retrying while it is down, and `/ready` answers 200 once it has.
+verifies. The token is an RFC 9068 JWT that the identity provider `OIDC_ISSUER` signed. The server
+reads the provider beside the sync, retrying while it is down, and `/ready` answers 200 once it has.
 `/health` and `/ready` answer without a token.
+
+The client id the token was issued to decides who it speaks for. An id starting with
+`CLI_CLIENT_ID_PREFIX`, `ypl-cli-` when unset, is a person's CLI, and its token must name the person
+in `sub`. An id starting with `SERVICE_CLIENT_ID_PREFIX`, `ypl-svc-` when unset, is a service that
+authenticated with the client-credentials grant. Its token speaks for no person, and must carry its
+scopes as a non-empty `scp` list. A token from any other client is refused with 401.
+
+A service reaches only the routes its scopes list, and every other request it makes is refused with
+403 and `outside_service_scope`. The list is `serviceRoutes` in `api/main.go`:
+
+| Scope | Reaches |
+| --- | --- |
+| `ypl.status.read` | `GET /api/v1/status` |
 
 | Request | Answers with |
 | --- | --- |

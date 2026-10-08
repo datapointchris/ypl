@@ -1,5 +1,13 @@
 // Package auth verifies the RFC 9068 JWT access tokens the identity provider
 // issues to the ypl CLI, and refuses every other request to the API.
+//
+// The client_id prefix decides whose token it is. A `ypl-cli-` client is a
+// person's CLI and must carry a subject. A `ypl-svc-` client is a service with
+// no person present, authenticated through the client-credentials grant. It
+// must carry scopes and reaches only the routes they list. A missing subject
+// cannot decide it: the provider leaves `sub` off a client-credentials token,
+// but RFC 9068 requires one, and a release that adds it would make a service
+// look like a person.
 package auth
 
 import (
@@ -8,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -43,15 +52,21 @@ const signingAlgorithm = jose.RS256
 type Identity struct {
 	Subject  string
 	ClientID string
+
+	// Service is set for a service client's token, which carries Scopes and
+	// no Subject. LimitServices keeps it to the routes Scopes list.
+	Service bool
+	Scopes  []string
 }
 
 // Verifier checks token signatures against the issuer's published keys and the
 // claims against this API's expectations.
 type Verifier struct {
-	issuer         string
-	clientIDPrefix string
-	keys           *keySet
-	now            func() time.Time
+	issuer                string
+	clientIDPrefix        string
+	serviceClientIDPrefix string
+	keys                  *keySet
+	now                   func() time.Time
 }
 
 // namedAgent sets the User-Agent on every request to the provider.
@@ -77,10 +92,17 @@ type discoveryDocument struct {
 // per-product half of a CLI client's id, `ypl-cli-` for `ypl-cli-<host>`, and is
 // what keeps a token issued to another product's CLI from being accepted: the
 // device authorization grant leaves the audience claim empty, so it cannot carry
-// that isolation. A provider that cannot be read is ErrProviderUnavailable.
-func NewVerifier(ctx context.Context, issuer, clientIDPrefix string) (*Verifier, error) {
-	if issuer == "" || clientIDPrefix == "" {
-		return nil, errors.New("auth: issuer and clientIDPrefix are both required")
+// that isolation. serviceClientIDPrefix, `ypl-svc-`, does the same for service
+// clients. A provider that cannot be read is ErrProviderUnavailable.
+//
+// Neither prefix may start the other. Otherwise one client would match both,
+// and which kind it was would depend on the order they are checked in.
+func NewVerifier(ctx context.Context, issuer, clientIDPrefix, serviceClientIDPrefix string) (*Verifier, error) {
+	if issuer == "" || clientIDPrefix == "" || serviceClientIDPrefix == "" {
+		return nil, errors.New("auth: issuer, clientIDPrefix and serviceClientIDPrefix are all required")
+	}
+	if strings.HasPrefix(clientIDPrefix, serviceClientIDPrefix) || strings.HasPrefix(serviceClientIDPrefix, clientIDPrefix) {
+		return nil, fmt.Errorf("auth: client prefixes %q and %q overlap", clientIDPrefix, serviceClientIDPrefix)
 	}
 	doc, err := readDiscovery(ctx, issuer)
 	if err != nil {
@@ -96,7 +118,7 @@ func NewVerifier(ctx context.Context, issuer, clientIDPrefix string) (*Verifier,
 	if _, err := keys.fetch(); err != nil {
 		return nil, err
 	}
-	return &Verifier{issuer: issuer, clientIDPrefix: clientIDPrefix, keys: keys, now: time.Now}, nil
+	return &Verifier{issuer: issuer, clientIDPrefix: clientIDPrefix, serviceClientIDPrefix: serviceClientIDPrefix, keys: keys, now: time.Now}, nil
 }
 
 func readDiscovery(ctx context.Context, issuer string) (discoveryDocument, error) {
@@ -128,6 +150,10 @@ type accessTokenClaims struct {
 	Subject  string `json:"sub"`
 	ClientID string `json:"client_id"`
 	Expiry   int64  `json:"exp"`
+
+	// Scopes is decoded only for a service client, so a person's token whose
+	// scp has some other shape is not refused for it.
+	Scopes json.RawMessage `json:"scp"`
 }
 
 // Verify checks the header type, the signature, and then every claim this API
@@ -151,14 +177,35 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	switch {
 	case claims.Issuer != v.issuer:
 		return Identity{}, fmt.Errorf("%w: issuer %q", ErrUnauthorized, claims.Issuer)
-	case claims.Subject == "":
-		return Identity{}, fmt.Errorf("%w: no subject", ErrUnauthorized)
-	case !strings.HasPrefix(claims.ClientID, v.clientIDPrefix):
-		return Identity{}, fmt.Errorf("%w: client %q is not a %s* client", ErrUnauthorized, claims.ClientID, v.clientIDPrefix)
 	case claims.Expiry == 0 || v.now().After(time.Unix(claims.Expiry, 0)):
 		return Identity{}, fmt.Errorf("%w: expired", ErrUnauthorized)
+	case strings.HasPrefix(claims.ClientID, v.clientIDPrefix):
+		if claims.Subject == "" {
+			return Identity{}, fmt.Errorf("%w: no subject", ErrUnauthorized)
+		}
+		return Identity{Subject: claims.Subject, ClientID: claims.ClientID}, nil
+	case strings.HasPrefix(claims.ClientID, v.serviceClientIDPrefix):
+		scopes, err := serviceScopes(claims.Scopes)
+		if err != nil {
+			return Identity{}, fmt.Errorf("%w: service client %q: %w", ErrUnauthorized, claims.ClientID, err)
+		}
+		return Identity{ClientID: claims.ClientID, Service: true, Scopes: scopes}, nil
+	default:
+		return Identity{}, fmt.Errorf("%w: client %q is neither a %s* nor a %s* client", ErrUnauthorized, claims.ClientID, v.clientIDPrefix, v.serviceClientIDPrefix)
 	}
-	return Identity{Subject: claims.Subject, ClientID: claims.ClientID}, nil
+}
+
+// serviceScopes is scp as the provider sends it to a service client: a list of
+// at least one non-empty string. A request that named no scope gets `[]`.
+func serviceScopes(raw json.RawMessage) ([]string, error) {
+	var scopes []string
+	if err := json.Unmarshal(raw, &scopes); err != nil {
+		return nil, fmt.Errorf("scp is not a list of strings: %s", raw)
+	}
+	if len(scopes) == 0 || slices.Contains(scopes, "") {
+		return nil, fmt.Errorf("scp names no scope: %s", raw)
+	}
+	return scopes, nil
 }
 
 // parseAccessToken reads raw as a compact JWS signed with signingAlgorithm and

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/datapointchris/ypl/api/wire"
@@ -99,7 +100,7 @@ func TestARequestWhoseCallerWentAwayGetsNoAnswer(t *testing.T) {
 func TestAVerifiedTokensIdentityReachesTheHandler(t *testing.T) {
 	want := Identity{Subject: "user-uuid", ClientID: "ypl-cli-desk"}
 	rec, reached := serve(stubVerifier{identity: want}, request("/api/v1/playlists", "Bearer a.b.c"))
-	if rec.Code != http.StatusOK || reached == nil || *reached != want {
+	if rec.Code != http.StatusOK || reached == nil || !reflect.DeepEqual(*reached, want) {
 		t.Fatalf("answered %d with identity %v, want 200 and %+v", rec.Code, reached, want)
 	}
 }

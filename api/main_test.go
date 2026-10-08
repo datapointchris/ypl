@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -258,64 +259,104 @@ func TestTheShutdownGraceOutlastsAPlaylistWrite(t *testing.T) {
 	}
 }
 
-func TestIdentityProviderRequiresAnIssuerAndDefaultsThePrefix(t *testing.T) {
+func TestIdentityProviderRequiresAnIssuerAndDefaultsThePrefixes(t *testing.T) {
 	t.Setenv("OIDC_ISSUER", "")
-	if _, _, err := identityProvider(); err == nil {
+	if _, _, _, err := identityProvider(); err == nil {
 		t.Fatal("identityProvider with OIDC_ISSUER unset succeeded, want a refusal")
 	}
 
 	t.Setenv("OIDC_ISSUER", "https://id.example")
 	t.Setenv("CLI_CLIENT_ID_PREFIX", "")
-	if issuer, prefix, err := identityProvider(); err != nil || issuer != "https://id.example" || prefix != "ypl-cli-" {
-		t.Fatalf("identityProvider = %q, %q, %v, want the issuer and ypl-cli-", issuer, prefix, err)
+	t.Setenv("SERVICE_CLIENT_ID_PREFIX", "")
+	issuer, cli, service, err := identityProvider()
+	if err != nil || issuer != "https://id.example" || cli != "ypl-cli-" || service != "ypl-svc-" {
+		t.Fatalf("identityProvider = %q, %q, %q, %v, want the issuer, ypl-cli- and ypl-svc-", issuer, cli, service, err)
 	}
 	t.Setenv("CLI_CLIENT_ID_PREFIX", "ypl-test-")
-	if _, prefix, err := identityProvider(); err != nil || prefix != "ypl-test-" {
-		t.Fatalf("identityProvider prefix = %q, %v, want ypl-test-", prefix, err)
+	t.Setenv("SERVICE_CLIENT_ID_PREFIX", "ypl-job-")
+	if _, cli, service, err := identityProvider(); err != nil || cli != "ypl-test-" || service != "ypl-job-" {
+		t.Fatalf("identityProvider prefixes = %q, %q, %v, want ypl-test- and ypl-job-", cli, service, err)
 	}
 }
 
-// acceptOnly is ready, and accepts the one token it holds and rejects every
-// other.
-type acceptOnly string
+// acceptOnly is ready, and accepts the tokens it holds as their identities and
+// rejects every other.
+type acceptOnly map[string]auth.Identity
 
 func (a acceptOnly) Verify(_ context.Context, raw string) (auth.Identity, error) {
-	if raw != string(a) {
+	identity, ok := a[raw]
+	if !ok {
 		return auth.Identity{}, auth.ErrUnauthorized
 	}
-	return auth.Identity{Subject: "user", ClientID: "ypl-cli-test"}, nil
+	return identity, nil
 }
 
 func (acceptOnly) Ready() bool { return true }
 
-func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
+var (
+	person  = auth.Identity{Subject: "user", ClientID: "ypl-cli-test"}
+	service = auth.Identity{ClientID: "ypl-svc-test", Service: true, Scopes: []string{"ypl.status.read"}}
+)
+
+func apiHandler(t *testing.T, gate tokenGate) http.Handler {
+	t.Helper()
 	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "api.db"))
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
-	defer func() { _ = st.Close() }()
-	h := handler(handlers.New(st, nil, handlers.Sync{}, slog.Default()), acceptOnly("good"))
+	t.Cleanup(func() { _ = st.Close() })
+	return handler(handlers.New(st, nil, handlers.Sync{}, slog.Default()), gate)
+}
+
+func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
+	h := apiHandler(t, acceptOnly{"good": person, "service": service})
 
 	cases := []struct {
-		path, token string
-		want        int
+		method, path, token string
+		want                int
 	}{
-		{"/api/v1/playlists", "", http.StatusUnauthorized},
-		{"/api/v1/playlists", "bad", http.StatusUnauthorized},
-		{"/api/v1/playlists", "good", http.StatusOK},
-		{"/api/v1/status", "good", http.StatusOK},
-		{"/health", "", http.StatusOK},
-		{"/ready", "", http.StatusOK},
+		{http.MethodGet, "/api/v1/playlists", "", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/playlists", "bad", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/playlists", "good", http.StatusOK},
+		{http.MethodGet, "/api/v1/status", "good", http.StatusOK},
+		{http.MethodGet, "/api/v1/status", "service", http.StatusOK},
+		{http.MethodHead, "/api/v1/status", "service", http.StatusOK},
+		{http.MethodGet, "/api/v1/playlists", "service", http.StatusForbidden},
+		{http.MethodPost, "/api/v1/playlists", "service", http.StatusForbidden},
+		{http.MethodGet, "/health", "", http.StatusOK},
+		{http.MethodGet, "/ready", "", http.StatusOK},
 	}
 	for _, c := range cases {
-		req := httptest.NewRequest(http.MethodGet, c.path, http.NoBody)
+		req := httptest.NewRequest(c.method, c.path, http.NoBody)
 		if c.token != "" {
 			req.Header.Set("Authorization", "Bearer "+c.token)
 		}
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != c.want {
-			t.Errorf("GET %s with token %q = %d, want %d", c.path, c.token, rec.Code, c.want)
+			t.Errorf("%s %s with token %q = %d, want %d", c.method, c.path, c.token, rec.Code, c.want)
+		}
+	}
+}
+
+// A pattern in serviceRoutes that no route registers matches nothing, so the
+// scope it was written for reaches nothing and every call answers 403.
+func TestEveryServiceRouteIsARegisteredRoute(t *testing.T) {
+	mux := routes(alwaysReady)
+	handlers.New(nil, nil, handlers.Sync{}, slog.Default()).Register(mux)
+	wildcard := regexp.MustCompile(`\{[^}]*\}`)
+
+	for scope, patterns := range serviceRoutes {
+		for _, pattern := range patterns {
+			method, path, ok := strings.Cut(pattern, " ")
+			if !ok {
+				t.Errorf("%s: %q names no method, so no request is routed to it", scope, pattern)
+				continue
+			}
+			req := httptest.NewRequest(method, wildcard.ReplaceAllString(path, "x"), http.NoBody)
+			if _, routed := mux.Handler(req); routed != pattern {
+				t.Errorf("%s: %s is routed to %q, want %q", scope, req.URL.Path, routed, pattern)
+			}
 		}
 	}
 }

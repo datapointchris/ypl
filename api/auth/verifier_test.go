@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -153,9 +154,22 @@ func (p *testProvider) claims() map[string]any {
 	}
 }
 
+// serviceClaims is what the provider issues through the client-credentials
+// grant: no subject, and scp as a list.
+func (p *testProvider) serviceClaims() map[string]any {
+	return map[string]any{
+		"iss":       p.server.URL,
+		"client_id": "ypl-svc-worker",
+		"scp":       []string{"ypl.status.read"},
+		"aud":       []string{},
+		"iat":       time.Now().Unix(),
+		"exp":       time.Now().Add(5 * time.Minute).Unix(),
+	}
+}
+
 func (p *testProvider) verifier(t *testing.T) *Verifier {
 	t.Helper()
-	v, err := NewVerifier(context.Background(), p.server.URL, "ypl-cli-")
+	v, err := NewVerifier(context.Background(), p.server.URL, "ypl-cli-", "ypl-svc-")
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -169,8 +183,42 @@ func TestAnAccessTokenForThisProductIsAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if identity != (Identity{Subject: "user-uuid", ClientID: "ypl-cli-desk"}) {
+	if !reflect.DeepEqual(identity, Identity{Subject: "user-uuid", ClientID: "ypl-cli-desk"}) {
 		t.Fatalf("identity = %+v", identity)
+	}
+}
+
+func TestAServiceTokenIsAcceptedWithItsScopes(t *testing.T) {
+	p := newTestProvider(t)
+
+	identity, err := p.verifier(t).Verify(context.Background(), sign(t, "at+jwt", p.serviceClaims(), p.key, testKeyID))
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	want := Identity{ClientID: "ypl-svc-worker", Service: true, Scopes: []string{"ypl.status.read"}}
+	if !reflect.DeepEqual(identity, want) {
+		t.Fatalf("identity = %+v, want %+v", identity, want)
+	}
+}
+
+// RFC 9068 requires sub, so a provider release may start sending one on these
+// tokens. The client id still decides.
+func TestASubjectDoesNotMakeAServiceAPerson(t *testing.T) {
+	p := newTestProvider(t)
+	claims := p.serviceClaims()
+	claims["sub"] = "user-uuid"
+
+	identity, err := p.verifier(t).Verify(context.Background(), sign(t, "at+jwt", claims, p.key, testKeyID))
+	if err != nil || !identity.Service || identity.Subject != "" {
+		t.Fatalf("Verify = %+v, %v, want a service with no subject", identity, err)
+	}
+}
+
+func TestOverlappingClientPrefixesAreRefused(t *testing.T) {
+	p := newTestProvider(t)
+	_, err := NewVerifier(context.Background(), p.server.URL, "ypl-", "ypl-svc-")
+	if err == nil || errors.Is(err, ErrProviderUnavailable) {
+		t.Fatalf("NewVerifier with overlapping prefixes = %v, want a refusal that is not an outage", err)
 	}
 }
 
@@ -182,6 +230,11 @@ func TestEveryBadTokenIsUnauthorized(t *testing.T) {
 		edit(claims)
 		return claims
 	}
+	service := func(edit func(map[string]any)) map[string]any {
+		claims := p.serviceClaims()
+		edit(claims)
+		return claims
+	}
 	hmacSigner, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: make([]byte, 32)}, (&jose.SignerOptions{}).WithType("at+jwt"))
 	if err != nil {
 		t.Fatalf("new HMAC signer: %v", err)
@@ -189,18 +242,23 @@ func TestEveryBadTokenIsUnauthorized(t *testing.T) {
 	cases := map[string]string{
 		// An id_token carries the same issuer and signature, and is handed to the
 		// client. Only its header type tells it apart.
-		"an id_token":                 sign(t, "JWT", p.claims(), p.key, testKeyID),
-		"a foreign signing key":       sign(t, "at+jwt", p.claims(), foreign, testKeyID),
-		"a foreign key under no kid":  sign(t, "at+jwt", p.claims(), foreign, ""),
-		"another signing algorithm":   serialize(t, hmacSigner, p.claims()),
-		"an expired token":            sign(t, "at+jwt", with(func(c map[string]any) { c["exp"] = time.Now().Add(-time.Minute).Unix() }), p.key, testKeyID),
-		"a token with no expiry":      sign(t, "at+jwt", with(func(c map[string]any) { delete(c, "exp") }), p.key, testKeyID),
-		"another issuer":              sign(t, "at+jwt", with(func(c map[string]any) { c["iss"] = "https://other.example" }), p.key, testKeyID),
-		"another product's client":    sign(t, "at+jwt", with(func(c map[string]any) { c["client_id"] = "other-cli-desk" }), p.key, testKeyID),
-		"a token with no subject":     sign(t, "at+jwt", with(func(c map[string]any) { delete(c, "sub") }), p.key, testKeyID),
-		"text that is not a JWT":      "not-a-jwt",
-		"a header that is not JSON":   "bm90LWpzb24.e30.sig",
-		"a JWT with a fourth segment": p.token(t) + ".extra",
+		"an id_token":                  sign(t, "JWT", p.claims(), p.key, testKeyID),
+		"a foreign signing key":        sign(t, "at+jwt", p.claims(), foreign, testKeyID),
+		"a foreign key under no kid":   sign(t, "at+jwt", p.claims(), foreign, ""),
+		"another signing algorithm":    serialize(t, hmacSigner, p.claims()),
+		"an expired token":             sign(t, "at+jwt", with(func(c map[string]any) { c["exp"] = time.Now().Add(-time.Minute).Unix() }), p.key, testKeyID),
+		"a token with no expiry":       sign(t, "at+jwt", with(func(c map[string]any) { delete(c, "exp") }), p.key, testKeyID),
+		"another issuer":               sign(t, "at+jwt", with(func(c map[string]any) { c["iss"] = "https://other.example" }), p.key, testKeyID),
+		"another product's client":     sign(t, "at+jwt", with(func(c map[string]any) { c["client_id"] = "other-cli-desk" }), p.key, testKeyID),
+		"a token with no subject":      sign(t, "at+jwt", with(func(c map[string]any) { delete(c, "sub") }), p.key, testKeyID),
+		"a service with no scp":        sign(t, "at+jwt", service(func(c map[string]any) { delete(c, "scp") }), p.key, testKeyID),
+		"a service with an empty scp":  sign(t, "at+jwt", service(func(c map[string]any) { c["scp"] = []string{} }), p.key, testKeyID),
+		"a service with scp a string":  sign(t, "at+jwt", service(func(c map[string]any) { c["scp"] = "ypl.status.read" }), p.key, testKeyID),
+		"a service with a blank scope": sign(t, "at+jwt", service(func(c map[string]any) { c["scp"] = []string{""} }), p.key, testKeyID),
+		"an expired service token":     sign(t, "at+jwt", service(func(c map[string]any) { c["exp"] = time.Now().Add(-time.Minute).Unix() }), p.key, testKeyID),
+		"text that is not a JWT":       "not-a-jwt",
+		"a header that is not JSON":    "bm90LWpzb24.e30.sig",
+		"a JWT with a fourth segment":  p.token(t) + ".extra",
 	}
 	v := p.verifier(t)
 	for name, raw := range cases {
@@ -233,7 +291,7 @@ func TestKeysTheProviderCannotServeLeaveItUnavailable(t *testing.T) {
 	for name, edit := range cases {
 		p := newTestProvider(t)
 		p.set(edit)
-		if _, err := NewVerifier(context.Background(), p.server.URL, "ypl-cli-"); !errors.Is(err, ErrProviderUnavailable) {
+		if _, err := NewVerifier(context.Background(), p.server.URL, "ypl-cli-", "ypl-svc-"); !errors.Is(err, ErrProviderUnavailable) {
 			t.Errorf("%s: NewVerifier = %v, want ErrProviderUnavailable", name, err)
 		}
 	}
@@ -315,7 +373,7 @@ func TestCallersWaitingTogetherShareOneRead(t *testing.T) {
 
 func TestAnIssuerAdvertisingAnotherNameIsRefused(t *testing.T) {
 	p := newTestProvider(t)
-	_, err := NewVerifier(context.Background(), p.server.URL+"/", "ypl-cli-")
+	_, err := NewVerifier(context.Background(), p.server.URL+"/", "ypl-cli-", "ypl-svc-")
 	if err == nil || errors.Is(err, ErrProviderUnavailable) {
 		t.Fatalf("NewVerifier with a mismatched issuer = %v, want a refusal that is not an outage", err)
 	}

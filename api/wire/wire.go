@@ -29,6 +29,9 @@ const (
 	CodeMissingToken Code = "missing_token"
 	CodeInvalidToken Code = "invalid_token"
 
+	// 403
+	CodeOutsideServiceScope Code = "outside_service_scope"
+
 	// 404
 	CodeNotFound      Code = "not_found"
 	CodeRouteNotFound Code = "route_not_found"

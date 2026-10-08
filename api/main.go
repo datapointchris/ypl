@@ -13,9 +13,10 @@
 //
 // It answers /api/v1 only to a request carrying an access token the identity
 // provider OIDC_ISSUER signed for a client whose id starts with
-// CLI_CLIENT_ID_PREFIX (ypl-cli- when unset). The provider is read beside the
-// sync rather than before it, so a provider that is down holds back only the
-// requests that need a token.
+// CLI_CLIENT_ID_PREFIX (ypl-cli- when unset) or SERVICE_CLIENT_ID_PREFIX
+// (ypl-svc- when unset). A service client reaches only the routes its scopes
+// list. The provider is read beside the sync rather than before it, so a
+// provider that is down holds back only the requests that need a token.
 package main
 
 import (
@@ -96,7 +97,7 @@ func start(ctx context.Context) error {
 			return fmt.Errorf("%w: install yt-dlp or set YTDLP_PATH to it", err)
 		}
 	}
-	issuer, clientIDPrefix, err := identityProvider()
+	issuer, clientIDPrefix, serviceClientIDPrefix, err := identityProvider()
 	if err != nil {
 		return err
 	}
@@ -121,7 +122,7 @@ func start(ctx context.Context) error {
 	edits := reconcile.NewEdits()
 	runner := reconcile.NewRunner(st, syncChannel, tally, edits, interval)
 	worker := reconcile.NewWorker(runner, interval, slog.Default())
-	provider := auth.NewConnecting(issuer, clientIDPrefix)
+	provider := auth.NewConnecting(issuer, clientIDPrefix, serviceClientIDPrefix)
 	api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, slog.Default())
 	work := func(ctx context.Context) {
 		var wg sync.WaitGroup
@@ -135,18 +136,30 @@ func start(ctx context.Context) error {
 	return run(ctx, ":"+envOr("PORT", "8080"), handler(api, provider), work, api.Drain)
 }
 
-// defaultClientIDPrefix starts the id of every client whose tokens the API
-// accepts when CLI_CLIENT_ID_PREFIX is unset.
+// defaultClientIDPrefix starts the id of every person's CLI client whose tokens
+// the API accepts when CLI_CLIENT_ID_PREFIX is unset.
 const defaultClientIDPrefix = "ypl-cli-"
 
-// identityProvider is OIDC_ISSUER, which has no default, and
-// CLI_CLIENT_ID_PREFIX, or defaultClientIDPrefix when it is unset.
-func identityProvider() (issuer, clientIDPrefix string, err error) {
+// defaultServiceClientIDPrefix starts the id of every service client whose
+// tokens the API accepts when SERVICE_CLIENT_ID_PREFIX is unset.
+const defaultServiceClientIDPrefix = "ypl-svc-"
+
+// serviceRoutes is every route a service client reaches, by the scope that
+// reaches it. A service client is refused with 403 everywhere else.
+var serviceRoutes = map[string][]string{
+	// What `ypl server status` calls.
+	"ypl.status.read": {"GET /api/v1/status"},
+}
+
+// identityProvider is OIDC_ISSUER, which has no default, CLI_CLIENT_ID_PREFIX,
+// or defaultClientIDPrefix when it is unset, and SERVICE_CLIENT_ID_PREFIX, or
+// defaultServiceClientIDPrefix when it is unset.
+func identityProvider() (issuer, clientIDPrefix, serviceClientIDPrefix string, err error) {
 	issuer = os.Getenv("OIDC_ISSUER")
 	if issuer == "" {
-		return "", "", errors.New("OIDC_ISSUER is unset: set it to the identity provider whose keys sign the CLI's access tokens")
+		return "", "", "", errors.New("OIDC_ISSUER is unset: set it to the identity provider whose keys sign the CLI's access tokens")
 	}
-	return issuer, envOr("CLI_CLIENT_ID_PREFIX", defaultClientIDPrefix), nil
+	return issuer, envOr("CLI_CLIENT_ID_PREFIX", defaultClientIDPrefix), envOr("SERVICE_CLIENT_ID_PREFIX", defaultServiceClientIDPrefix), nil
 }
 
 // syncInterval is SYNC_INTERVAL as a duration, or defaultSyncInterval when it is
@@ -261,11 +274,12 @@ type tokenGate interface {
 
 // handler is every route: the probes, which answer without a token so a
 // container healthcheck can call them, and the API, which answers only a
-// request carrying a token gate accepts.
+// request carrying a token gate accepts. A service client's token reaches only
+// the routes serviceRoutes lists for its scopes.
 func handler(api *handlers.Handlers, gate tokenGate) http.Handler {
 	mux := routes(gate.Ready)
 	api.Register(mux)
-	return auth.RequireBearer(gate, slog.Default())(mux)
+	return auth.RequireBearer(gate, slog.Default())(auth.LimitServices(mux, serviceRoutes, slog.Default()))
 }
 
 // routes serves /health, which answers once the listener is bound, and /ready,

@@ -15,16 +15,20 @@ import (
 // holds back only the requests that need a token, and the rest of the process
 // runs.
 type Connecting struct {
-	issuer, clientIDPrefix string
-	firstRetry, lastRetry  time.Duration
+	issuer, clientIDPrefix, serviceClientIDPrefix string
+	firstRetry, lastRetry                         time.Duration
 
 	verifier atomic.Pointer[Verifier]
 }
 
-// NewConnecting is a Connecting for the provider issuer and the clients whose
-// ids start with clientIDPrefix.
-func NewConnecting(issuer, clientIDPrefix string) *Connecting {
-	return &Connecting{issuer: issuer, clientIDPrefix: clientIDPrefix, firstRetry: time.Second, lastRetry: time.Minute}
+// NewConnecting is a Connecting for the provider issuer, the person's CLI
+// clients whose ids start with clientIDPrefix, and the service clients whose
+// ids start with serviceClientIDPrefix.
+func NewConnecting(issuer, clientIDPrefix, serviceClientIDPrefix string) *Connecting {
+	return &Connecting{
+		issuer: issuer, clientIDPrefix: clientIDPrefix, serviceClientIDPrefix: serviceClientIDPrefix,
+		firstRetry: time.Second, lastRetry: time.Minute,
+	}
 }
 
 // Run builds the Verifier, retrying after each failure to reach the provider
@@ -35,7 +39,7 @@ func NewConnecting(issuer, clientIDPrefix string) *Connecting {
 func (c *Connecting) Run(ctx context.Context, log *slog.Logger) {
 	wait := c.firstRetry
 	for {
-		verifier, err := NewVerifier(ctx, c.issuer, c.clientIDPrefix)
+		verifier, err := NewVerifier(ctx, c.issuer, c.clientIDPrefix, c.serviceClientIDPrefix)
 		switch {
 		case err == nil:
 			c.verifier.Store(verifier)
