@@ -1,5 +1,5 @@
 // Package auth verifies the RFC 9068 JWT access tokens the identity provider
-// issues to the ypl CLI, and refuses every other request to the API.
+// signs for this product's clients, and refuses every other request to the API.
 //
 // The client_id prefix decides whose token it is. A `ypl-cli-` client is a
 // person's CLI and must carry a subject. A `ypl-svc-` client is a service with

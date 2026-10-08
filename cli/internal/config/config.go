@@ -218,16 +218,16 @@ func (c Config) Service() goclilogin.ServiceClient {
 	return goclilogin.ServiceClient{Issuer: c.Issuer(), ClientID: c.ClientID(), Scopes: []string{serviceScope}}
 }
 
-// CheckService refuses a secret whose client id is the default. That default is
-// the person's ypl-cli-<host>, so the secret would be sent as that client, and
-// `ypl auth logout` would reach that person's stored token.
+// CheckService refuses a secret whose client id is the default, the person's
+// public ypl-cli-<host>, which no secret belongs to. Refusing here names
+// YPL_CLIENT_ID rather than relaying the provider's invalid_client.
 func (c Config) CheckService() error {
 	if !c.IsService() {
 		return nil
 	}
 	i := slices.IndexFunc(c.Settings, func(s Setting) bool { return s.Key == KeyClientID })
 	if i >= 0 && c.Settings[i].Layer == LayerDefault {
-		return fmt.Errorf("%s is set but no client id is — set YPL_CLIENT_ID to the service client the secret belongs to, such as ypl-svc-<machine>", clientSecretEnv)
+		return fmt.Errorf("%s is set but the client id is still the default %s — set YPL_CLIENT_ID, or %s in the config file, to the service client the secret belongs to, such as ypl-svc-<machine>", clientSecretEnv, c.ClientID(), KeyClientID)
 	}
 	return nil
 }
