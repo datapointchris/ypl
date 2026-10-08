@@ -2,7 +2,7 @@ module github.com/datapointchris/ypl/cli
 
 go 1.26.5
 
-toolchain go1.26.6
+toolchain go1.26.9
 
 require (
 	github.com/BurntSushi/toml v1.6.0
