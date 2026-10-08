@@ -155,7 +155,7 @@ func TestASecretWithoutItsClientIsRefused(t *testing.T) {
 	f.asService(serviceIDP(t).URL, serviceSecret)
 	t.Setenv("YPL_CLIENT_ID", "")
 
-	for _, args := range [][]string{{"server", "status"}, {"auth", "status"}, {"auth", "token"}} {
+	for _, args := range [][]string{{"server", "status"}, {"auth", "status"}, {"auth", "token"}, {"auth", "login"}, {"auth", "logout"}} {
 		got := f.run(args...)
 		if got.code == 0 || !strings.Contains(got.err, "YPL_CLIENT_ID") {
 			t.Errorf("%v: exit %d with %q, want it refused naming YPL_CLIENT_ID", args, got.code, got.err)

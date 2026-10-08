@@ -60,6 +60,9 @@ func (a *app) authLoginCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := cfg.CheckService(); err != nil {
+				return err
+			}
 			if cfg.IsService() {
 				return fmt.Errorf("YPL_CLIENT_SECRET is set, so ypl authenticates as service client %s with no login — unset it to log in as a person", cfg.ClientID())
 			}
@@ -126,6 +129,9 @@ func (a *app) authLogoutCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loginConfig()
 			if err != nil {
+				return err
+			}
+			if err := cfg.CheckService(); err != nil {
 				return err
 			}
 			if cfg.IsService() {
