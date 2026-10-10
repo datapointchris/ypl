@@ -18,8 +18,8 @@ func (a *app) videosCommand() *cobra.Command {
 		Use:     "videos",
 		Short:   "Every video across all playlists",
 		GroupID: groupVideos,
-		RunE:    requireSubcommand,
 	}
+	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.videosListCommand(), a.videosShowCommand(), a.videosSortsCommand())
 	return cmd
 }

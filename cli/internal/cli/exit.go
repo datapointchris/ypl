@@ -17,17 +17,6 @@ type exitCode int
 
 func (e exitCode) Error() string { return "" }
 
-// requireSubcommand is what a namespace runs. A namespace expects another word
-// after it, so a bare invocation is ambiguous and shows help; a word that names
-// no subcommand is a mistake, answered with the subcommands near it, and cobra
-// would otherwise show help for that too.
-func requireSubcommand(cmd *cobra.Command, args []string) error {
-	if len(args) == 0 {
-		return cmd.Help()
-	}
-	return goclikit.UnknownCommand(cmd, args[0])
-}
-
 // moved is a hidden command answering name with the command line to type
 // instead. Whatever it is given, it refuses as a usage mistake, so a habit or
 // a script meets the command's place rather than a bare "unknown command".

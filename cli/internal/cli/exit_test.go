@@ -218,6 +218,26 @@ func TestEveryNamespaceShowsHelpWhenGivenNothing(t *testing.T) {
 	}
 }
 
+// Cobra parses flags and answers --help before it validates arguments, so a
+// mistyped word followed by either would be reported as the flag, or answered
+// with the namespace's help and 0, and the word never named.
+func TestAWordNamingNoCommandIsRefusedWhateverFollowsIt(t *testing.T) {
+	for _, namespace := range namespaces(newRootCommand(&app{}), nil) {
+		for _, after := range []string{"--json", "--help", "-h"} {
+			args := append(append([]string{}, namespace...), "bogus", after)
+			got := newFixture(t, serves(nil)).run(args...)
+			if got.code != 2 || !strings.Contains(got.err, `unknown command "bogus"`) {
+				t.Errorf("%v exited %d saying %q, want 2 and the word refused", args, got.code, got.err)
+			}
+		}
+	}
+
+	// A command that runs takes a word as its argument, so help on it is help.
+	if got := newFixture(t, serves(nil)).run("playlists", "show", "bogus", "--help"); got.code != 0 || got.out == "" {
+		t.Errorf("playlists show bogus --help exited %d having written %q, want its help and 0", got.code, got.out)
+	}
+}
+
 // The server's sentence is what says which playlist was not found, so it
 // reaches the terminal rather than being replaced with a status code.
 func TestARefusalFromTheServerCarriesItsOwnSentence(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
@@ -18,8 +19,8 @@ func (a *app) playlistsCommand() *cobra.Command {
 		Long: "Name a playlist by its title, its slug from Tab, or its id.\n" +
 			"`show` also takes part of a title; a change takes the whole of it.\n" +
 			"A change happens on YouTube at once. An edit is pushed there as soon as it is saved.",
-		RunE: requireSubcommand,
 	}
+	goclikit.AsNamespace(cmd)
 	splitReadingFromChanging(cmd)
 	cmd.AddCommand(
 		a.playlistsListCommand(),

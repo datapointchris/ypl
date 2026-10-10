@@ -27,8 +27,8 @@ func (a *app) playsCommand() *cobra.Command {
 		GroupID: groupPlays,
 		Long: "`ypl play` records a video once it has played long enough.\n" +
 			"Name a play by the number in the PLAY column of `ypl plays list`.",
-		RunE: requireSubcommand,
 	}
+	goclikit.AsNamespace(cmd)
 	splitReadingFromChanging(cmd)
 	cmd.AddCommand(a.playsListCommand(), a.playsShowCommand(), a.playsAddCommand(), a.playsDeleteCommand())
 	return cmd

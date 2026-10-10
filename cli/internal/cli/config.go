@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/config"
@@ -16,8 +17,8 @@ func newConfigCommand() *cobra.Command {
 		GroupID: groupSetup,
 		Long: "The server's address and its identity provider, from the config file or\n" +
 			"YPL_API_BASE and YPL_OIDC_ISSUER.",
-		RunE: requireSubcommand,
 	}
+	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(newConfigShowCommand(), newConfigPathCommand(), newConfigExampleCommand())
 	return cmd
 }

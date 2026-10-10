@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
@@ -23,8 +24,8 @@ func (a *app) serverCommand() *cobra.Command {
 		Short:   "What the server holds, and how its syncs with YouTube went",
 		GroupID: groupServer,
 		Long:    "The server syncs with YouTube on its own schedule. These commands only read.",
-		RunE:    requireSubcommand,
 	}
+	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.serverStatusCommand(), a.serverSyncsCommand())
 	return cmd
 }
@@ -77,8 +78,8 @@ func (a *app) serverSyncsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "syncs",
 		Short: "The server's syncs with YouTube",
-		RunE:  requireSubcommand,
 	}
+	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.serverSyncsListCommand())
 	return cmd
 }

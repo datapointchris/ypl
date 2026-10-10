@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/datapointchris/goclikit"
 	"github.com/datapointchris/goclilogin"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
@@ -31,8 +32,8 @@ func (a *app) authCommand() *cobra.Command {
 			"With YPL_CLIENT_SECRET set, ypl is a service: it authenticates as the\n" +
 			"confidential client YPL_CLIENT_ID names through the client-credentials\n" +
 			"grant, requests a token per run, and stores nothing. There is no login.",
-		RunE: requireSubcommand,
 	}
+	goclikit.AsNamespace(cmd)
 	splitReadingFromChanging(cmd)
 	cmd.AddCommand(a.authLoginCommand(), a.authLogoutCommand(), a.authStatusCommand(), a.authTokenCommand())
 	return cmd

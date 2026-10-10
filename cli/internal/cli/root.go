@@ -76,8 +76,8 @@ func newRootCommand(a *app) *cobra.Command {
 		// with an untyped error, which exits 1 and reads as a failure rather
 		// than as a word that is not a command.
 		Args: cobra.ArbitraryArgs,
-		RunE: requireSubcommand,
 	}
+	goclikit.AsNamespace(root)
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		if id, ok := dashedVideoID(err); ok {
 			err = fmt.Errorf("%w; a video id that starts with a dash goes after --: `%s -- %s`", err, cmd.CommandPath(), id)
