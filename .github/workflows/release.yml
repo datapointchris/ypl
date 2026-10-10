@@ -32,7 +32,7 @@ jobs:
   # watches it, so a commit to the CLI alone must not move it.
   changes:
     name: Read what the push changed
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       server: ${{ steps.paths.outputs.server }}
     steps:
@@ -102,7 +102,7 @@ jobs:
     name: Build and push the server image
     needs: [validate, changes]
     if: needs.changes.outputs.server == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     permissions:
       contents: read
@@ -161,7 +161,7 @@ jobs:
   version:
     name: Resolve the CLI version
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       previous: ${{ steps.resolve.outputs.previous }}
@@ -215,7 +215,7 @@ jobs:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: version
     if: needs.version.outputs.tag != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     strategy:
       fail-fast: false
@@ -260,7 +260,7 @@ jobs:
   publish:
     name: Publish the CLI release
     needs: [version, build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
 
