@@ -5,9 +5,8 @@ go 1.26.5
 toolchain go1.26.9
 
 require (
-	github.com/BurntSushi/toml v1.6.0
 	github.com/datapointchris/goclikit v0.3.3
-	github.com/datapointchris/goclilogin v0.4.0
+	github.com/datapointchris/goclilogin v0.5.0
 	github.com/datapointchris/goselfupdate v0.11.0
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-runewidth v0.0.30
@@ -19,6 +18,7 @@ require (
 )
 
 require (
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
+	"github.com/datapointchris/ypl/cli/internal/config"
 )
 
 // Exit 2 is the only answer that tells a caller to try different arguments
@@ -498,8 +500,9 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 	// The unconfigured refusal is the other hint-producing path, and the one a
 	// first run meets.
 	unconfigured := newFixture(t, serves(nil))
-	t.Setenv("YPL_API_BASE", "")
-	t.Setenv("YPL_OIDC_ISSUER", "")
+	if err := os.Remove(config.Path()); err != nil {
+		t.Fatal(err)
+	}
 	refusal := unconfigured.run("config", "show")
 	found := hinted.FindAllStringSubmatch(refusal.out+refusal.err, -1)
 	if len(found) == 0 {
@@ -538,7 +541,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 	// suggest next.
 	writesNoHintHere := map[string]bool{
 		"ypl auth login": true, "ypl auth logout": true,
-		"ypl config example": true, "ypl config path": true,
+		"ypl config path": true,
 		"ypl config show": true, "ypl help": true, "ypl update": true,
 		"ypl playlists create": true, "ypl playlists delete": true, "ypl playlists edit": true,
 		"ypl playlists rename": true, "ypl playlists show": true,

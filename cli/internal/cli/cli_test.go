@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -44,6 +46,22 @@ type fixture struct {
 	// terminal check reads it as piped. atTerminal is how a test holds a
 	// terminal instead.
 	stdin io.Reader
+	// server is the test server's URL, which the config file names as api.
+	server string
+}
+
+// configure writes the config file the commands read, pointing them at the
+// fixture's server as clientID, signed by issuer.
+func (f *fixture) configure(issuer, clientID string) {
+	f.t.Helper()
+	dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "ypl")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	content := fmt.Sprintf("api = %q\nissuer = %q\nclient_id = %q\n", f.server, issuer, clientID)
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 // newFixture is the tree answered by answer. The config the commands resolve is
@@ -62,9 +80,8 @@ func newFixture(t *testing.T, answer http.HandlerFunc) *fixture {
 
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("YPL_API_BASE", server.URL)
-	t.Setenv("YPL_OIDC_ISSUER", "https://issuer.test")
-	t.Setenv("YPL_CLIENT_ID", "ypl-cli-test")
+	f.server = server.URL
+	f.configure("https://issuer.test", "ypl-cli-test")
 
 	f.app = &app{
 		client: func(context.Context) (*api.Client, error) {
