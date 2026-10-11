@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -60,16 +61,25 @@ func writeHelp(out io.Writer, cmd *cobra.Command) {
 		}
 		fmt.Fprintf(&b, "\nUsage:\n  %s\n", use)
 	}
-	// Each section sizes its own column, so one long command line does not
-	// push every description past the width of a terminal.
+	// Each section sizes its own column from the command lines that fit in
+	// maxCommandColumn, so one long line does not push every description past
+	// helpWidth. A longer line sits alone, with its description beneath.
 	for _, s := range sections {
 		width := 0
 		for _, r := range s.rows {
-			width = max(width, len(r.line))
+			if n := utf8.RuneCountInString(r.line); n <= maxCommandColumn {
+				width = max(width, n)
+			}
 		}
+		indent := strings.Repeat(" ", width+4)
 		fmt.Fprintf(&b, "\n%s:\n", s.title)
 		for _, r := range s.rows {
-			fmt.Fprintf(&b, "  %-*s  %s\n", width, r.line, r.short)
+			if utf8.RuneCountInString(r.line) > width {
+				fmt.Fprintf(&b, "  %s\n%s", r.line, indent)
+			} else {
+				fmt.Fprintf(&b, "  %-*s  ", width, r.line)
+			}
+			fmt.Fprintf(&b, "%s\n", wrap(r.short, helpWidth-len(indent), indent))
 		}
 	}
 	if cmd.HasExample() {
@@ -156,9 +166,35 @@ func leafRows(screen *cobra.Command, cmds []*cobra.Command) []row {
 	return rows
 }
 
-// helpWidth is the column a flag's description wraps at, so a screen reads in a
-// split pane.
+// helpWidth is the column a command's or a flag's description wraps at, so a
+// screen reads in a split pane.
 const helpWidth = 80
+
+// maxCommandColumn is the widest a section's command column grows, which
+// leaves a description at least 36 columns beside it.
+const maxCommandColumn = 40
+
+// wrap breaks text into lines of at most width runes, each after the first
+// starting with indent. A word longer than width keeps a line to itself.
+func wrap(text string, width int, indent string) string {
+	var b strings.Builder
+	used := 0
+	for i, word := range strings.Fields(text) {
+		n := utf8.RuneCountInString(word)
+		switch {
+		case i == 0:
+		case used+1+n > width:
+			b.WriteString("\n" + indent)
+			used = 0
+		default:
+			b.WriteByte(' ')
+			used++
+		}
+		b.WriteString(word)
+		used += n
+	}
+	return b.String()
+}
 
 // flagUsages is every flag cmd takes, its own and those it inherits, without
 // --help, which every command has.
