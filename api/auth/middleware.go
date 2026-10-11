@@ -18,8 +18,9 @@ type TokenVerifier interface {
 }
 
 // exempt holds the paths answered without a token: the liveness and readiness
-// probes a container runtime calls without credentials.
-var exempt = []string{"/health", "/ready"}
+// probes a container runtime calls without credentials, and the RFC 9728
+// metadata a CLI reads to learn where to get its first token.
+var exempt = []string{"/health", "/ready", ProtectedResourcePath}
 
 type contextKey struct{}
 

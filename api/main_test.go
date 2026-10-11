@@ -305,7 +305,7 @@ func apiHandler(t *testing.T, gate tokenGate) http.Handler {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return handler(handlers.New(st, nil, handlers.Sync{}, slog.Default()), gate)
+	return handler(handlers.New(st, nil, handlers.Sync{}, slog.Default()), gate, auth.ProtectedResourceMetadata("https://ypl.test", "https://id.test"))
 }
 
 func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
@@ -325,6 +325,7 @@ func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
 		{http.MethodPost, "/api/v1/playlists", "service", http.StatusForbidden},
 		{http.MethodGet, "/health", "", http.StatusOK},
 		{http.MethodGet, "/ready", "", http.StatusOK},
+		{http.MethodGet, auth.ProtectedResourcePath, "", http.StatusOK},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequest(c.method, c.path, http.NoBody)
