@@ -90,14 +90,15 @@ func decode[T any](t *testing.T, rec *httptest.ResponseRecorder, status int) T {
 func refused(t *testing.T, rec *httptest.ResponseRecorder, status int, code wire.Code) {
 	t.Helper()
 	body := decode[wireRefusal](t, rec, status)
-	if body.Code != string(code) || body.Error == "" {
-		t.Fatalf("refusal %+v, want code %s with a sentence", body, code)
+	if body.Code != string(code) || body.Message == "" || body.Error != http.StatusText(status) {
+		t.Fatalf("refusal %+v, want code %s with the status text and a sentence", body, code)
 	}
 }
 
 type wireRefusal struct {
-	Error string `json:"error"`
-	Code  string `json:"code"`
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	Code    string `json:"code"`
 }
 
 // withLibrary stores three playlists and six videos. Alpha (PLA) holds a, b and

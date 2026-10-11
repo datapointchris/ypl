@@ -42,7 +42,7 @@ func TestAFieldTheServerAddsIsIgnoredRatherThanRefused(t *testing.T) {
 // The code is what a caller branches on, since the sentence is for a person and
 // may be reworded.
 func TestARefusalCarriesTheServersCodeAndSentence(t *testing.T) {
-	client := answering(t, http.StatusNotFound, `{"error": "playlist nope not found", "code": "not_found"}`)
+	client := answering(t, http.StatusNotFound, `{"message": "playlist nope not found", "code": "not_found"}`)
 
 	_, err := client.GetPlaylist(context.Background(), "nope")
 	var refusal *Refusal
@@ -62,7 +62,7 @@ func TestARefusalCarriesTheServersCodeAndSentence(t *testing.T) {
 // A refusal about particular videos names them, so a caller can say which of
 // the ones it sent were the problem.
 func TestARefusalAboutVideosNamesThem(t *testing.T) {
-	body := `{"error": "YouTube has no public video for a, b", "code": "video_unavailable", "video_ids": ["a", "b"]}`
+	body := `{"message": "YouTube has no public video for a, b", "code": "video_unavailable", "video_ids": ["a", "b"]}`
 	client := answering(t, http.StatusUnprocessableEntity, body)
 
 	_, err := client.GetVideo(context.Background(), "a")
@@ -98,14 +98,14 @@ func TestAnAnswerThatIsNotAnEnvelopeStillCarriesItsStatus(t *testing.T) {
 // A token the server will not take is answered by logging in again, never by a
 // different request, so it is the one status a caller has to tell apart.
 func TestARefusalKnowsWhetherItWasTheToken(t *testing.T) {
-	refused := answering(t, http.StatusUnauthorized, `{"error": "no token", "code": "missing_token"}`)
+	refused := answering(t, http.StatusUnauthorized, `{"message": "no token", "code": "missing_token"}`)
 	_, err := refused.ListPlaylists(context.Background())
 	var refusal *Refusal
 	if !errors.As(err, &refusal) || !refusal.Unauthorized() {
 		t.Fatalf("err = %v, want a refusal that knows it was the token", err)
 	}
 
-	other := answering(t, http.StatusNotFound, `{"error": "nothing there", "code": "not_found"}`)
+	other := answering(t, http.StatusNotFound, `{"message": "nothing there", "code": "not_found"}`)
 	_, err = other.ListPlaylists(context.Background())
 	if errors.As(err, &refusal) && refusal.Unauthorized() {
 		t.Error("a 404 reported itself as a rejected token")

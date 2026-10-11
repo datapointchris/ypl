@@ -229,5 +229,6 @@ absent, videos and playlists answer the whole list as one page, and plays and sy
 `starting_after` naming no row of the list is refused, since the list has changed since the page
 before.
 
-A refused request answers `{"error": "<sentence>", "code": "<code>"}`. The sentence is for a person
-and can change. The code is for a client to branch on, and `api/wire` lists every one.
+A refused request answers `{"error": "<status text>", "message": "<sentence>", "code": "<code>"}`.
+The sentence is for a person and can change. The code is for a client to branch on, and `api/wire`
+lists every one.

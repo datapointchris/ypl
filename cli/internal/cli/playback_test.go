@@ -380,7 +380,7 @@ func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 	// A play already deleted is gone as asked, so deleting it succeeds and
 	// sends nothing.
 	f = newFixture(t, answers(map[string]answer{
-		"GET /api/v1/plays/42": {status: http.StatusGone, body: `{"error": "play 42 was deleted", "code": "play_deleted"}`},
+		"GET /api/v1/plays/42": {status: http.StatusGone, body: `{"message": "play 42 was deleted", "code": "play_deleted"}`},
 	}))
 	if again := f.run("plays", "delete", "42", "--yes"); again.code != 0 || len(f.writes()) != 0 || !strings.Contains(again.err, "already deleted") {
 		t.Errorf("deleting a deleted play exited %d after %d writes saying %q, want 0, none, and that it was deleted",
@@ -410,13 +410,13 @@ func TestAPlayIsRecordedOnceUnderAnIdTheClientMadeAndTakenBack(t *testing.T) {
 		case "zzzzzzzzzzz":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusGone)
-			_, _ = w.Write([]byte(`{"error": "play was deleted", "code": "play_deleted"}`))
+			_, _ = w.Write([]byte(`{"message": "play was deleted", "code": "play_deleted"}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if refuse {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"error": "down", "code": "unavailable"}`))
+			_, _ = w.Write([]byte(`{"message": "down", "code": "unavailable"}`))
 			return
 		}
 		w.WriteHeader(http.StatusCreated)

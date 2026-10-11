@@ -150,12 +150,12 @@ func refusalFrom(resp *http.Response) error {
 	refusal := &Refusal{Status: resp.StatusCode}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefusalBody))
 	var envelope struct {
-		Error    string   `json:"error"`
+		Message  string   `json:"message"`
 		Code     string   `json:"code"`
 		VideoIDs []string `json:"video_ids"`
 	}
 	if json.Unmarshal(body, &envelope) == nil {
-		refusal.Message, refusal.Code, refusal.VideoIDs = envelope.Error, envelope.Code, envelope.VideoIDs
+		refusal.Message, refusal.Code, refusal.VideoIDs = envelope.Message, envelope.Code, envelope.VideoIDs
 	}
 	return refusal
 }

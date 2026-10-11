@@ -275,7 +275,7 @@ func TestAnEditAddingAVideoYouTubeWillNotAddIsRefused(t *testing.T) {
 
 	rec := f.editItems("PLA", []string{"a", "gone1", "u", "private1", "gone1", "u"}, before)
 	got := decode[wireVideoRefusal](t, rec, http.StatusUnprocessableEntity)
-	if got.Code != string(wire.CodeVideoUnavailable) || got.Error == "" || !slices.Equal(got.VideoIDs, []string{"gone1", "private1", "u"}) {
+	if got.Code != string(wire.CodeVideoUnavailable) || got.Message == "" || !slices.Equal(got.VideoIDs, []string{"gone1", "private1", "u"}) {
 		t.Fatalf("refusal %+v, want video_unavailable naming gone1, private1 and u", got)
 	}
 	if f.order(t, "PLA") != "a:ia b:ib u:iu" || f.etag(t, "PLA") != before {

@@ -159,7 +159,7 @@ func serves(bodies map[string]string) http.HandlerFunc {
 		if !ok {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error": "no route answers ` + r.URL.Path + `", "code": "route_not_found"}`))
+			_, _ = w.Write([]byte(`{"message": "no route answers ` + r.URL.Path + `", "code": "route_not_found"}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -173,7 +173,7 @@ func refuses(status int, code, sentence string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{"error": ` + quoted(sentence) + `, "code": "` + code + `"}`))
+		_, _ = w.Write([]byte(`{"message": ` + quoted(sentence) + `, "code": "` + code + `"}`))
 	}
 }
 
@@ -252,7 +252,7 @@ func answers(routes map[string]answer) http.HandlerFunc {
 		if !ok {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error": "no route answers ` + r.Method + " " + r.URL.Path + `", "code": "route_not_found"}`))
+			_, _ = w.Write([]byte(`{"message": "no route answers ` + r.Method + " " + r.URL.Path + `", "code": "route_not_found"}`))
 			return
 		}
 		for name, value := range route.header {
@@ -319,7 +319,7 @@ func TestTabOffersEveryPlaylistAsASlugTheServerResolves(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error": "playlist nosuch not found", "code": "not_found"}`))
+		_, _ = w.Write([]byte(`{"message": "playlist nosuch not found", "code": "not_found"}`))
 	})
 
 	want := "sunday-morning\tSunday Morning, 1 video\n" +

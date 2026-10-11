@@ -297,18 +297,18 @@ func TestTheRefusalOfAFragmentNamesTheTitleItIsInside(t *testing.T) {
 		f.get("/api/v1/playlists/lph/items"),
 	} {
 		body := decode[wireRefusal](t, rec, http.StatusNotFound)
-		if !strings.Contains(body.Error, "Alpha") || !strings.Contains(body.Error, "PLA") {
-			t.Errorf("refused with %q, want the title holding the fragment and its id", body.Error)
+		if !strings.Contains(body.Message, "Alpha") || !strings.Contains(body.Message, "PLA") {
+			t.Errorf("refused with %q, want the title holding the fragment and its id", body.Message)
 		}
-		if strings.Contains(body.Error, "changed") {
-			t.Errorf("refused with %q, and a read of an order gets this sentence too", body.Error)
+		if strings.Contains(body.Message, "changed") {
+			t.Errorf("refused with %q, and a read of an order gets this sentence too", body.Message)
 		}
 	}
 
 	// A reference that really does name nothing keeps the sentence that says so.
 	body := decode[wireRefusal](t, f.do(http.MethodDelete, "/api/v1/playlists/nothing-like-this", ""), http.StatusNotFound)
-	if !strings.Contains(body.Error, "not found") {
-		t.Errorf("refused with %q, want it to say the playlist is not there", body.Error)
+	if !strings.Contains(body.Message, "not found") {
+		t.Errorf("refused with %q, want it to say the playlist is not there", body.Message)
 	}
 }
 
@@ -328,8 +328,8 @@ func TestARetriedDeleteOfAGonePlaylistTakesNothingElse(t *testing.T) {
 	}
 	retried := f.do(http.MethodDelete, "/api/v1/playlists/PLA", "")
 	refused(t, retried, http.StatusNotFound, wire.CodeNotFound)
-	if body := decode[wireRefusal](t, retried, http.StatusNotFound); !strings.HasPrefix(body.Error, `playlist "PLA" names none`) {
-		t.Errorf("the retry was refused with %q, want it to open on nothing answering to PLA", body.Error)
+	if body := decode[wireRefusal](t, retried, http.StatusNotFound); !strings.HasPrefix(body.Message, `playlist "PLA" names none`) {
+		t.Errorf("the retry was refused with %q, want it to open on nothing answering to PLA", body.Message)
 	}
 	if got := decode[wirePlaylist](t, f.get("/api/v1/playlists/PLX"), http.StatusOK); got.Title != "My PLA Favorites" {
 		t.Fatalf("the retry took %+v as well", got)

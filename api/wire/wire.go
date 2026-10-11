@@ -1,9 +1,10 @@
 // Package wire writes the JSON bodies the API answers with, and names every
 // refusal it can make.
 //
-// A refusal is {"error": "<sentence>", "code": "<code>"}. The sentence is for a
-// person and may change. The code is for a client to branch on and does not. A
-// refusal about particular videos names them in "video_ids" too.
+// A refusal is {"error": "<status text>", "message": "<sentence>", "code":
+// "<code>"}. The sentence is for a person and may change. The code is for a
+// client to branch on and does not. A refusal about particular videos names
+// them in "video_ids" too.
 package wire
 
 import (
@@ -84,8 +85,13 @@ const (
 
 // Refusal is the body of every answer that refuses a request.
 type Refusal struct {
-	Error string `json:"error"`
-	Code  Code   `json:"code"`
+	Error   string `json:"error"`
+	Message string `json:"message"`
+	Code    Code   `json:"code"`
+}
+
+func refusal(status int, code Code, format string, args ...any) Refusal {
+	return Refusal{Error: http.StatusText(status), Message: fmt.Sprintf(format, args...), Code: code}
 }
 
 // JSON answers status with body encoded as JSON.
@@ -98,7 +104,7 @@ func JSON(w http.ResponseWriter, status int, body any) {
 // Refuse answers status with a Refusal carrying code and the sentence format
 // and args make.
 func Refuse(w http.ResponseWriter, status int, code Code, format string, args ...any) {
-	JSON(w, status, Refusal{Error: fmt.Sprintf(format, args...), Code: code})
+	JSON(w, status, refusal(status, code, format, args...))
 }
 
 // VideoRefusal is the body of a refusal about particular videos, naming each.
@@ -110,5 +116,5 @@ type VideoRefusal struct {
 // RefuseVideos answers status with a VideoRefusal carrying code, the sentence
 // format and args make, and videoIDs.
 func RefuseVideos(w http.ResponseWriter, status int, code Code, videoIDs []string, format string, args ...any) {
-	JSON(w, status, VideoRefusal{Refusal: Refusal{Error: fmt.Sprintf(format, args...), Code: code}, VideoIDs: videoIDs})
+	JSON(w, status, VideoRefusal{Refusal: refusal(status, code, format, args...), VideoIDs: videoIDs})
 }

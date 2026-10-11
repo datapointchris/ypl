@@ -79,7 +79,7 @@ func TestARefusedServiceIsToldWhatItsScopesReach(t *testing.T) {
 	} {
 		rec, _ := limited(&Identity{ClientID: "ypl-svc-worker", Service: true, Scopes: c.scopes}, http.MethodGet, "/api/v1/playlists")
 		var body wire.Refusal
-		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || !strings.Contains(body.Error, c.want) {
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || !strings.Contains(body.Message, c.want) {
 			t.Errorf("scopes %v: refused with %s, want it to say %q", c.scopes, rec.Body, c.want)
 		}
 	}

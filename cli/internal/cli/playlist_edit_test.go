@@ -197,7 +197,7 @@ var keptBuffer = regexp.MustCompile(`(/\S+\.ypl)`)
 // A refusal arrives after the editor has closed, so without this the
 // rearranging is gone and the only way back is to do it again.
 func TestARefusedEditKeepsTheBufferAndSaysWhere(t *testing.T) {
-	refusal := `{"error": "the order of Sunday Morning no longer has the ETag If-Match names", "code": "precondition_failed"}`
+	refusal := `{"message": "the order of Sunday Morning no longer has the ETag If-Match names", "code": "precondition_failed"}`
 	f := newFixture(t, answers(editing(heldOrder, answer{status: http.StatusPreconditionFailed, body: refusal})))
 	f.pipe(third + "\n" + first + "\n" + second + "\n")
 

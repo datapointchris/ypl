@@ -234,7 +234,7 @@ func TestAVideoIsNamedByItsIdTitleOrPartOfItsTitle(t *testing.T) {
 		}
 	}
 	refusal := decode[wireRefusal](t, f.get("/api/v1/videos/mi"), http.StatusBadRequest)
-	if refusal.Code != string(wire.CodeAmbiguousReference) || strings.Count(refusal.Error, `"Mix`) != 10 || !strings.Contains(refusal.Error, "and 2 more") {
+	if refusal.Code != string(wire.CodeAmbiguousReference) || strings.Count(refusal.Message, `"Mix`) != 10 || !strings.Contains(refusal.Message, "and 2 more") {
 		t.Errorf("refusal = %+v, want ten of the twelve named and the other two counted", refusal)
 	}
 	refused(t, f.get("/api/v1/videos/zzz"), http.StatusNotFound, wire.CodeNotFound)
