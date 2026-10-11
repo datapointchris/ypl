@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -60,8 +61,7 @@ func serviceIDP(t *testing.T) *httptest.Server {
 // the real API client, so the grant the tree picks is the one that runs.
 func (f *fixture) asService(issuer, secret string) {
 	f.t.Helper()
-	f.t.Setenv("YPL_OIDC_ISSUER", issuer)
-	f.t.Setenv("YPL_CLIENT_ID", serviceClientID)
+	f.configure(issuer, serviceClientID)
 	f.t.Setenv("YPL_CLIENT_SECRET", secret)
 	f.app.client = newAPIClient
 }
@@ -163,37 +163,6 @@ func TestAServiceIsRefusedALoginAndALogout(t *testing.T) {
 	}
 }
 
-// Without YPL_CLIENT_ID the client would be the person's ypl-cli-<host>.
-func TestASecretWithoutItsClientIsRefused(t *testing.T) {
-	f := newFixture(t, serves(map[string]string{"/api/v1/status": statusBody}))
-	f.asService(serviceIDP(t).URL, serviceSecret)
-	t.Setenv("YPL_CLIENT_ID", "")
-
-	for _, args := range [][]string{{"server", "status"}, {"auth", "status"}, {"auth", "token"}, {"auth", "login"}, {"auth", "logout"}} {
-		got := f.run(args...)
-		if got.code == 0 || !strings.Contains(got.err, "YPL_CLIENT_ID") {
-			t.Errorf("%v: exit %d with %q, want it refused naming YPL_CLIENT_ID", args, got.code, got.err)
-		}
-	}
-	if len(f.sent) != 0 {
-		t.Errorf("the server was asked %d times", len(f.sent))
-	}
-}
-
-// `config show` is pasted into issues and chat, and `config example` becomes a
-// file on disk.
-func TestTheSecretIsNeverPrintedOrAskedForInTheFile(t *testing.T) {
-	f := newFixture(t, serves(nil))
-	f.asService(serviceIDP(t).URL, serviceSecret)
-
-	for _, args := range [][]string{{"config", "show"}, {"config", "show", "--json"}, {"config", "example"}} {
-		got := f.run(args...)
-		if strings.Contains(got.out+got.err, serviceSecret) || strings.Contains(got.out, "YPL_CLIENT_SECRET") {
-			t.Errorf("%v printed the secret or asked for it: %s%s", args, got.out, got.err)
-		}
-	}
-}
-
 func TestARouteOutsideTheScopeReportsTheServersSentence(t *testing.T) {
 	says := "client ypl-svc-worker may not reach GET /api/v1/playlists: its scopes reach only GET /api/v1/status"
 	f := newFixture(t, refuses(http.StatusForbidden, "outside_service_scope", says))
@@ -223,12 +192,12 @@ func TestServerStatusCallsARouteTheRequestedScopeReaches(t *testing.T) {
 	if got := f.run("server", "status"); got.code != 0 {
 		t.Fatalf("exited %d: %s", got.code, got.err)
 	}
-	cfg, err := config.Load()
+	deployment, err := config.Load(context.Background(), "")
 	if err != nil {
 		t.Fatalf("load the config: %v", err)
 	}
 
-	scopes := cfg.Service().Scopes
+	scopes := config.Service(deployment).Scopes
 	listed := http.NewServeMux()
 	registered := make(map[string]bool)
 	for _, scope := range scopes {

@@ -23,33 +23,27 @@ var errNeedsLogin = errors.New("not logged in")
 // adds the bearer token to every request and renews it when it expires, so no
 // command here holds one.
 func newAPIClient(ctx context.Context) (*api.Client, error) {
-	cfg, err := config.Load()
+	deployment, err := config.Load(ctx, apiOverride)
 	if err != nil {
 		return nil, err
 	}
-	if err := cfg.Check(); err != nil {
-		return nil, err
-	}
-	source, err := tokenSource(ctx, cfg, goclilogin.NewTokenStore)
+	source, err := tokenSource(ctx, deployment, goclilogin.NewTokenStore)
 	if errors.Is(err, errNeedsLogin) {
 		return nil, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("prepare the API client: %w", err)
 	}
-	return api.New(cfg.APIBase(), oauth2.NewClient(ctx, source)), nil
+	return api.New(deployment.API.Value, oauth2.NewClient(ctx, source)), nil
 }
 
 // tokenSource is the client-credentials grant when YPL_CLIENT_SECRET is set,
 // and otherwise the token this machine logged in for, read from tokens.
-func tokenSource(ctx context.Context, cfg config.Config, tokens func(goclilogin.Config) *goclilogin.TokenStore) (oauth2.TokenSource, error) {
-	if err := cfg.CheckService(); err != nil {
-		return nil, err
+func tokenSource(ctx context.Context, d goclilogin.Deployment, tokens func(goclilogin.Config) *goclilogin.TokenStore) (oauth2.TokenSource, error) {
+	if config.IsService() {
+		return goclilogin.ClientCredentialsTokenSource(ctx, config.Service(d), config.ClientSecret())
 	}
-	if cfg.IsService() {
-		return goclilogin.ClientCredentialsTokenSource(ctx, cfg.Service(), cfg.ClientSecret)
-	}
-	login := cfg.Login()
+	login := config.Login(d)
 	source, err := goclilogin.TokenSource(ctx, login, tokens(login))
 	if errors.Is(err, goclilogin.ErrNotLoggedIn) {
 		return nil, errNeedsLogin
@@ -81,12 +75,14 @@ func reported(err error) error {
 	}
 	var refusal *api.Refusal
 	// A service has no login to renew, so it is pointed at its id and secret.
-	if cfg, loadErr := config.Load(); loadErr == nil && cfg.IsService() {
+	// The file is read without --api, so reporting an error sends nothing.
+	if config.IsService() {
+		d, _ := config.Load(context.Background(), "")
 		switch {
 		case goclilogin.IsSessionRejected(err):
-			return fmt.Errorf("%s refused service client %s — check YPL_CLIENT_ID and YPL_CLIENT_SECRET", cfg.Issuer(), cfg.ClientID())
+			return fmt.Errorf("%s refused service client %s — check client_id in %s, and %s", d.Issuer.Value, d.ClientID.Value, d.Path, config.ClientSecretEnv)
 		case errors.As(err, &refusal) && refusal.Unauthorized():
-			return fmt.Errorf("the server refused the token issued to service client %s", cfg.ClientID())
+			return fmt.Errorf("the server refused the token issued to service client %s", d.ClientID.Value)
 		}
 		return err
 	}

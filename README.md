@@ -26,18 +26,23 @@ It installs from this repository's `cli/v*` releases, which carry a binary for e
 release builds, with a checksum file beside them. `ypl update` moves an installed binary to the
 newest release, and a daily check says when one is out.
 
-Nothing about a deployment is built into the binary. The server's address and the identity provider
-that signs its tokens each name one installation, so they are read from
-`$XDG_CONFIG_HOME/ypl/config.toml` or from the environment:
+Nothing about a deployment is built into the binary. The server's address, the identity provider
+that signs its tokens, and the client this machine logs in as are read from one file,
+`$XDG_CONFIG_HOME/ypl/config.toml`:
 
 ```toml
-api_base = "https://ypl.example.com"
+api = "https://ypl.example.com"
 issuer = "https://auth.example.com"
+client_id = "ypl-cli-laptop"
 ```
 
-`YPL_API_BASE`, `YPL_OIDC_ISSUER` and `YPL_CLIENT_ID` override the file. `ypl config show` prints
-every setting with the layer that set it, because a value alone does not say whether it came from
-the file or from an export made months ago.
+Every command reads it, `--api` is the only thing that outranks it, and no environment variable
+does. `ypl auth login <url>` fills in only what the file lacks: `api` from the URL, `issuer` from the
+server's RFC 9728 metadata at `<url>/.well-known/oauth-protected-resource`, and `client_id` from
+`--client-id` or `ypl-cli-<short hostname>`. It prints each value and where it came from before the
+login starts, and writes the file once the login succeeds. `ypl auth status` and `ypl config show`
+print all three with the file's path. The file and its rules are
+[goclilogin's](https://github.com/datapointchris/goclilogin).
 
 `ypl auth login` authenticates the machine with the OAuth 2.0 device authorization grant: the CLI
 prints a code and a URL, and approving it in a browser anywhere logs this machine in. That is what
@@ -46,21 +51,20 @@ mode-600 file on a host that has none, and it is refreshed under a lock so two c
 cannot spend the same refresh token twice. The client id is `ypl-cli-<machine>`, one per machine, so
 a token can be revoked for one machine without touching the others.
 
-A service runs ypl with nobody present to approve a login. It sets `YPL_CLIENT_ID` to its own
-confidential client, `ypl-svc-<machine>`, and `YPL_CLIENT_SECRET` to that client's secret, both in
-the environment. ypl then requests a token through the client-credentials grant on each run, asking
-for `ypl.status.read`, and stores nothing. The server lets that token read `GET /api/v1/status`,
-which is what `ypl server status` calls, and refuses every other route with 403. `ypl auth login`
-and `ypl auth logout` refuse in that mode. A secret is refused while the client id is still the
-default, the person's `ypl-cli-<machine>`, so name the service client in `YPL_CLIENT_ID` or in the
-config file.
+A service runs ypl with nobody present to approve a login. Its config file names its own
+confidential client, `ypl-svc-<machine>`, as `client_id`, and `YPL_CLIENT_SECRET` in the
+environment holds that client's secret, which never goes in the file. ypl then requests a token
+through the client-credentials grant on each run, asking for `ypl.status.read`, and stores nothing.
+The server lets that token read `GET /api/v1/status`, which is what `ypl server status` calls, and
+refuses every other route with 403. `ypl auth login` and `ypl auth logout` refuse in that mode.
+
 `ypl auth status --json` names the credential it checked in `type`, `authorized_user` for a
 person's login or `service_account` for a service, as Google's credential files do. A service's
 status exits 1 unless the provider grants a token, and its `session` says why: `rejected` for a
 secret the provider refused, `unverified` for a provider it could not reach.
 
-A first run installs the newest `cli/v*` release, checks it against its checksums, and then tells it
-where the server is:
+A first run installs the newest `cli/v*` release, checks it against its checksums, and then logs in
+to the server, which writes the config file:
 
 ```bash
 tag=$(gh release list --repo datapointchris/ypl --json tagName \
@@ -69,9 +73,8 @@ platform="$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/am
 gh release download "$tag" --repo datapointchris/ypl --pattern "ypl_*_${platform}.tar.gz" --pattern checksums.txt
 sha256sum --ignore-missing -c checksums.txt && tar -xzf ypl_*_"${platform}".tar.gz ypl && install ypl ~/.local/bin/
 
-ypl config example > "$(ypl config path)"   # fill in api_base and issuer
-ypl auth login                              # approve the code in a browser
-ypl server status                           # what the server holds
+ypl auth login https://ypl.example.com   # approve the code in a browser
+ypl server status                        # what the server holds
 ```
 
 `ypl --help` lists every command as the line to type, in sections: playing first, then one for each

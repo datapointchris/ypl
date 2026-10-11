@@ -17,6 +17,10 @@
 // (ypl-svc- when unset). A service client reaches only the routes its scopes
 // list. The provider is read beside the sync rather than before it, so a
 // provider that is down holds back only the requests that need a token.
+//
+// With PUBLIC_URL set to the address clients reach it at, it serves the RFC
+// 9728 metadata naming that address and OIDC_ISSUER without a token, which is
+// how `ypl auth login <url>` finds the provider.
 package main
 
 import (
@@ -133,7 +137,13 @@ func start(ctx context.Context) error {
 		}
 		wg.Wait()
 	}
-	return run(ctx, ":"+envOr("PORT", "8080"), handler(api, provider), work, api.Drain)
+	var metadata http.Handler
+	if public := os.Getenv("PUBLIC_URL"); public != "" {
+		metadata = auth.ProtectedResourceMetadata(public, issuer)
+	} else {
+		slog.Warn("PUBLIC_URL is unset, so no RFC 9728 metadata is served and `ypl auth login <url>` cannot discover the issuer")
+	}
+	return run(ctx, ":"+envOr("PORT", "8080"), handler(api, provider, metadata), work, api.Drain)
 }
 
 // defaultClientIDPrefix starts the id of every person's CLI client whose tokens
@@ -269,8 +279,15 @@ type tokenGate interface {
 // container healthcheck can call them, and the API, which answers only a
 // request carrying a token gate accepts. A service client's token reaches only
 // the routes handlers.ServiceRoutes lists for its scopes.
-func handler(api *handlers.Handlers, gate tokenGate) http.Handler {
+//
+// metadata serves the RFC 9728 document without a token, and is nil while
+// PUBLIC_URL is unset, since only the deployment knows the address it is
+// reached at. The route is then absent.
+func handler(api *handlers.Handlers, gate tokenGate, metadata http.Handler) http.Handler {
 	mux := routes(gate.Ready)
+	if metadata != nil {
+		mux.Handle("GET "+auth.ProtectedResourcePath, metadata)
+	}
 	api.Register(mux)
 	return auth.RequireBearer(gate, slog.Default())(auth.LimitServices(mux, handlers.ServiceRoutes, slog.Default()))
 }

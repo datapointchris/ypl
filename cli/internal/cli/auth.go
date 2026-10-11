@@ -29,9 +29,13 @@ func (a *app) authCommand() *cobra.Command {
 		GroupID: groupSetup,
 		Long: "Logging in prints a code and a link. Approve it in a browser on any device,\n" +
 			"so it works over SSH too.\n\n" +
+			"Where ypl is pointed comes from one config file. `ypl auth status` prints\n" +
+			"its path and its api, issuer and client_id, and `ypl auth login <url>`\n" +
+			"fills in whatever it lacks.\n\n" +
 			"With YPL_CLIENT_SECRET set, ypl is a service: it authenticates as the\n" +
-			"confidential client YPL_CLIENT_ID names through the client-credentials\n" +
-			"grant, requests a token per run, and stores nothing. There is no login.",
+			"confidential client the config file's client_id names, through the\n" +
+			"client-credentials grant, requests a token per run, and stores nothing.\n" +
+			"There is no login.",
 	}
 	goclikit.AsNamespace(cmd)
 	splitReadingFromChanging(cmd)
@@ -39,39 +43,46 @@ func (a *app) authCommand() *cobra.Command {
 	return cmd
 }
 
-// loginConfig is the resolved login settings, refusing first where the CLI has
-// not been told which provider to authenticate against.
-func loginConfig() (config.Config, error) {
-	cfg, err := config.Load()
-	if err != nil {
-		return config.Config{}, err
-	}
-	return cfg, cfg.Check()
-}
-
 func (a *app) authLoginCommand() *cobra.Command {
+	var clientID string
 	cmd := &cobra.Command{
-		Use:     "login",
+		Use:     "login [url]",
 		GroupID: groupChanging,
 		Short:   "Log in by approving a code in a browser",
-		Example: "  ypl auth login  log this machine in, once per machine",
-		Args:    usageArgs(cobra.NoArgs),
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loginConfig()
-			if err != nil {
-				return err
+		Long: "Log in to the ypl server at url, or to the config file's api when url is\n" +
+			"omitted. Whatever the file lacks is filled in: api from url, the issuer from\n" +
+			"the server's RFC 9728 metadata, and the client id from --client-id or this\n" +
+			"machine's short hostname. Each is printed with where it came from before the\n" +
+			"login starts, and written to the file once it succeeds. A value already in\n" +
+			"the file is never rewritten.",
+		Example: "  ypl auth login                        log this machine in, once per machine\n" +
+			"  ypl auth login https://ypl.example.com  the same, on a machine with no config file",
+		Args: usageArgs(cobra.MaximumNArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if config.IsService() {
+				return fmt.Errorf("%s is set, so ypl authenticates as a service client with no login — unset it to log in as a person", config.ClientSecretEnv)
 			}
-			if err := cfg.CheckService(); err != nil {
-				return err
+			url := apiOverride
+			if len(args) == 1 {
+				if apiOverride != "" && apiOverride != args[0] {
+					return goclikit.UsageError(fmt.Errorf("--api %s and the url %s name different servers; give one", apiOverride, args[0]))
+				}
+				url = args[0]
 			}
-			if cfg.IsService() {
-				return fmt.Errorf("YPL_CLIENT_SECRET is set, so ypl authenticates as service client %s with no login — unset it to log in as a person", cfg.ClientID())
-			}
-			login := cfg.Login()
-			store := a.tokens(login)
 
 			ctx, cancel := context.WithTimeout(cmd.Context(), loginTimeout)
 			defer cancel()
+
+			deployment, err := config.ForLogin(ctx, url, clientID)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Logging in to:")
+			goclilogin.WriteDeployment(cmd.ErrOrStderr(), deployment)
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr())
+
+			login := config.Login(deployment)
+			store := a.tokens(login)
 
 			// The browser launcher inherits these streams, so whatever the
 			// browser writes on startup — a GPU warning, a dbus complaint —
@@ -104,7 +115,7 @@ func (a *app) authLoginCommand() *cobra.Command {
 				}
 				return err
 			}
-			backend, err := store.Save(cfg.ClientID(), token)
+			backend, err := store.Save(login.ClientID, token)
 			if err != nil {
 				return fmt.Errorf("save the token: %w", err)
 			}
@@ -113,10 +124,15 @@ func (a *app) authLoginCommand() *cobra.Command {
 					"\nThis host has no OS keyring, so the token is in %s, readable by this user alone.\n",
 					store.FilePath())
 			}
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\nLogged in as %s\n", cfg.ClientID())
+			if err := deployment.Save(); err != nil {
+				return fmt.Errorf("logged in as %s, but the config file was not written: %w", login.ClientID, err)
+			}
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\nLogged in as %s\n", login.ClientID)
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&clientID, "client-id", "",
+		"Log in as this OAuth client when the config file names none (default ypl-cli-<short hostname>)")
 	return cmd
 }
 
@@ -128,17 +144,23 @@ func (a *app) authLogoutCommand() *cobra.Command {
 		Example: "  ypl auth logout  forget the token, before handing the machine on",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loginConfig()
-			if err != nil {
+			if config.IsService() {
+				return fmt.Errorf("%s is set, so ypl authenticates as a service client and stores no token to remove — unset it to log out as a person", config.ClientSecretEnv)
+			}
+			// Only the client id finds the token, so a file lacking the other
+			// two keys still logs out. A file naming no client falls back to
+			// ypl-cli-<short hostname>, the id login uses when the file names
+			// none, so a token stored by a login whose file was never written
+			// is still removed.
+			deployment, err := config.Load(cmd.Context(), apiOverride)
+			if err != nil && !errors.Is(err, goclilogin.ErrNotConfigured) {
 				return err
 			}
-			if err := cfg.CheckService(); err != nil {
-				return err
+			if deployment.ClientID.Value == "" {
+				deployment.ClientID.Value = config.DefaultClientID()
 			}
-			if cfg.IsService() {
-				return fmt.Errorf("YPL_CLIENT_SECRET is set, so ypl authenticates as service client %s and stores no token to remove — unset it to log out as a person", cfg.ClientID())
-			}
-			err = a.tokens(cfg.Login()).Delete(cfg.ClientID())
+			clientID := deployment.ClientID.Value
+			err = a.tokens(config.Login(deployment)).Delete(clientID)
 			if errors.Is(err, goclilogin.ErrNotLoggedIn) {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Not logged in — there is nothing to remove.")
 				return nil
@@ -146,7 +168,7 @@ func (a *app) authLogoutCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("remove the token: %w", err)
 			}
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Logged out (%s).\n", cfg.ClientID())
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Logged out (%s).\n", clientID)
 			return nil
 		},
 	}
@@ -160,25 +182,24 @@ func (a *app) authTokenCommand() *cobra.Command {
 		Long: "Exits 1 when this machine is not logged in. With YPL_CLIENT_SECRET set, it\n" +
 			"requests a new service token instead.",
 		Example: "  # the server's status, read with curl rather than ypl\n" +
-			"  base=$(ypl config show --json |\n" +
-			"    jq -r '.settings[] | select(.key == \"api_base\").value')\n" +
+			"  base=$(ypl config show --json | jq -r .api.value)\n" +
 			"  curl -s -H \"Authorization: Bearer $(ypl auth token)\" \"$base/api/v1/status\"",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loginConfig()
+			deployment, err := config.Load(cmd.Context(), apiOverride)
 			if err != nil {
 				return err
 			}
-			source, err := tokenSource(cmd.Context(), cfg, a.tokens)
+			source, err := tokenSource(cmd.Context(), deployment, a.tokens)
 			if errors.Is(err, errNeedsLogin) {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Not logged in as %s. Run `ypl auth login`.\n", cfg.ClientID())
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Not logged in as %s. Run `ypl auth login`.\n", deployment.ClientID.Value)
 				return exitCode(1)
 			}
 			if err != nil {
 				return err
 			}
 			token, err := source.Token()
-			if err != nil && cfg.IsService() {
+			if err != nil && config.IsService() {
 				return reported(err)
 			}
 			if err != nil {
@@ -211,14 +232,19 @@ const (
 // provider to retry. A person's status never asks the provider, so its session
 // is empty.
 type authStatus struct {
-	LoggedIn  bool                    `json:"logged_in"`
-	Type      credentialType          `json:"type"`
-	ClientID  string                  `json:"client_id"`
-	Issuer    string                  `json:"issuer"`
-	ExpiresAt string                  `json:"expires_at,omitempty"`
-	Expired   bool                    `json:"expired"`
-	Session   goclilogin.SessionState `json:"session"`
-	Backend   goclilogin.Backend      `json:"backend,omitempty"`
+	LoggedIn bool `json:"logged_in"`
+	// Configured is false when the config file lacks a value, which ConfigFile
+	// names and the empty fields below show.
+	Configured bool                    `json:"configured"`
+	ConfigFile string                  `json:"config_file"`
+	Type       credentialType          `json:"type"`
+	API        string                  `json:"api"`
+	ClientID   string                  `json:"client_id"`
+	Issuer     string                  `json:"issuer"`
+	ExpiresAt  string                  `json:"expires_at,omitempty"`
+	Expired    bool                    `json:"expired"`
+	Session    goclilogin.SessionState `json:"session"`
+	Backend    goclilogin.Backend      `json:"backend,omitempty"`
 }
 
 func (a *app) authStatusCommand() *cobra.Command {
@@ -226,34 +252,50 @@ func (a *app) authStatusCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "status",
 		GroupID: groupReading,
-		Short:   "Show whether this machine is logged in",
+		Short:   "Show where ypl is pointed and whether this machine is logged in",
+		Long: "Shows the api, issuer and client_id this machine uses, where each came from,\n" +
+			"the config file's path, and whether a token is held for the client. Exits 1\n" +
+			"when the file lacks a value or no token is held.",
 		Example: "  ypl auth status         is this machine logged in, and for how much longer\n" +
 			"  ypl auth status --json  the same, for a prompt or a status bar",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loginConfig()
-			if err != nil {
-				return err
+			deployment, loadErr := config.Load(cmd.Context(), apiOverride)
+			if loadErr != nil && !errors.Is(loadErr, goclilogin.ErrNotConfigured) {
+				return loadErr
 			}
-			if err := cfg.CheckService(); err != nil {
-				return err
+			status := authStatus{
+				Configured: loadErr == nil,
+				ConfigFile: deployment.Path,
+				Type:       authorizedUser,
+				API:        deployment.API.Value,
+				ClientID:   deployment.ClientID.Value,
+				Issuer:     deployment.Issuer.Value,
 			}
-			status := authStatus{Type: authorizedUser, ClientID: cfg.ClientID(), Issuer: cfg.Issuer()}
-			if cfg.IsService() {
+			if config.IsService() {
 				status.Type = serviceAccount
-				serviceStatus(cmd.Context(), cfg, &status)
-			} else if err := a.loginStatus(cfg, &status); err != nil {
-				return err
+			}
+			switch {
+			case !status.Configured:
+			case config.IsService():
+				serviceStatus(cmd.Context(), deployment, &status)
+			default:
+				if err := a.loginStatus(deployment, &status); err != nil {
+					return err
+				}
 			}
 			switch {
 			case asJSON:
 				if err := emitJSON(cmd.OutOrStdout(), status); err != nil {
 					return err
 				}
-			case cfg.IsService():
-				printServiceStatus(cmd.OutOrStdout(), status)
+			case !status.Configured:
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%v\n", loadErr)
+				goclilogin.WriteDeployment(cmd.OutOrStdout(), deployment)
+			case config.IsService():
+				printServiceStatus(cmd.OutOrStdout(), status, deployment)
 			default:
-				printAuthStatus(cmd.OutOrStdout(), status)
+				printAuthStatus(cmd.OutOrStdout(), status, deployment)
 			}
 			if !status.LoggedIn {
 				return exitCode(1)
@@ -266,8 +308,8 @@ func (a *app) authStatusCommand() *cobra.Command {
 }
 
 // loginStatus fills status from the token this machine logged in for.
-func (a *app) loginStatus(cfg config.Config, status *authStatus) error {
-	token, backend, err := a.tokens(cfg.Login()).Load(cfg.ClientID())
+func (a *app) loginStatus(d goclilogin.Deployment, status *authStatus) error {
+	token, backend, err := a.tokens(config.Login(d)).Load(d.ClientID.Value)
 	switch {
 	case errors.Is(err, goclilogin.ErrNotLoggedIn):
 		// Logged out is a state this command reports, not a failure.
@@ -290,8 +332,8 @@ func (a *app) loginStatus(cfg config.Config, status *authStatus) error {
 
 // serviceStatus requests a token, because a service stores none that could say
 // whether its credentials still work, and reports what the provider answered.
-func serviceStatus(ctx context.Context, cfg config.Config, status *authStatus) {
-	source, err := goclilogin.ClientCredentialsTokenSource(ctx, cfg.Service(), cfg.ClientSecret)
+func serviceStatus(ctx context.Context, d goclilogin.Deployment, status *authStatus) {
+	source, err := goclilogin.ClientCredentialsTokenSource(ctx, config.Service(d), config.ClientSecret())
 	var token *oauth2.Token
 	if err == nil {
 		token, err = source.Token()
@@ -303,39 +345,40 @@ func serviceStatus(ctx context.Context, cfg config.Config, status *authStatus) {
 	}
 }
 
-func printServiceStatus(out io.Writer, status authStatus) {
+// The token rows below pad their key to the column goclilogin.WriteDeployment
+// starts its values in: its widest key is client_id, padded by two.
+
+func printServiceStatus(out io.Writer, status authStatus, d goclilogin.Deployment) {
 	switch status.Session {
 	case goclilogin.SessionRejected:
-		_, _ = fmt.Fprintf(out, "Service client refused by %s.\nCheck YPL_CLIENT_ID and YPL_CLIENT_SECRET.\n", status.Issuer)
+		_, _ = fmt.Fprintf(out, "Service client refused by %s. Check client_id in the config file, and %s.\n", status.Issuer, config.ClientSecretEnv)
 	case goclilogin.SessionUnverified:
 		_, _ = fmt.Fprintf(out, "Service client configured, but %s could not be reached.\n", status.Issuer)
 	default:
 		_, _ = fmt.Fprintln(out, "Service client (client credentials)")
 	}
-	_, _ = fmt.Fprintf(out, "  client   %s\n", status.ClientID)
-	_, _ = fmt.Fprintf(out, "  issuer   %s\n", status.Issuer)
+	goclilogin.WriteDeployment(out, d)
 	if status.ExpiresAt != "" {
-		_, _ = fmt.Fprintf(out, "  token    granted, valid until %s\n", status.ExpiresAt)
+		_, _ = fmt.Fprintf(out, "  %-11sgranted, valid until %s\n", "token", status.ExpiresAt)
 	}
 }
 
-func printAuthStatus(out io.Writer, status authStatus) {
+func printAuthStatus(out io.Writer, status authStatus, d goclilogin.Deployment) {
 	if !status.LoggedIn {
-		_, _ = fmt.Fprintf(out, "Not logged in as %s.\nRun `ypl auth login` to authenticate.\n", status.ClientID)
-		return
+		_, _ = fmt.Fprintf(out, "Not logged in as %s. Run `ypl auth login` to authenticate.\n", status.ClientID)
+	} else {
+		_, _ = fmt.Fprintln(out, "Logged in")
 	}
-	_, _ = fmt.Fprintln(out, "Logged in")
-	_, _ = fmt.Fprintf(out, "  client   %s\n", status.ClientID)
-	_, _ = fmt.Fprintf(out, "  issuer   %s\n", status.Issuer)
+	goclilogin.WriteDeployment(out, d)
 	// Two sentences rather than one with a swapped clause: "expired … until"
 	// reads as valid-until, which is the opposite of what it says.
 	switch {
 	case status.ExpiresAt != "" && status.Expired:
-		_, _ = fmt.Fprintf(out, "  token    expired at %s, and is refreshed on the next command\n", status.ExpiresAt)
+		_, _ = fmt.Fprintf(out, "  %-11sexpired at %s, and is refreshed on the next command\n", "token", status.ExpiresAt)
 	case status.ExpiresAt != "":
-		_, _ = fmt.Fprintf(out, "  token    valid until %s\n", status.ExpiresAt)
+		_, _ = fmt.Fprintf(out, "  %-11svalid until %s\n", "token", status.ExpiresAt)
 	}
 	if status.Backend == goclilogin.BackendFile {
-		_, _ = fmt.Fprintf(out, "  stored   in a %s, since this host has no OS keyring\n", status.Backend)
+		_, _ = fmt.Fprintf(out, "  %-11sin a %s, since this host has no OS keyring\n", "stored", status.Backend)
 	}
 }

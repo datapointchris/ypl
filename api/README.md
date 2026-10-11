@@ -111,6 +111,13 @@ verifies. The token is an RFC 9068 JWT that the identity provider `OIDC_ISSUER` 
 reads the provider beside the sync, retrying while it is down, and `/ready` answers 200 once it has.
 `/health` and `/ready` answer without a token.
 
+So does `/.well-known/oauth-protected-resource`, the RFC 9728 metadata `ypl auth login <url>` reads
+the provider from before it holds a token. It names `PUBLIC_URL` as the `resource` and
+`OIDC_ISSUER` as the one authorization server. A CLI refuses the document unless `resource` is the
+URL it fetched it for, so `PUBLIC_URL` is the address the edge serves the API at, exactly. The
+server serves no metadata while `PUBLIC_URL` is unset, because only the deployment knows that
+address.
+
 The client id the token was issued to decides who it speaks for. An id starting with
 `CLI_CLIENT_ID_PREFIX`, `ypl-cli-` when unset, is a person's CLI, and its token must name the person
 in `sub`. An id starting with `SERVICE_CLIENT_ID_PREFIX`, `ypl-svc-` when unset, is a service that
