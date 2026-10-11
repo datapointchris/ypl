@@ -30,7 +30,7 @@ var apiOverride string
 // that reach the server carry it, so one that never reads it does not offer it.
 func withAPIFlag(cmd *cobra.Command) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&apiOverride, "api", "",
-		"Use this server instead of the config file's; it must trust the file's identity provider")
+		"Use this API instead of the config file's; it must trust the file's login server")
 	return cmd
 }
 
