@@ -4,6 +4,7 @@ vars:
   # The CLI is tagged cli/v1.2.3, so only those tags describe its version.
   CLI_VERSION:
     sh: git describe --tags --match 'cli/v*' --always --dirty 2>/dev/null || echo dev
+  INSTALL_DIR: '{{.HOME}}/.local/bin'
 
 tasks:
   default:
@@ -85,6 +86,14 @@ tasks:
     dir: cli
     cmds:
       - go build -ldflags "-s -w -X github.com/datapointchris/ypl/cli/internal/cli.version={{.CLI_VERSION}}" -o ../bin/ypl .
+
+  cli:install:
+    desc: Build the ypl CLI into ~/.local/bin, replacing the installed release
+    dir: cli
+    cmds:
+      - mkdir -p {{.INSTALL_DIR}}
+      - go build -ldflags "-s -w -X github.com/datapointchris/ypl/cli/internal/cli.version={{.CLI_VERSION}}" -o {{.INSTALL_DIR}}/ypl .
+      - 'echo "installed ypl {{.CLI_VERSION}} -> {{.INSTALL_DIR}}/ypl"'
 
   cli:test:
     desc: Run the CLI test suite
