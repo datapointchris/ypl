@@ -39,7 +39,7 @@ func (a *app) authCommand() *cobra.Command {
 	}
 	goclikit.AsNamespace(cmd)
 	splitReadingFromChanging(cmd)
-	cmd.AddCommand(a.authLoginCommand(), a.authLogoutCommand(), a.authStatusCommand(), a.authTokenCommand())
+	cmd.AddCommand(withAPIFlag(a.authLoginCommand()), a.authLogoutCommand(), withAPIFlag(a.authStatusCommand()), withAPIFlag(a.authTokenCommand()))
 	return cmd
 }
 
@@ -151,8 +151,8 @@ func (a *app) authLogoutCommand() *cobra.Command {
 			// two keys still logs out. A file naming no client falls back to
 			// ypl-cli-<short hostname>, the id login uses when the file names
 			// none, so a token stored by a login whose file was never written
-			// is still removed.
-			deployment, err := config.Load(cmd.Context(), apiOverride)
+			// is still removed. No server is asked, so logout takes no --api.
+			deployment, err := config.Load(cmd.Context(), "")
 			if err != nil && !errors.Is(err, goclilogin.ErrNotConfigured) {
 				return err
 			}

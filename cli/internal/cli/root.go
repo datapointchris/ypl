@@ -127,7 +127,7 @@ func newRootCommand(a *app) *cobra.Command {
 		withAPIFlag(a.videosCommand()),
 		withAPIFlag(a.playsCommand()),
 		withAPIFlag(a.serverCommand()),
-		withAPIFlag(a.authCommand()),
+		a.authCommand(),
 		newConfigCommand(),
 		newUpdateCommand(),
 		moved("status", "ypl server status"),
