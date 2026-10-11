@@ -19,7 +19,6 @@ tasks:
     cmds:
       - go -C api mod download
       - go -C cli mod download
-      - scripts/link-planning
 
   lint:
     desc: Lint every subsystem without writing a file

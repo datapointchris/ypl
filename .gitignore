@@ -13,7 +13,6 @@ TESTING.*
 client_secret*
 service_account*
 
-.planning
 
 # Runtime state
 *_progress.json
