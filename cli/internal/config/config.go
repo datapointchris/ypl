@@ -9,7 +9,10 @@ package config
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/datapointchris/goclilogin"
 )
@@ -34,8 +37,25 @@ const ClientSecretEnv = "YPL_CLIENT_SECRET"
 
 // Load reads the deployment every command talks to. api is the --api flag's
 // value, and outranks the file's when it is not empty.
+//
+// A service missing a value is told which key to write rather than to log in,
+// since a service has no login.
 func Load(ctx context.Context, api string) (goclilogin.Deployment, error) {
-	return goclilogin.LoadDeployment(ctx, product, api)
+	d, err := goclilogin.LoadDeployment(ctx, product, api)
+	if !IsService() || !errors.Is(err, goclilogin.ErrNotConfigured) {
+		return d, err
+	}
+	var missing []string
+	for _, key := range []struct {
+		name string
+		set  goclilogin.Setting
+	}{{"api", d.API}, {"issuer", d.Issuer}, {"client_id", d.ClientID}} {
+		if key.set.Value == "" {
+			missing = append(missing, key.name)
+		}
+	}
+	return d, fmt.Errorf("%w: %s sets no %s; a service names its server, provider and client there, and only %s in its environment",
+		goclilogin.ErrNotConfigured, d.Path, strings.Join(missing, " or "), ClientSecretEnv)
 }
 
 // ForLogin is the deployment `ypl auth login` logs in to: the file's values,

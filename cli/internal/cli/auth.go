@@ -149,8 +149,9 @@ func (a *app) authLogoutCommand() *cobra.Command {
 			}
 			// Only the client id finds the token, so a file lacking the other
 			// two keys still logs out. A file naming no client falls back to
-			// the hostname's, which every release before the config file
-			// logged in as, so its token cannot outlive the logout.
+			// ypl-cli-<short hostname>, the id login uses when the file names
+			// none, so a token stored by a login whose file was never written
+			// is still removed.
 			deployment, err := config.Load(cmd.Context(), apiOverride)
 			if err != nil && !errors.Is(err, goclilogin.ErrNotConfigured) {
 				return err
@@ -271,10 +272,12 @@ func (a *app) authStatusCommand() *cobra.Command {
 				ClientID:   deployment.ClientID.Value,
 				Issuer:     deployment.Issuer.Value,
 			}
+			if config.IsService() {
+				status.Type = serviceAccount
+			}
 			switch {
 			case !status.Configured:
 			case config.IsService():
-				status.Type = serviceAccount
 				serviceStatus(cmd.Context(), deployment, &status)
 			default:
 				if err := a.loginStatus(deployment, &status); err != nil {
