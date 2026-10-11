@@ -99,6 +99,8 @@ func newRootCommand(a *app) *cobra.Command {
 	})
 	useHelp(root)
 
+	root.PersistentFlags().Bool(noInput, false, "Never prompt; fail naming the flag that would have answered")
+
 	// Cobra's automatic version flag claims -v, which is the counted verbosity
 	// flag everywhere else. Leave --version long-only rather than teach one
 	// letter two jobs.

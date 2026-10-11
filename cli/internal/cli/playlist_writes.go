@@ -137,6 +137,5 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 		},
 	}
 	addYes(cmd, &yes, "delete it")
-	addNoInput(cmd, "refuse rather than ask, unless --yes answers")
 	return cmd
 }

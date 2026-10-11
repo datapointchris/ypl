@@ -89,7 +89,6 @@ func (a *app) playsDeleteCommand() *cobra.Command {
 		},
 	}
 	addYes(cmd, &yes, "delete it")
-	addNoInput(cmd, "refuse rather than ask, unless --yes answers")
 	return goclikit.WithRecoveryHints(cmd, hintPlays)
 }
 
