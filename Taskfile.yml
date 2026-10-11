@@ -13,31 +13,24 @@ tasks:
       - task --list
 
   # A worktree is a clean checkout, so everything gitignored is absent.
-  # .planning is linked to the same target as the primary checkout's link, only
-  # where nothing is there yet. PRIMARY resolves from any worktree because they
-  # share one git directory.
   setup:
     desc: Make a fresh checkout runnable
-    vars:
-      PRIMARY:
-        sh: git rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||'
     cmds:
-      - |
-        target=$(readlink "{{.PRIMARY}}/.planning") || exit 0
-        if [ ! -e .planning ] && [ ! -L .planning ]; then
-          ln -s "$target" .planning
-        elif [ "$(readlink .planning)" != "$target" ]; then
-          echo "warning: .planning already exists and does not link to $target; left as it is" >&2
-        fi
+      - go -C api mod download
+      - go -C cli mod download
+      - scripts/link-planning
 
-  # The pre-commit hooks against every file, run exactly as a commit runs them
-  # against the files it stages. The Go hooks call the go, gofumpt and
-  # golangci-lint on PATH, where CI installs golangci-lint at a pinned version
-  # of its own.
   lint:
-    desc: Run every pre-commit hook against every file
+    desc: Lint every subsystem without writing a file
     cmds:
-      - pre-commit run --all-files
+      - task: api:lint
+      - task: cli:lint
+
+  format:
+    desc: Format every subsystem with gofumpt
+    cmds:
+      - task: api:format
+      - task: cli:format
 
   test:
     desc: Test every subsystem
@@ -55,8 +48,8 @@ tasks:
     cmds:
       - go build -o ../bin/ypl-api .
 
-  api:run:
-    desc: Run the API server
+  api:dev:
+    desc: Run the API server from source
     dir: api
     cmds:
       - go run .
@@ -66,6 +59,22 @@ tasks:
     dir: api
     cmds:
       - go test ./...
+
+  # gofumpt is the formatter the commit hooks hold the code to, and -l exits 0
+  # whatever it lists, so the listing itself is the verdict.
+  api:lint:
+    desc: Check the API's formatting, then vet and lint it
+    dir: api
+    cmds:
+      - test -z "$(gofumpt -l . | tee /dev/stderr)"
+      - go vet ./...
+      - golangci-lint run
+
+  api:format:
+    desc: Format the API with gofumpt
+    dir: api
+    cmds:
+      - gofumpt -w .
 
   # ---------------------------------------------------------------------------
   # CLI, module github.com/datapointchris/ypl/cli
@@ -82,3 +91,17 @@ tasks:
     dir: cli
     cmds:
       - go test ./...
+
+  cli:lint:
+    desc: Check the CLI's formatting, then vet and lint it
+    dir: cli
+    cmds:
+      - test -z "$(gofumpt -l . | tee /dev/stderr)"
+      - go vet ./...
+      - golangci-lint run
+
+  cli:format:
+    desc: Format the CLI with gofumpt
+    dir: cli
+    cmds:
+      - gofumpt -w .

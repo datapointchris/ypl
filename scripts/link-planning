@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Links .planning to the same target as the primary checkout's link, only where
+# nothing is there yet. A worktree shares the primary's git directory, so the
+# primary resolves from any of them, and a primary with no link leaves nothing
+# to copy.
+set -euo pipefail
+
+primary=$(git rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')
+target=$(readlink "$primary/.planning") || exit 0
+
+if [ ! -e .planning ] && [ ! -L .planning ]; then
+  ln -s "$target" .planning
+elif [ "$(readlink .planning)" != "$target" ]; then
+  echo "warning: .planning already exists and does not link to $target; left as it is" >&2
+fi
