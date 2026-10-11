@@ -21,10 +21,18 @@ import (
 // version is set at build time with -ldflags.
 var version = "dev"
 
-// apiOverride is bound to the persistent --api flag, the one value that
-// outranks the config file. Binding it in newRootCommand resets it, so a test
-// never inherits the previous tree's value.
+// apiOverride is bound to --api, the one value that outranks the config file.
+// Binding it as the tree is built resets it, so a test never inherits the
+// previous tree's value.
 var apiOverride string
+
+// withAPIFlag declares --api on cmd and everything under it. Only the commands
+// that reach the server carry it, so one that never reads it does not offer it.
+func withAPIFlag(cmd *cobra.Command) *cobra.Command {
+	cmd.PersistentFlags().StringVar(&apiOverride, "api", "",
+		"Use this server instead of the config file's; it must trust the file's identity provider")
+	return cmd
+}
 
 // The root's help sections. Playing comes first because it is what the tool
 // is for, and each library namespace has a section of its own, so its
@@ -90,8 +98,6 @@ func newRootCommand(a *app) *cobra.Command {
 		return goclikit.UsageError(err)
 	})
 	useHelp(root)
-	root.PersistentFlags().StringVar(&apiOverride, "api", "",
-		"Use this server instead of the config file's; it must trust the file's identity provider")
 
 	// Cobra's automatic version flag claims -v, which is the counted verbosity
 	// flag everywhere else. Leave --version long-only rather than teach one
@@ -114,14 +120,14 @@ func newRootCommand(a *app) *cobra.Command {
 	// sets Tab up is listed with the rest of the setup.
 	root.SetCompletionCommandGroupID(groupSetup)
 	root.AddCommand(
-		a.playCommand(),
-		a.nowCommand(),
-		a.nextCommand(),
-		a.playlistsCommand(),
-		a.videosCommand(),
-		a.playsCommand(),
-		a.serverCommand(),
-		a.authCommand(),
+		withAPIFlag(a.playCommand()),
+		withAPIFlag(a.nowCommand()),
+		withAPIFlag(a.nextCommand()),
+		withAPIFlag(a.playlistsCommand()),
+		withAPIFlag(a.videosCommand()),
+		withAPIFlag(a.playsCommand()),
+		withAPIFlag(a.serverCommand()),
+		withAPIFlag(a.authCommand()),
 		newConfigCommand(),
 		newUpdateCommand(),
 		moved("status", "ypl server status"),

@@ -20,7 +20,7 @@ func newConfigCommand() *cobra.Command {
 			"one config file. `ypl auth login <url>` fills in whatever it lacks.",
 	}
 	goclikit.AsNamespace(cmd)
-	cmd.AddCommand(newConfigShowCommand(), newConfigPathCommand())
+	cmd.AddCommand(withAPIFlag(newConfigShowCommand()), newConfigPathCommand())
 	return cmd
 }
 
