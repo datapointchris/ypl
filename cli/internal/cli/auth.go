@@ -48,7 +48,7 @@ func (a *app) authLoginCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "login [url]",
 		GroupID: groupChanging,
-		Short:   "Log in by approving a code in a browser",
+		Short:   "Log in by approving a code in any browser",
 		Long: "Log in to the ypl server at url, or to the config file's api when url is\n" +
 			"omitted. Whatever the file lacks is filled in: api from url, the issuer from\n" +
 			"the server's RFC 9728 metadata, and the client id from --client-id or this\n" +
@@ -140,7 +140,7 @@ func (a *app) authLogoutCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "logout",
 		GroupID: groupChanging,
-		Short:   "Log out, forgetting this machine's token",
+		Short:   "Remove the stored token from this machine's keychain",
 		Example: "  ypl auth logout  forget the token, before handing the machine on",
 		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -178,7 +178,7 @@ func (a *app) authTokenCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "token",
 		GroupID: groupReading,
-		Short:   "Print an access token for calling the API directly",
+		Short:   "Print the current access token to stdout",
 		Long: "Exits 1 when this machine is not logged in. With YPL_CLIENT_SECRET set, it\n" +
 			"requests a new service token instead.",
 		Example: "  # the server's status, read with curl rather than ypl\n" +
@@ -252,7 +252,7 @@ func (a *app) authStatusCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "status",
 		GroupID: groupReading,
-		Short:   "Show where ypl is pointed and whether this machine is logged in",
+		Short:   "Show where the CLI is pointed and whether it is logged in",
 		Long: "Shows the api, issuer and client_id this machine uses, where each came from,\n" +
 			"the config file's path, and whether a token is held for the client. Exits 1\n" +
 			"when the file lacks a value or no token is held.",
@@ -370,15 +370,14 @@ func printAuthStatus(out io.Writer, status authStatus, d goclilogin.Deployment) 
 		_, _ = fmt.Fprintln(out, "Logged in")
 	}
 	goclilogin.WriteDeployment(out, d)
-	// Two sentences rather than one with a swapped clause: "expired … until"
-	// reads as valid-until, which is the opposite of what it says.
-	switch {
-	case status.ExpiresAt != "" && status.Expired:
-		_, _ = fmt.Fprintf(out, "  %-11sexpired at %s, and is refreshed on the next command\n", "token", status.ExpiresAt)
-	case status.ExpiresAt != "":
-		_, _ = fmt.Fprintf(out, "  %-11svalid until %s\n", "token", status.ExpiresAt)
+	if status.ExpiresAt != "" {
+		state := "valid"
+		if status.Expired {
+			state = "expired — will refresh on next use"
+		}
+		_, _ = fmt.Fprintf(out, "  %-11s%s (expires %s)\n", "token", state, status.ExpiresAt)
 	}
 	if status.Backend == goclilogin.BackendFile {
-		_, _ = fmt.Fprintf(out, "  %-11sin a %s, since this host has no OS keyring\n", "stored", status.Backend)
+		_, _ = fmt.Fprintf(out, "  %-11s%s — no OS keyring on this host\n", "storage", status.Backend)
 	}
 }
