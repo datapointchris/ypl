@@ -67,7 +67,11 @@ tasks:
     desc: Check the API's formatting, then vet and lint it
     dir: api
     cmds:
-      - test -z "$(gofumpt -l . | tee /dev/stderr)"
+      - |
+        unformatted=$(gofumpt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "gofumpt needed on:"; echo "$unformatted"; exit 1
+        fi
       - go vet ./...
       - golangci-lint run
 
@@ -105,7 +109,11 @@ tasks:
     desc: Check the CLI's formatting, then vet and lint it
     dir: cli
     cmds:
-      - test -z "$(gofumpt -l . | tee /dev/stderr)"
+      - |
+        unformatted=$(gofumpt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "gofumpt needed on:"; echo "$unformatted"; exit 1
+        fi
       - go vet ./...
       - golangci-lint run
 
