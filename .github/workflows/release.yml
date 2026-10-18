@@ -251,11 +251,13 @@ jobs:
           tar -czf "../dist/ypl_${version_num}_${GOOS}_${GOARCH}.tar.gz" -C ../dist ypl
           rm ../dist/ypl
 
+      # The release job attaches these to the GitHub release in this run, so a day outlives every use.
       - uses: actions/upload-artifact@v7
         with:
           name: ypl-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*.tar.gz
           if-no-files-found: error
+          retention-days: 1
 
   publish:
     name: Publish the CLI release
