@@ -40,6 +40,10 @@ var ErrProviderUnavailable = errors.New("identity provider unavailable")
 // it.
 const providerTimeout = 10 * time.Second
 
+// keySetLifespan bounds how long a key the provider stopped publishing still
+// verifies, since held keys are otherwise read again only when none verifies.
+const keySetLifespan = 5 * time.Minute
+
 // userAgent names this API to the provider. A proxy in front of a provider can
 // refuse a client that names none.
 const userAgent = "ypl-api"
@@ -115,7 +119,7 @@ func NewVerifier(ctx context.Context, issuer, clientIDPrefix, serviceClientIDPre
 		return nil, fmt.Errorf("auth: issuer %q advertises no jwks_uri", issuer)
 	}
 	keys := &keySet{uri: doc.JWKSURI, client: identifiedClient()}
-	if _, err := keys.fetch(); err != nil {
+	if _, err := keys.fetch(time.Now()); err != nil {
 		return nil, err
 	}
 	return &Verifier{issuer: issuer, clientIDPrefix: clientIDPrefix, serviceClientIDPrefix: serviceClientIDPrefix, keys: keys, now: time.Now}, nil
@@ -165,7 +169,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	payload, err := v.keys.verify(ctx, signed)
+	payload, err := v.keys.verify(ctx, signed, v.now())
 	if err != nil {
 		return Identity{}, err
 	}
@@ -229,7 +233,8 @@ func parseAccessToken(raw string) (*jose.JSONWebSignature, error) {
 
 // keySet holds the signing keys the provider publishes at uri. A token no held
 // key verifies makes it read them again, which covers a key the provider has
-// rotated in. Callers waiting at the same moment share one read.
+// rotated in, and so do held keys older than keySetLifespan, which covers one it
+// has rotated out. Callers waiting at the same moment share one read.
 type keySet struct {
 	uri     string
 	client  *http.Client
@@ -237,20 +242,24 @@ type keySet struct {
 
 	mu   sync.RWMutex
 	keys []jose.JSONWebKey
+	read time.Time
 }
 
-func (s *keySet) held() []jose.JSONWebKey {
+func (s *keySet) held(now time.Time) []jose.JSONWebKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if now.Sub(s.read) >= keySetLifespan {
+		return nil
+	}
 	return s.keys
 }
 
-func (s *keySet) verify(ctx context.Context, signed *jose.JSONWebSignature) ([]byte, error) {
-	if payload, ok := verifyWith(s.held(), signed); ok {
+func (s *keySet) verify(ctx context.Context, signed *jose.JSONWebSignature, now time.Time) ([]byte, error) {
+	if payload, ok := verifyWith(s.held(now), signed); ok {
 		return payload, nil
 	}
 	read := s.fetches.DoChan("keys", func() (any, error) {
-		keys, err := s.fetch()
+		keys, err := s.fetch(now)
 		return keys, err
 	})
 	select {
@@ -269,8 +278,8 @@ func (s *keySet) verify(ctx context.Context, signed *jose.JSONWebSignature) ([]b
 
 // fetch reads the keys the provider publishes and holds them. It runs on a
 // deadline of its own rather than a caller's, since every caller waiting shares
-// it and any of them can stop waiting.
-func (s *keySet) fetch() ([]jose.JSONWebKey, error) {
+// it and any of them can stop waiting. now is when the keys count as read.
+func (s *keySet) fetch(now time.Time) ([]jose.JSONWebKey, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
 	defer cancel()
 
@@ -302,6 +311,7 @@ func (s *keySet) fetch() ([]jose.JSONWebKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.keys = signing
+	s.read = now
 	return signing, nil
 }
 

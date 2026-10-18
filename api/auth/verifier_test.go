@@ -316,6 +316,27 @@ func TestAKeyTheProviderRotatesInIsReadAndAccepted(t *testing.T) {
 	}
 }
 
+// A rotated-out signing key may have leaked, so it must stop verifying without
+// waiting for a token no held key verifies to arrive.
+func TestAKeyTheProviderRotatesOutIsRefusedOnceTheHeldKeysExpire(t *testing.T) {
+	p := newTestProvider(t)
+	v := p.verifier(t)
+	retired := p.token(t)
+	if _, err := v.Verify(context.Background(), retired); err != nil {
+		t.Fatalf("Verify before the rotation: %v", err)
+	}
+	next := newKey(t)
+	p.set(func(p *testProvider) {
+		p.published.Keys = []jose.JSONWebKey{publicKey(next, "next")}
+	})
+	later := time.Now().Add(keySetLifespan)
+	v.now = func() time.Time { return later }
+
+	if _, err := v.Verify(context.Background(), retired); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Verify under a rotated-out key = %v, want ErrUnauthorized", err)
+	}
+}
+
 // A caller that stops waiting is not the provider going away, and the read it
 // was waiting on still finishes for the callers that remain.
 func TestACallerThatStopsWaitingIsNotAnUnavailableProvider(t *testing.T) {
