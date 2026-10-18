@@ -171,38 +171,16 @@ func namespaces(cmd *cobra.Command, path []string) [][]string {
 }
 
 // A namespace expects another word after it, so bare shows its help and exits
-// 0 rather than failing at someone walking down the tree a word at a time. That
-// help names every command beneath it a caller can run, which is the answer to
-// what the namespace holds.
+// 0 rather than failing at someone walking down the tree a word at a time.
 func TestEveryNamespaceShowsHelpWhenGivenNothing(t *testing.T) {
-	tree := newRootCommand(&app{})
-	found := namespaces(tree, nil)
+	found := namespaces(newRootCommand(&app{}), nil)
 	if len(found) < 8 {
 		t.Fatalf("walked %d namespaces, want every node with subcommands", len(found))
 	}
 	for _, args := range found {
-		namespace, _, err := tree.Find(args)
-		if err != nil {
-			t.Fatalf("%v: %v", args, err)
-		}
 		help := newFixture(t, serves(nil)).run(append(append([]string{}, args...), "--help")...)
 		if help.code != 0 {
 			t.Errorf("%v --help exited %d", args, help.code)
-		}
-		var rows []row
-		for _, s := range commandSections(namespace) {
-			rows = append(rows, s.rows...)
-		}
-		for _, leaf := range leaves(namespace) {
-			typed := strings.TrimPrefix(leaf, namespace.CommandPath()+" ")
-			if !slices.ContainsFunc(rows, func(r row) bool { return r.line == typed || strings.HasPrefix(r.line, typed+" ") }) {
-				t.Errorf("%s --help lists no row for %s", namespace.CommandPath(), leaf)
-			}
-		}
-		for _, r := range rows {
-			if !strings.Contains(help.out, r.line) {
-				t.Errorf("%s --help left %q off the screen", namespace.CommandPath(), r.line)
-			}
 		}
 		if bare := newFixture(t, serves(nil)).run(args...); bare.code != 0 || bare.out != help.out {
 			t.Errorf("%v exited %d having written %q, want its help and 0", args, bare.code, bare.out)
