@@ -46,7 +46,7 @@ func (a *app) playlistsEditCommand() *cobra.Command {
 			"as it is saved, ahead of anything else it has waiting.\n" + wholeName,
 		Example: "  ypl playlists edit 'Sunday Morning'          rearrange it in your editor\n" +
 			"  ypl playlists edit 'Sunday Morning' < order  apply a buffer written elsewhere",
-		Args:              usageArgs(cobra.ExactArgs(1)),
+		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := api.Reference(args[0])

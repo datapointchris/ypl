@@ -31,7 +31,7 @@ func newConfigShowCommand() *cobra.Command {
 		Short: "Show each setting and where it came from",
 		Example: "  ypl config show         each setting, and whether the file or a flag set it\n" +
 			"  ypl config show --json  the same, for a script",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			deployment, err := config.Load(cmd.Context(), apiOverride)
 			if err != nil && !errors.Is(err, goclilogin.ErrNotConfigured) {
@@ -60,7 +60,7 @@ func newConfigPathCommand() *cobra.Command {
 		Use:     "path",
 		Short:   "Print the config file's path",
 		Example: "  ypl config path  where the file goes, whether or not it exists",
-		Args:    usageArgs(cobra.NoArgs),
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path := config.Path()
 			if path == "" {

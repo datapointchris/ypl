@@ -45,7 +45,7 @@ func (a *app) serverStatusCommand() *cobra.Command {
 			"at. Exits 1 when the server could not be asked.",
 		Example: "  ypl server status         the library's size and the last sync\n" +
 			"  ypl server status --json  the same, for a check on a timer",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -99,7 +99,7 @@ func (a *app) serverSyncsListCommand() *cobra.Command {
 			"the sync spent, units.",
 		Example: fmt.Sprintf("  ypl server syncs list                   the last %d\n", defaultSyncs) +
 			"  ypl server syncs list --limit 5 --json  the last five, for a script",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {

@@ -45,7 +45,7 @@ func (a *app) playsDeleteCommand() *cobra.Command {
 			"never happened.",
 		Example: "  ypl plays delete 41        ask, then delete it\n" +
 			"  ypl plays delete 41 --yes  delete it without asking",
-		Args: usageArgs(cobra.ExactArgs(1)),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Checked before anything is read, so a caller who could never
 			// have answered is told what they left out rather than told that a
@@ -103,7 +103,7 @@ func (a *app) playsAddCommand() *cobra.Command {
 		Example: "  ypl plays add dQw4w9WgXcQ                          record one by id\n" +
 			"  ypl plays add 'https://youtu.be/dQw4w9WgXcQ?t=42'  record one from a link\n" +
 			"  ypl plays add 'mayan warrior'                      by part of its title",
-		Args: usageArgs(cobra.ExactArgs(1)),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(args[0]) == "" {
 				return goclikit.UsageError(errors.New("name the video by its link, its id or its title"))
@@ -156,7 +156,7 @@ func (a *app) playsListCommand() *cobra.Command {
 		Short:   "List recent plays, newest first",
 		Example: "  ypl plays list                     what has been on lately\n" +
 			"  ypl plays list --limit 100 --json  further back, for a script",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -192,7 +192,7 @@ func (a *app) playsShowCommand() *cobra.Command {
 		GroupID: groupReading,
 		Short:   "Show one play",
 		Example: "  ypl plays show 41  when this one was played, and what it was",
-		Args:    usageArgs(cobra.ExactArgs(1)),
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {

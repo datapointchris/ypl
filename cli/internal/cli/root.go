@@ -203,8 +203,9 @@ func notFound(err error) (string, bool) {
 // report writes err as the line a person reads, and writes nothing for the two
 // kinds that have already said their piece. An exitCode carries a code and no
 // message, because the command printed what it found and an "error:" line over
-// it would report a failure that did not happen; `update` writes its own line
-// for the same reason.
+// it would report a failure that did not happen. goclikit.ErrReported marks the
+// rest: `update` writes its own line, and a command given none of the
+// arguments it requires has already printed its help to stderr.
 func report(out io.Writer, err error) {
 	var code exitCode
 	if err == nil || errors.As(err, &code) || errors.Is(err, goclikit.ErrReported) {

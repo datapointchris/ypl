@@ -39,18 +39,6 @@ func moved(name, to string) *cobra.Command {
 	return cmd
 }
 
-// usageArgs is validate, with what it refuses marked as a usage mistake.
-// Cobra's own validators return a plain error, which would exit 1 and tell a
-// caller the command failed rather than that it was typed wrong.
-func usageArgs(validate cobra.PositionalArgs) cobra.PositionalArgs {
-	return func(cmd *cobra.Command, args []string) error {
-		if err := validate(cmd, args); err != nil {
-			return goclikit.UsageError(err)
-		}
-		return nil
-	}
-}
-
 // exitCodeFor is the process exit code for err: 0 for success, 2 for a usage
 // mistake, an exitCode's own value, and 1 for anything else.
 //

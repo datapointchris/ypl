@@ -24,7 +24,7 @@ func (a *app) nextCommand() *cobra.Command {
 		Example: "  ypl next                                      one thing to put on now\n" +
 			"  ypl next --playlist sunday-morning --limit 5  five, from one playlist\n" +
 			"  ypl next --json                               for a status bar or a picker",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {

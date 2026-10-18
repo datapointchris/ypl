@@ -57,7 +57,7 @@ func (a *app) authLoginCommand() *cobra.Command {
 			"the file is never rewritten.",
 		Example: "  ypl auth login                        log this machine in, once per machine\n" +
 			"  ypl auth login https://ypl.example.com  the same, on a machine with no config file",
-		Args: usageArgs(cobra.MaximumNArgs(1)),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if config.IsService() {
 				return fmt.Errorf("%s is set, so ypl authenticates as a service client with no login — unset it to log in as a person", config.ClientSecretEnv)
@@ -142,7 +142,7 @@ func (a *app) authLogoutCommand() *cobra.Command {
 		GroupID: groupChanging,
 		Short:   "Remove the stored token from this machine's keychain",
 		Example: "  ypl auth logout  forget the token, before handing the machine on",
-		Args:    usageArgs(cobra.NoArgs),
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if config.IsService() {
 				return fmt.Errorf("%s is set, so ypl authenticates as a service client and stores no token to remove — unset it to log out as a person", config.ClientSecretEnv)
@@ -184,7 +184,7 @@ func (a *app) authTokenCommand() *cobra.Command {
 		Example: "  # the server's status, read with curl rather than ypl\n" +
 			"  base=$(ypl config show --json | jq -r .api.value)\n" +
 			"  curl -s -H \"Authorization: Bearer $(ypl auth token)\" \"$base/api/v1/status\"",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			deployment, err := config.Load(cmd.Context(), apiOverride)
 			if err != nil {
@@ -258,7 +258,7 @@ func (a *app) authStatusCommand() *cobra.Command {
 			"when the file lacks a value or no token is held.",
 		Example: "  ypl auth status         is this machine logged in, and for how much longer\n" +
 			"  ypl auth status --json  the same, for a prompt or a status bar",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			deployment, loadErr := config.Load(cmd.Context(), apiOverride)
 			if loadErr != nil && !errors.Is(loadErr, goclilogin.ErrNotConfigured) {

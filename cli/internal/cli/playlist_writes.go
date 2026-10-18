@@ -23,7 +23,7 @@ func (a *app) playlistsCreateCommand() *cobra.Command {
 		Long:    "`ypl playlists edit` puts videos in it.",
 		Example: "  ypl playlists create 'Sunday Morning'         a new empty playlist\n" +
 			"  ypl playlists create 'Sunday Morning' --json  the same, for a script",
-		Args: usageArgs(cobra.ExactArgs(1)),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -54,7 +54,7 @@ func (a *app) playlistsRenameCommand() *cobra.Command {
 		Long:    wholeName,
 		Example: "  ypl playlists rename 'Sunday Morning' 'Sunday Mornings'  retitle it\n" +
 			"  ypl playlists rename PLabc123 'Sunday Mornings'          by its id",
-		Args:              usageArgs(cobra.ExactArgs(2)),
+		Args:              cobra.ExactArgs(2),
 		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())
@@ -85,7 +85,7 @@ func (a *app) playlistsDeleteCommand() *cobra.Command {
 		Long:    "It cannot be undone. It asks first; --yes answers for it.\n" + wholeName,
 		Example: "  ypl playlists delete 'Sunday Morning'        ask, then delete it\n" +
 			"  ypl playlists delete 'Sunday Morning' --yes  delete it without asking",
-		Args:              usageArgs(cobra.ExactArgs(1)),
+		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := api.Reference(args[0])

@@ -39,7 +39,7 @@ func (a *app) videosListCommand() *cobra.Command {
 			"  ypl videos list --artist bjork            videos whose tracklist names Björk\n" +
 			"  ypl videos list --sort newest --limit 10  the ten latest uploads\n" +
 			"  ypl videos list --json                    the whole library, for a script",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// Absence comes from the parser, so a bound of zero is a bound
 			// rather than a flag nobody set.
@@ -97,7 +97,7 @@ func (a *app) videosShowCommand() *cobra.Command {
 		Example: "  ypl videos show dQw4w9WgXcQ         the video, track by track\n" +
 			"  ypl videos show 'mayan warrior'     by part of its title\n" +
 			"  ypl videos show dQw4w9WgXcQ --json  the same, for a script",
-		Args: usageArgs(cobra.ExactArgs(1)),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -130,7 +130,7 @@ func (a *app) videosSortsCommand() *cobra.Command {
 		Use:     "sorts",
 		Short:   "List the orders `ypl videos list --sort` takes",
 		Example: "  ypl videos sorts  one order a line, for a script",
-		Args:    usageArgs(cobra.NoArgs),
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if asJSON {
 				return emitJSON(cmd.OutOrStdout(), api.VideoSorts)

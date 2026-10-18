@@ -44,7 +44,7 @@ func (a *app) playlistsListCommand() *cobra.Command {
 			"UNAVAILABLE counts the videos YouTube will not serve, deleted or made private.",
 		Example: "  ypl playlists list         every playlist\n" +
 			"  ypl playlists list --json  the same, for a script",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -77,7 +77,7 @@ func (a *app) playlistsShowCommand() *cobra.Command {
 		Short:   "Show a playlist's videos, in order",
 		Example: "  ypl playlists show sunday-morning  its videos, in the order they play\n" +
 			"  ypl playlists show morning         part of a title is enough",
-		Args:              usageArgs(cobra.ExactArgs(1)),
+		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())

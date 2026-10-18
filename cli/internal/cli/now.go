@@ -36,7 +36,7 @@ func (a *app) nowCommand() *cobra.Command {
 		Long:    "Exits 1 when nothing is playing.",
 		Example: "  ypl now         what is on, and how far in\n" +
 			"  ypl now --json  the same, for a status bar",
-		Args: usageArgs(cobra.NoArgs),
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			found, err := a.readNow(cmd.Context(), a.client)
 			switch {

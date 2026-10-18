@@ -35,7 +35,7 @@ func (a *app) playCommand() *cobra.Command {
 			"  ypl play                            what you have heard least lately\n" +
 			"  ypl play sunday-morning --audio     no video window\n" +
 			"  ypl play sunday-morning --limit 3   the first three of it",
-		Args:              usageArgs(cobra.MaximumNArgs(1)),
+		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: onlyFirst(a.completePlaylists),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// An unset --limit is no ceiling. An explicit --limit 0 is a
