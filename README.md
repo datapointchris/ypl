@@ -2,29 +2,237 @@
 
 Organize and play YouTube playlists of long DJ mixes.
 
-Most of the library this was built for is mixed sets — one video holding twenty to forty tracks by
-different artists. YouTube already carries those tracklists as chapter markers, timestamped
-description lines or one of its top comments, so ypl reads them and keeps them where they can be searched,
-compared and rearranged.
+Most of the library this was built for is mixed sets: one video holding twenty to forty tracks by
+different artists. YouTube already carries those tracklists as chapter markers, as timestamped lines
+in the description, or in one of the top comments. ypl reads them and keeps them where they can be
+searched, compared and rearranged.
 
 ypl is two programs. A server keeps the channel's playlists mirrored and reads a tracklist for each
 mix. A command-line client on every machine plays from it and changes it, so several machines see
 one library rather than each keeping a copy that drifts.
 
-## The server
+ypl downloads nothing and plays nothing itself. The playlists stay on YouTube. mpv plays the watch
+links ypl hands it. What ypl adds is the tracklist of every mix, a record of what was heard, and the
+choice of what to play next.
 
-The server in `api/` keeps the channel's playlists mirrored through the Data API, reads a tracklist
-for each mix with `yt-dlp`, and answers the HTTP API the Go client speaks. Its reference — the
-quota a run spends, the settings it reads, and every route — is [`api/README.md`](api/README.md),
-beside the code it describes.
+## Install
 
-## The command-line client
+The client installs from this repository's `cli/v*` releases. Each carries an archive for every
+platform the release builds, with a checksum file beside them.
 
-`cli/` holds no database and reads nothing from YouTube. Every answer comes from the server.
+```bash
+# the newest cli/v* release, checked against its checksums before it is installed
+tag=$(gh release list --repo datapointchris/ypl --json tagName \
+  --jq '[.[] | select(.tagName | startswith("cli/"))][0].tagName')
+platform="$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
+gh release download "$tag" --repo datapointchris/ypl --pattern "ypl_*_${platform}.tar.gz" --pattern checksums.txt
+sha256sum --ignore-missing -c checksums.txt && tar -xzf ypl_*_"${platform}".tar.gz ypl && install ypl ~/.local/bin/
 
-It installs from this repository's `cli/v*` releases, which carry a binary for each platform the
-release builds, with a checksum file beside them. `ypl update` moves an installed binary to the
-newest release, and a daily check says when one is out.
+ypl update                                   # later: move to the newest release, verified the same way
+task cli:install                             # or build this checkout into ~/.local/bin, as a development build
+
+docker pull ghcr.io/datapointchris/ypl-api   # the server's image; :sha-<short> names one build and never moves
+```
+
+A check at most once a day says when a newer release is out. `ypl update` refuses to replace a
+development build.
+
+## Starting from scratch
+
+A machine plays from a server, so the server comes first. Skip the first group where one is already
+running.
+
+```bash
+# The server, once, from a clone of this repository
+export YOUTUBE_CLIENT_ID=… YOUTUBE_CLIENT_SECRET=…    # the channel's Google OAuth client
+export YOUTUBE_REFRESH_TOKEN=$(go -C api run ./cmd/authorize-youtube | jq -r .refresh_token)  # approve as the channel
+docker run -d --name ypl -p 8080:8080 -v ypl-db:/var/db/ypl \
+  -e YOUTUBE_CLIENT_ID -e YOUTUBE_CLIENT_SECRET -e YOUTUBE_REFRESH_TOKEN \
+  -e OIDC_ISSUER=https://auth.example.com -e PUBLIC_URL=https://ypl.example.com \
+  ghcr.io/datapointchris/ypl-api:latest               # its first pass syncs every playlist
+curl -fsS https://ypl.example.com/ready               # 200 once it has read the identity provider
+
+# Each machine that plays
+ypl auth login https://ypl.example.com   # fills in the config file, then prints a code to approve in any browser
+ypl auth status                          # where it is pointed, and whether it holds a token; exit 1 if not
+source <(ypl completion zsh)             # Tab offers every playlist by its slug
+ypl server status                        # the whole path works: the server answers with what it holds
+```
+
+The Google OAuth client and the identity provider are the two things no command here supplies.
+
+The OAuth client belongs to a Google Cloud project with the YouTube Data API v3 enabled. Its type is
+"TVs and Limited Input devices". Its app has to be published "In production", because an app in
+"Testing" issues refresh tokens that expire after 7 days. `api/youtube`'s package documentation
+walks through it. When `authorize-youtube` shows the account chooser, pick the channel's own
+account. A brand account's playlists belong to the brand account, not to the Google account that
+manages it.
+
+The identity provider has to issue RFC 9068 JWT access tokens and offer the device grant. It has to
+hold a public client for each machine that logs in: `ypl-cli-<short hostname>`, unless
+`--client-id` names another. One client per machine is what lets one machine's token be revoked
+without touching the others.
+
+`PUBLIC_URL` is exactly the address the API is served at over HTTPS. The client refuses the
+server's metadata unless it names the URL the client asked. The server serves no metadata while
+`PUBLIC_URL` is unset, and `ypl auth login` then has no issuer to fill in.
+
+The image runs as uid 10001, so a host directory mounted at `/var/db/ypl` has to be owned by it. A
+store left inside the container goes with the container.
+
+`ypl help completion zsh` says where to keep the script so every new shell loads it. The same
+command takes `bash`, `fish` or `powershell`.
+
+`ypl play` is the next command. It needs mpv on `PATH`. mpv opens a YouTube link through yt-dlp, so
+both come from the system's package manager.
+
+## The grammar
+
+A command is a noun, then a verb: `ypl playlists show` and `ypl playlists rename` differ only in
+the last word. A namespace on its own, like `ypl playlists`, lists the commands under it. A bare
+`ypl` prints the root help. That help lists every command as the line to type, in groups: playing
+first, then one group for each thing the library holds, then the server, then setup. It is not
+repeated here, because a list in markdown goes stale and `--help` cannot.
+
+A playlist is named by its title, by the slug Tab offers, or by its YouTube id. Case and punctuation
+do not have to be reproduced, but the breaks between words do. `'sunday morning'` and
+`sunday-morning` both find Sunday Morning. `sundaymorning` finds nothing. A name matching two
+playlists is refused naming each, rather than answered with one of them. A playlist the server does
+not recognize is answered with every playlist it does hold, in the form Tab offers.
+
+A read also takes part of a title, so `ypl playlists show morning` finds Sunday Morning too. A
+change does not, for the reason the `playlists` section gives. A video is named by its link, its id
+or its title. A play is named by its number in `ypl plays list`.
+
+Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
+nothing in it is `[]` rather than `null`, so one filter works on every answer. A command that prints
+one string, like `config path` or `auth token`, takes no `--json`.
+
+Exit codes are 0 for success, 2 for an invocation the CLI would not accept, and 1 for a command that
+ran and failed. Three commands also spend 1 on a real state, after writing their answer: `ypl now`
+when nothing is playing, `ypl next` when there is nothing to suggest, and `ypl auth status` when
+this machine is not logged in. A status bar can run any of them unguarded. `ypl server status`
+spends 3 on a sync that has stopped keeping up.
+
+`--no-input` forbids every prompt, so a script can take the non-interactive path from a terminal. A
+delete then needs `--yes`. An edit then needs its buffer piped in.
+
+## Which surface answers which question
+
+| Ask | Surface | Reads |
+| --- | --- | --- |
+| What should I put on | `play`, `next` | the server's draw, which `play` hands to mpv |
+| Which track is this, inside the mix | `now` | mpv's socket, then the video's tracklist from the server |
+| What a playlist holds, and in what order | `playlists list`, `playlists show` | the server's mirror |
+| Make, retitle, delete or reorder a playlist | `playlists create`, `rename`, `delete`, `edit` | the server, which writes to YouTube |
+| Which mixes run three hours, or name an artist | `videos` | the server's tracklists and lengths |
+| What have I heard lately | `plays` | the server's listening history |
+| Is the mirror keeping up with YouTube | `server` | the server's syncs and the day's quota |
+| Where this machine is pointed, and whether it is logged in | `auth status`, `config show` | the config file and this machine's keychain |
+| Is a newer release out | `update` | this repository's `cli/v*` releases |
+
+## `play`, `now`, `next` — ypl chooses and records, and mpv plays
+
+```bash
+ypl play sunday-morning           # the playlist in its order, leaving out what YouTube will not serve
+ypl play                          # a draw: never-played first, in a new order each time, then the least recently heard
+ypl play sunday-morning --audio   # the sound alone, with no video window
+ypl now                           # the track playing inside the mix, and how far in
+ypl next                          # the same draw as a bare play, printed rather than played
+```
+
+`ypl play` runs mpv in the foreground, holding the terminal until mpv exits. `--mpv` passes an
+argument straight through to it. `ypl play` opens mpv's IPC socket, which is what lets `ypl now`
+report the track inside a two-hour mix rather than the name of the mix. `ypl now` sees only an mpv
+that `ypl play` started, because the socket sits at a path `ypl play` chose.
+
+A player that failed is exit 1. mpv's own status is written to stderr instead. mpv spends 2 on a
+file it cannot open. This tool spends 2 on an invocation it would not accept, so mpv's code passed
+through would say the wrong thing.
+
+`ypl play` records what it plays. It reads mpv's socket while the player runs. Once a mix has played
+for 20 minutes, or for half its length when that is shorter, it tells the server while mpv is still
+playing. Only ground covered at playing speed counts: a seek forward, a rewind and a pause are not
+listening. Each play is posted under an id made once, so a retry is stored once. A play the server
+could not be told about is named afterwards with the `ypl plays add` line that records it. The plays
+are what `ypl next` reads to stop suggesting the same mix.
+
+## `plays` — the listening history, where every play can be taken back
+
+```bash
+ypl plays list                                     # newest first, each with its number in the PLAY column
+ypl plays add 'https://youtu.be/dQw4w9WgXcQ?t=42'  # a mix heard in a browser or on a phone, recorded as heard now
+ypl plays delete 41                                # asks first; the video then ranks as if that play never happened
+```
+
+A play `ypl play` inferred is a verdict from one bounded observation. It sinks the mix in the draw,
+so every play has a way back. `ypl plays add` takes a video by its id, by a link it was copied from,
+or by part of its title. `ypl plays delete` asks first. `--yes` answers for it. A deleted play's
+number is never given to another play, so a number typed from an old listing finds nothing rather
+than a different listen. Its id is never stored again either, so a retry arriving after the delete
+cannot record the play a second time.
+
+## `playlists` — a change takes the whole name, and reaches YouTube before it answers
+
+```bash
+ypl playlists list                                      # every playlist, by the slug Tab offers, with its video count
+ypl playlists show morning                              # a read: part of a title is enough
+ypl playlists rename sunday-morning 'Sunday Mornings'   # a change: the whole title, the slug or the id
+ypl playlists edit sunday-morning                       # reorder, add or remove videos in $EDITOR
+```
+
+A rename, a delete or an edit takes the id, the slug or the whole title. A fragment that happens to
+match one playlist matches it unambiguously, so the refusal of two matches has nothing to catch. A
+fragment sent to a change is refused by the titles it is part of, rather than by a sentence saying
+nothing was found.
+
+`ypl playlists create`, `rename` and `delete` make their change on YouTube in the request that asks
+for it. `delete` asks first, and needs `--yes` where there is nobody to ask.
+
+`ypl playlists edit` is the one changing verb that does not reach YouTube itself. It opens the order
+in `$VISUAL` or `$EDITOR`, one line per video, and sets the order the server holds. The server
+pushes that order to YouTube as soon as it is saved, ahead of anything else it has waiting. Each
+video the push moves, adds or removes is a 50-unit write, so a large reorder can take more than a
+day's quota. `ypl server status` lists what is left to push.
+
+Where an edit is refused, the buffer is kept in a file. The refusal names the file, with the command
+that applies it. By then the editor has closed, so that file is the only copy of the rearranging.
+
+## `videos` — the library searched by what its tracklists name
+
+```bash
+ypl videos list --min-minutes 180   # three hours or more; a video of unknown length is left out
+ypl videos list --artist bjork      # every mix whose tracklist names Björk
+ypl videos show 'mayan warrior'     # one mix's tracklist, by its link, its id or part of its title
+```
+
+A tracklist is the video's chapters, or failing those the timestamped lines of its description, or
+failing that one of its top comments that reads as a whole tracklist. The server reads it, and
+[`api/README.md`](api/README.md) gives the rule. An artist matches ignoring case and accents. A
+video's length is known before its tracklist is read, so a filter by length reaches a mix the server
+has not read yet. A video YouTube will not serve is left out.
+
+## `server` — whether the mirror is keeping up, and an exit code that means look
+
+```bash
+ypl server status       # what it holds, its last sync, the day's quota, and what waits to be pushed
+ypl server syncs list   # the recent syncs: what each changed, read and spent
+```
+
+`ypl server status` exits 3 when the server's latest ok sync is older than an hour, or older than
+twelve of its ticks where those are longer. That is a state for a person to look at rather than a
+command that failed, so it has a code of its own. It exits 1 only when the server could not be
+asked. A service can run it on a timer with a credential of its own, as the next section describes.
+
+## `auth` and `config` — one file says where, and each machine holds a token of its own
+
+```bash
+ypl config path   # where the file goes, whether or not it exists
+ypl config show   # each setting, and whether the file or --api set it
+ypl auth status   # the same three, and whether a token is held; exit 1 if not
+ypl auth token    # the access token, for a request made with curl
+ypl auth logout   # forget this machine's token, before handing the machine on
+```
 
 Nothing about a deployment is built into the binary. The server's address, the identity provider
 that signs its tokens, and the client this machine logs in as are read from one file,
@@ -36,101 +244,54 @@ issuer = "https://auth.example.com"
 client_id = "ypl-cli-laptop"
 ```
 
-Every command reads it, `--api` is the only thing that outranks it, and no environment variable
-does. `ypl auth login <url>` fills in only what the file lacks: `api` from the URL, `issuer` from the
-server's RFC 9728 metadata at `<url>/.well-known/oauth-protected-resource`, and `client_id` from
-`--client-id` or `ypl-cli-<short hostname>`. It prints each value and where it came from before the
-login starts, and writes the file once the login succeeds. `ypl auth status` and `ypl config show`
-print all three with the file's path. The file and its rules are
+`--api` is the only thing that outranks the file. No environment variable does.
+
+`ypl auth login <url>` fills in only what the file lacks: `api` from the URL, `issuer` from the
+server's RFC 9728 metadata, and `client_id` from `--client-id` or `ypl-cli-<short hostname>`. It
+prints each value and where it came from before the login starts. It writes the file once the login
+succeeds. It never rewrites a value the file holds. A typed value that disagrees with the file is
+refused, naming the file to edit. The file and its rules are
 [goclilogin's](https://github.com/datapointchris/goclilogin).
 
-`ypl auth login` authenticates the machine with the OAuth 2.0 device authorization grant: the CLI
-prints a code and a URL, and approving it in a browser anywhere logs this machine in. That is what
-makes it work over SSH on a machine with no browser. The token goes in the OS keychain, or in a
-mode-600 file on a host that has none, and it is refreshed under a lock so two commands at once
-cannot spend the same refresh token twice. The client id is `ypl-cli-<machine>`, one per machine, so
-a token can be revoked for one machine without touching the others.
+The login is the OAuth 2.0 device authorization grant. The CLI prints a code and a URL. Approving
+it in a browser anywhere logs this machine in, which is what makes it work over SSH on a machine
+with no browser. The token goes in the OS keychain, or in a mode-600 file on a host that has none.
+It is refreshed under a lock, so two commands at once cannot spend the same refresh token twice.
 
 A service runs ypl with nobody present to approve a login. Its config file names its own
-confidential client, `ypl-svc-<machine>`, as `client_id`, and `YPL_CLIENT_SECRET` in the
-environment holds that client's secret, which never goes in the file. ypl then requests a token
-through the client-credentials grant on each run, asking for `ypl.status.read`, and stores nothing.
-The server lets that token read `GET /api/v1/status`, which is what `ypl server status` calls, and
-refuses every other route with 403. `ypl auth login` and `ypl auth logout` refuse in that mode.
+confidential client, `ypl-svc-<machine>`, as `client_id`. `YPL_CLIENT_SECRET` in the environment
+holds that client's secret, which never goes in the file. On each run ypl requests a token through
+the client-credentials grant, asking for `ypl.status.read`. It stores nothing. The server lets that
+token read `GET /api/v1/status`, which is what `ypl server status` calls. Any other route answers
+that token with 403. `ypl auth login` and `ypl auth logout` refuse in that mode.
 
-`ypl auth status --json` names the credential it checked in `type`, `authorized_user` for a
-person's login or `service_account` for a service, as Google's credential files do. A service's
-status exits 1 unless the provider grants a token, and its `session` says why: `rejected` for a
-secret the provider refused, `unverified` for a provider it could not reach.
+`ypl auth status --json` names the credential it checked in `type`: `authorized_user` for a person's
+login, or `service_account` for a service, as Google's credential files do. A service's status exits
+1 unless the provider grants a token. Its `session` then says why: `rejected` for a secret the
+provider refused, `unverified` for a provider it could not reach.
 
-A first run installs the newest `cli/v*` release, checks it against its checksums, and then logs in
-to the server, which writes the config file:
+## `api/` — the one part that talks to YouTube
 
-```bash
-tag=$(gh release list --repo datapointchris/ypl --json tagName \
-  --jq '[.[] | select(.tagName | startswith("cli/"))][0].tagName')
-platform="$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
-gh release download "$tag" --repo datapointchris/ypl --pattern "ypl_*_${platform}.tar.gz" --pattern checksums.txt
-sha256sum --ignore-missing -c checksums.txt && tar -xzf ypl_*_"${platform}".tar.gz ypl && install ypl ~/.local/bin/
+The server in `api/` keeps the channel's playlists mirrored through the Data API, signed in as the
+channel with an OAuth refresh token. It reads each mix's tracklist with yt-dlp, signed in as nobody,
+because the Data API reports neither a video's chapters nor its comments. It answers the HTTP API
+the client speaks. The client holds no database and reads nothing from YouTube, so every answer on
+every machine is the server's.
 
-ypl auth login https://ypl.example.com   # approve the code in a browser
-ypl server status                        # what the server holds
-```
+Every write to YouTube spends the channel's Data API quota. `ypl server status` shows what the day
+has left. The server's reference is [`api/README.md`](api/README.md), beside the code it describes.
+It covers the quota each request spends, the settings the server reads, how a sync merges an edit
+made on YouTube with one made here, and every route.
 
-`ypl --help` lists every command as the line to type, in sections: playing first, then one for each
-thing the library holds, then the server and setup. It is not repeated here, because a list in
-markdown goes stale and `--help` cannot. A bare `ypl` prints that help.
+## Where it writes
 
-A playlist is named by its title or its YouTube id at every command that takes one, and the title's
-case, spacing and punctuation do not have to be reproduced. `ypl playlists show 'sunday morning'`
-finds Sunday Morning. Tab completes a playlist wherever one is named, offering each as its title
-slugged — `sunday-morning`, with the title beside it — which needs no quoting and reaches the same
-playlist at a rename or a delete as much as at a read. `ypl completion <shell>` prints the script,
-and its `--help` says where each shell loads it from. A playlist the server does not recognize is
-answered with every playlist it does, in the same form.
-
-A read also takes part of a title, so `ypl playlists show morning` finds it too — but only a read.
-A rename, a delete or an edit takes the id or the whole title, because a fragment that happens to
-match one playlist matches it unambiguously, and there is nothing for the two-matches refusal to
-catch. A fragment sent to one of those is refused by the title it is part
-of, rather than by a sentence saying nothing was found.
-
-`ypl playlists create` and `ypl playlists rename` make their change on YouTube in the request that
-asks for it, and so does `ypl playlists delete`, which asks first and needs `--yes` where there is
-nobody to ask. `--no-input` forbids the question everywhere and takes that path from a terminal.
-
-`ypl playlists edit` is the one changing verb that does not reach YouTube itself: it sets the order
-the server holds, and the server pushes that order to YouTube as soon as it is saved, ahead of
-anything else it has waiting. A reorder is a write of 50 quota units for each video moved, so a
-large one can take more than a day's quota, and `ypl server status` lists what is left to push.
-Where an edit is refused, the buffer is kept
-in a file and the refusal names it, because by then the editor has closed and that file is the only
-copy of the rearranging.
-
-`ypl play <playlist>` runs mpv in the foreground on the playlist's videos, in its order, leaving out
-the ones YouTube will not serve. With no playlist it plays a draw of up to 100 mixes, made the way
-`ypl next` makes one: never-played first, in a new order each time, then the ones heard least
-recently. `--audio` drops the video window and `--mpv` passes an argument
-straight through. A player that failed is exit 1 and mpv's own status is written to stderr, because
-mpv spends 2 on a file it cannot open and this tool spends 2 on an invocation it would not accept.
-It opens mpv's IPC socket, which is what lets `ypl now` report the track inside a two-hour mix
-rather than the name of the mix. `ypl now` writes its answer and then exits 1 when nothing is
-playing, so a status bar can run it unguarded in either mode.
-
-`ypl play` records what it plays. It reads mpv's socket while the player runs, and once a mix has
-played for 20 minutes, or half its length when that is shorter, it tells the server. That is what
-`ypl next` reads to stop suggesting the same mix. A seek forward is not listening, so it does not
-count. `ypl plays add <video>` records a mix heard somewhere `ypl play` could not see, by id or by a
-link it was copied from. `ypl plays delete <play>` takes one back, asking first, and the play's
-handle is never given to another.
-
-Every read takes `--json`, which writes a stable shape to stdout and nothing else. A collection with
-nothing in it is `[]` rather than `null`, so one filter works on every answer. Exit codes are 0 for
-success, 2 for an invocation the CLI would not accept, and 1 for a command that ran and failed;
-`ypl auth status` and `ypl next` exit 1 to report a real state rather than a failure, so a status bar
-can run either unguarded. `ypl server status` exits 3 when the server's latest ok sync is older
-than an hour, or older than twelve of its ticks where those are longer, which is a state for a
-person to look at rather than a command that failed.
+- `$XDG_CONFIG_HOME/ypl/config.toml`, or `~/.config/ypl/config.toml`, written by `ypl auth login`
+  alone and only with the values it lacks.
+- The OS keychain, under the service `ypl-cli`, one entry per client id. A host with no keychain
+  gets a mode-600 file in the state directory instead.
+- `$XDG_STATE_HOME/ypl/`, or `~/.local/state/ypl/`: the lock a token refresh holds, and `mpv.sock`
+  while `ypl play` runs.
+- A temporary file named `ypl-edit-*.ypl`, only when an edit is refused.
 
 ## License
 
