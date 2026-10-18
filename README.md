@@ -80,7 +80,7 @@ server's metadata unless it names the URL the client asked. The server serves no
 The image runs as uid 10001, so a host directory mounted at `/var/db/ypl` has to be owned by it. A
 store left inside the container goes with the container.
 
-`ypl help completion zsh` says where to keep the script so every new shell loads it. The same
+`ypl completion zsh --help` says where to keep the script so every new shell loads it. The same
 command takes `bash`, `fish` or `powershell`.
 
 `ypl play` is the next command. It needs mpv on `PATH`. mpv opens a YouTube link through yt-dlp, so
@@ -96,7 +96,7 @@ repeated here, because a list in markdown goes stale and `--help` cannot.
 
 A playlist is named by its title, by the slug Tab offers, or by its YouTube id. Case and punctuation
 do not have to be reproduced, but the breaks between words do. `'sunday morning'` and
-`sunday-morning` both find Sunday Morning. `sundaymorning` finds nothing. A name matching two
+`sunday-morning` both find Sunday Morning. `sundaymorning` does not. A name matching two
 playlists is refused naming each, rather than answered with one of them. A playlist the server does
 not recognize is answered with every playlist it does hold, in the form Tab offers.
 

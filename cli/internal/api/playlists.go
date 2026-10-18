@@ -48,8 +48,8 @@ func (c *Client) ListPlaylists(ctx context.Context) ([]PlaylistSummary, error) {
 }
 
 // Reference names a playlist to the server: its YouTube id, its title, or that
-// title with case, spacing and punctuation removed. PlaylistTitle is what a
-// playlist is called.
+// title's slug, which drops its case and punctuation and keeps where its words
+// break. PlaylistTitle is what a playlist is called.
 //
 // They are separate types because a rename takes one of each, adjacent, and
 // nothing at the call site says which slot is which. Transposed, it renames the

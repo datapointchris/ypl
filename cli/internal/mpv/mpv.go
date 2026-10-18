@@ -12,8 +12,8 @@
 // values they share, and mpv's property replies are untyped.
 //
 // Every playback opens mpv's JSON IPC socket. It is how `ypl play` records
-// what it played, and how `ypl now` and a bare `ypl` say which track of a
-// two-hour mix is playing. It costs one argument.
+// what it played, and how `ypl now` says which track of a two-hour mix is
+// playing. It costs one argument.
 package mpv
 
 import (
@@ -72,9 +72,9 @@ var ErrUnavailable = errors.New("mpv is not installed")
 var ErrUnreadable = errors.New("what is playing could not be read")
 
 // SocketPath is where `ypl play` opens mpv's IPC socket, and where its own
-// recorder, `ypl now` and a bare `ypl` look for it. It sits with the CLI's
-// other state rather than in the config directory, because it is a socket that
-// exists only while something is playing.
+// recorder and `ypl now` look for it. It sits with the CLI's other state rather
+// than in the config directory, because it is a socket that exists only while
+// something is playing.
 func SocketPath() string {
 	return filepath.Join(goclilogin.StateDir("ypl"), "mpv.sock")
 }
@@ -131,7 +131,7 @@ type State struct {
 // disk to play a playlist the server already holds.
 //
 // A socketPath of "" plays without the IPC socket, which costs everything that
-// reads it: no play is recorded, and `ypl now` and a bare `ypl` see nothing.
+// reads it: no play is recorded, and `ypl now` sees nothing.
 //
 // started is handed the player's process id once it is running, so a reader of
 // the socket can tell this player from another that took the same path.

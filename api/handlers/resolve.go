@@ -24,9 +24,9 @@ type titled struct{ id, title string }
 // ref as an id, which is a keyed read rather than a walk of every row.
 //
 // The exact forms are the title as written and the title as a slug — the slug
-// so that case, spacing and punctuation do not have to be reproduced, and the
-// title as written first so that Deep House and Deep-House each stay reachable
-// by their own text although they slug alike.
+// so that case and punctuation do not have to be reproduced, though the breaks
+// between words do, and the title as written first so that Deep House and
+// Deep-House each stay reachable by their own text although they slug alike.
 //
 // Holding what was sent is the last resort, and which verbs are offered it is
 // each caller's to say. A read of a playlist, its videos, its suggestions or a

@@ -153,10 +153,11 @@ reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire t
 | `GET /api/v1/status` | What the store holds, the latest run, the latest run that ended ok, the day's quota, and each playlist waiting to be pushed |
 
 A playlist is named by its YouTube id or by its title, wherever one is named — in the path, and in
-the `playlist` parameter of videos and suggestions. Titles are matched with their case, spacing and
-punctuation removed, so `deep house` and `Deep / House!` both reach the same playlist, and a title
-matching the whole of what was sent beats one merely holding it. A name matching two playlists is
-refused naming each, rather than answered with one of them.
+the `playlist` parameter of videos and suggestions. Titles are matched as slugs: lowercased, with
+every run of anything that is not a letter or a digit standing as one hyphen. So `deep house` and
+`Deep / House!` both reach Deep House, and `deephouse` does not. A title matching the whole
+of what was sent beats one merely holding it. A name matching two playlists is refused naming each,
+rather than answered with one of them.
 
 Part of a title reaches a playlist, its videos and its suggestions. It reaches nothing else: a
 rename, a delete, and both the read and the write of an order take the whole title or the id. The
