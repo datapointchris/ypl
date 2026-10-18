@@ -295,4 +295,4 @@ made on YouTube with one made here, and every route.
 
 ## License
 
-[MIT](https://tldrlegal.com/license/mit-license)
+[MIT](LICENSE)

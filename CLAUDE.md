@@ -116,5 +116,5 @@ such values are pinned. The slug Tab offers a playlist by is a derivation the se
 `api/handlers` writes its own slug of a set of titles to `testdata/wire/slugs.json`, and the
 completion test holds the client's to every pair. The service client's scope is the other:
 `api/handlers` writes `service-scopes.json` beside it, and the CLI's service test requires the scope
-it requests to reach the route `ypl server status` calls. `PageSize` and `VideoSorts` are still
+it requests to reach the route `ypl server status` calls. `PageSize` and `VideoSorts` are unpinned
 copies of a number and words the server owns, with no door to read them through.
