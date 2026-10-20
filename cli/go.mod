@@ -6,7 +6,7 @@ toolchain go1.26.9
 
 require (
 	github.com/datapointchris/goclikit v0.4.3
-	github.com/datapointchris/goclilogin v0.5.1
+	github.com/datapointchris/goclilogin v0.5.2
 	github.com/datapointchris/goselfupdate v0.11.0
 	github.com/datapointchris/gotermstyle v0.2.0
 	github.com/google/uuid v1.6.0
