@@ -154,9 +154,8 @@ const defaultClientIDPrefix = "ypl-cli-"
 // tokens the API accepts when SERVICE_CLIENT_ID_PREFIX is unset.
 const defaultServiceClientIDPrefix = "ypl-svc-"
 
-// identityProvider is OIDC_ISSUER, which has no default, CLI_CLIENT_ID_PREFIX,
-// or defaultClientIDPrefix when it is unset, and SERVICE_CLIENT_ID_PREFIX, or
-// defaultServiceClientIDPrefix when it is unset.
+// identityProvider reads OIDC_ISSUER, which has no default, and the two client
+// id prefixes, each falling back to its default constant.
 func identityProvider() (issuer, clientIDPrefix, serviceClientIDPrefix string, err error) {
 	issuer = os.Getenv("OIDC_ISSUER")
 	if issuer == "" {

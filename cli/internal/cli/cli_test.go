@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/datapointchris/ypl/cli/internal/api"
+	"github.com/datapointchris/ypl/cli/internal/config"
 )
 
 // fixture is the whole command tree over a server and a keychain of its own.
@@ -80,6 +81,9 @@ func newFixture(t *testing.T, answer http.HandlerFunc) *fixture {
 
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// A shell that runs ypl as a service exports the secret, which would turn
+	// every fixture into a service client. A test that wants one sets it again.
+	t.Setenv(config.ClientSecretEnv, "")
 	f.server = server.URL
 	f.configure("https://issuer.test", "ypl-cli-test")
 

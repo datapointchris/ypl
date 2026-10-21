@@ -99,8 +99,9 @@ type discoveryDocument struct {
 // that isolation. serviceClientIDPrefix, `ypl-svc-`, does the same for service
 // clients. A provider that cannot be read is ErrProviderUnavailable.
 //
-// Neither prefix may start the other. Otherwise one client would match both,
-// and which kind it was would depend on the order they are checked in.
+// Neither prefix may start the other. Verify checks clientIDPrefix first, so a
+// service client matching both would be read as a person: refused for having
+// no subject, or admitted to every route once the provider sends one.
 func NewVerifier(ctx context.Context, issuer, clientIDPrefix, serviceClientIDPrefix string) (*Verifier, error) {
 	if issuer == "" || clientIDPrefix == "" || serviceClientIDPrefix == "" {
 		return nil, errors.New("auth: issuer, clientIDPrefix and serviceClientIDPrefix are all required")
