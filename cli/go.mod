@@ -2,7 +2,7 @@ module github.com/datapointchris/ypl/cli
 
 go 1.26.5
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/datapointchris/goclikit v0.4.3

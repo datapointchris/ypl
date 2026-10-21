@@ -7,7 +7,7 @@
 # The tag names the Go release go.mod declares, which is the one CI tests.
 # This image sets GOTOOLCHAIN=local and ignores go.mod's toolchain line, so
 # the tag alone decides what compiles the binary.
-FROM golang:1.26.9-alpine AS builder
+FROM golang:1.26.10-alpine AS builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
