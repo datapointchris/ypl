@@ -106,8 +106,8 @@ doubling up to a week, for up to 6 attempts. A video YouTube will never let a si
 return, because it is private, removed, members-only or age-restricted, is not read again at all.
 `api/cmd/reset-enrichment` shows every video enrichment has stopped reading and puts them back.
 
-The server answers `/api/v1` only to a request carrying an access token, which `api/auth`
-verifies. The token is an RFC 9068 JWT that the identity provider `OIDC_ISSUER` signed. The server
+The server answers `/api/v1` only to a request carrying an access token, which
+[goapiauth](https://github.com/datapointchris/goapiauth) verifies. The token is an RFC 9068 JWT that the identity provider `OIDC_ISSUER` signed. The server
 reads the provider beside the sync, retrying while it is down, and `/ready` answers 200 once it has.
 `/health` and `/ready` answer without a token.
 

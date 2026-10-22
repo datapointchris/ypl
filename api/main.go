@@ -36,7 +36,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/datapointchris/ypl/api/auth"
+	"github.com/datapointchris/goapiauth"
+
 	"github.com/datapointchris/ypl/api/enrich"
 	"github.com/datapointchris/ypl/api/handlers"
 	"github.com/datapointchris/ypl/api/reconcile"
@@ -126,7 +127,10 @@ func start(ctx context.Context) error {
 	edits := reconcile.NewEdits()
 	runner := reconcile.NewRunner(st, syncChannel, tally, edits, interval)
 	worker := reconcile.NewWorker(runner, interval, slog.Default())
-	provider := auth.NewConnecting(issuer, clientIDPrefix, serviceClientIDPrefix)
+	provider, err := goapiauth.NewConnecting(goapiauth.Config{Issuer: issuer, PersonPrefix: clientIDPrefix, ServicePrefix: serviceClientIDPrefix})
+	if err != nil {
+		return err
+	}
 	api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, slog.Default())
 	work := func(ctx context.Context) {
 		var wg sync.WaitGroup
@@ -139,7 +143,7 @@ func start(ctx context.Context) error {
 	}
 	var metadata http.Handler
 	if public := os.Getenv("PUBLIC_URL"); public != "" {
-		metadata = auth.ProtectedResourceMetadata(public, issuer)
+		metadata = goapiauth.ProtectedResourceMetadata{Resource: public, Issuer: issuer}
 	} else {
 		slog.Warn("PUBLIC_URL is unset, so no RFC 9728 metadata is served and `ypl auth login <url>` cannot discover the issuer")
 	}
@@ -267,11 +271,11 @@ func serve(ctx context.Context, ln net.Listener, h http.Handler, work func(conte
 	return nil
 }
 
-// tokenGate verifies tokens and says whether it can yet, as *auth.Connecting
-// does.
+// tokenGate verifies tokens and says why it cannot yet, as
+// *goapiauth.Connecting does.
 type tokenGate interface {
-	auth.TokenVerifier
-	Ready() bool
+	goapiauth.TokenVerifier
+	Ready() error
 }
 
 // handler is every route: the probes, which answer without a token so a
@@ -285,22 +289,22 @@ type tokenGate interface {
 func handler(api *handlers.Handlers, gate tokenGate, metadata http.Handler) http.Handler {
 	mux := routes(gate.Ready)
 	if metadata != nil {
-		mux.Handle("GET "+auth.ProtectedResourcePath, metadata)
+		mux.Handle("GET "+goapiauth.ProtectedResourcePath, metadata)
 	}
 	api.Register(mux)
-	return auth.RequireBearer(gate, slog.Default())(auth.LimitServices(mux, handlers.ServiceRoutes, slog.Default()))
+	return goapiauth.RequireBearer(gate, slog.Default(), "/health", "/ready")(goapiauth.LimitServices(mux, handlers.ServiceRoutes, slog.Default()))
 }
 
 // routes serves /health, which answers once the listener is bound, and /ready,
-// which answers 200 while ready reports true and 503 before that. The database
+// which answers 200 once ready reports nil and 503 before that. The database
 // is open and migrated before the listener binds.
-func routes(ready func() bool) *http.ServeMux {
+func routes(ready func() error) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		probe(w, http.StatusOK, "ok")
 	})
 	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, _ *http.Request) {
-		if !ready() {
+		if ready() != nil {
 			probe(w, http.StatusServiceUnavailable, "starting")
 			return
 		}

@@ -24,7 +24,8 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 
-	"github.com/datapointchris/ypl/api/auth"
+	"github.com/datapointchris/goapiauth"
+
 	"github.com/datapointchris/ypl/api/handlers"
 	"github.com/datapointchris/ypl/api/reconcile"
 	"github.com/datapointchris/ypl/api/store"
@@ -43,11 +44,16 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func alwaysReady() bool { return true }
+func alwaysReady() error { return nil }
 
 func TestReadyAnswersOnlyOnceItsCheckReportsReady(t *testing.T) {
 	ready := false
-	mux := routes(func() bool { return ready })
+	mux := routes(func() error {
+		if ready {
+			return nil
+		}
+		return goapiauth.ErrProviderUnavailable
+	})
 	for _, c := range []struct {
 		ready  bool
 		code   int
@@ -281,21 +287,21 @@ func TestIdentityProviderRequiresAnIssuerAndDefaultsThePrefixes(t *testing.T) {
 
 // acceptOnly is ready, and accepts the tokens it holds as their identities and
 // rejects every other.
-type acceptOnly map[string]auth.Identity
+type acceptOnly map[string]goapiauth.Identity
 
-func (a acceptOnly) Verify(_ context.Context, raw string) (auth.Identity, error) {
+func (a acceptOnly) Verify(_ context.Context, raw string) (goapiauth.Identity, error) {
 	identity, ok := a[raw]
 	if !ok {
-		return auth.Identity{}, auth.ErrUnauthorized
+		return goapiauth.Identity{}, goapiauth.ErrUnauthorized
 	}
 	return identity, nil
 }
 
-func (acceptOnly) Ready() bool { return true }
+func (acceptOnly) Ready() error { return nil }
 
 var (
-	person  = auth.Identity{Subject: "user", ClientID: "ypl-cli-test"}
-	service = auth.Identity{ClientID: "ypl-svc-test", Service: true, Scopes: []string{"ypl.status.read"}}
+	person  = goapiauth.Identity{Subject: "user", ClientID: "ypl-cli-test"}
+	service = goapiauth.Identity{ClientID: "ypl-svc-test", Service: true, Scopes: []string{"ypl.status.read"}}
 )
 
 func apiHandler(t *testing.T, gate tokenGate) http.Handler {
@@ -305,7 +311,7 @@ func apiHandler(t *testing.T, gate tokenGate) http.Handler {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return handler(handlers.New(st, nil, handlers.Sync{}, slog.Default()), gate, auth.ProtectedResourceMetadata("https://ypl.test", "https://id.test"))
+	return handler(handlers.New(st, nil, handlers.Sync{}, slog.Default()), gate, goapiauth.ProtectedResourceMetadata{Resource: "https://ypl.test", Issuer: "https://id.test"})
 }
 
 func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
@@ -325,7 +331,7 @@ func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
 		{http.MethodPost, "/api/v1/playlists", "service", http.StatusForbidden},
 		{http.MethodGet, "/health", "", http.StatusOK},
 		{http.MethodGet, "/ready", "", http.StatusOK},
-		{http.MethodGet, auth.ProtectedResourcePath, "", http.StatusOK},
+		{http.MethodGet, goapiauth.ProtectedResourcePath, "", http.StatusOK},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequest(c.method, c.path, http.NoBody)

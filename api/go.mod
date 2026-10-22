@@ -5,16 +5,18 @@ go 1.26.5
 toolchain go1.26.10
 
 require (
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/datapointchris/goapiauth v0.2.0
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/google/uuid v1.6.0
 	github.com/pressly/goose/v3 v3.26.0
-	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sync v0.23.0
+	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/text v0.42.0
 	google.golang.org/api v0.298.0
 	modernc.org/sqlite v1.56.0
 )
+
+require golang.org/x/sync v0.24.0 // indirect
 
 require (
 	cel.dev/expr v0.25.2 // indirect

@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/datapointchris/goapiauth"
 )
 
 // Code names one refusal.
@@ -27,11 +29,11 @@ const (
 	CodeInvalidPrecondition Code = "invalid_precondition"
 
 	// 401
-	CodeMissingToken Code = "missing_token"
-	CodeInvalidToken Code = "invalid_token"
+	CodeMissingToken Code = goapiauth.CodeMissingToken
+	CodeInvalidToken Code = goapiauth.CodeInvalidToken
 
 	// 403
-	CodeOutsideServiceScope Code = "outside_service_scope"
+	CodeOutsideServiceScope Code = goapiauth.CodeOutsideServiceScope
 
 	// 404
 	CodeNotFound      Code = "not_found"
@@ -78,7 +80,7 @@ const (
 	CodeYouTubeReadFailed  Code = "youtube_read_failed"
 
 	// 503
-	CodeIdentityProviderUnavailable Code = "identity_provider_unavailable"
+	CodeIdentityProviderUnavailable Code = goapiauth.CodeIdentityProviderUnavailable
 	CodeYouTubeQuotaSpent           Code = "youtube_quota_spent"
 	CodeShuttingDown                Code = "shutting_down"
 )
