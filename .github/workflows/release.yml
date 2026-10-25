@@ -260,9 +260,12 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # A CLI that sends a field its server does not know is refused, so the CLI
+  # never publishes past a failed image. A run that builds no image still does.
   publish:
     name: Publish the CLI release
-    needs: [version, build]
+    needs: [version, build, image]
+    if: always() && needs.build.result == 'success' && (needs.image.result == 'success' || needs.image.result == 'skipped')
     runs-on: ubuntu-26.04
     permissions:
       contents: write

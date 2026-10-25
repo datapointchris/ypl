@@ -222,7 +222,7 @@ func printVideo(out io.Writer, width int, video api.Video) {
 	}
 	if len(video.Ratings) > 0 {
 		_, _ = fmt.Fprintln(out, "\nRatings, newest first")
-		printRatingsOf(out, width, video.Ratings)
+		printRatingsOf(out, width, video.Ratings, video.Tracks)
 	}
 	// A video YouTube will not serve is never read again — the enrichment queue
 	// filters it out — so promising a later run would be telling a reader to

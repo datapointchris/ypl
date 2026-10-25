@@ -61,10 +61,13 @@ func (h *Handlers) ReadHistoryWith(reader HistoryReader, sealer *jarseal.Sealer)
 }
 
 // historyEntry is a library video the watch history holds, at its place in the
-// history, 1 being the newest.
+// history, 1 being the newest. ResumeSeconds is where YouTube's resume point
+// sits in it, worked out from a whole percentage of its length and so
+// approximate, and nil where the page drew none or the length is unknown.
 type historyEntry struct {
-	Position int64       `json:"position"`
-	Video    playedVideo `json:"video"`
+	Position      int64       `json:"position"`
+	ResumeSeconds *int64      `json:"resume_seconds"`
+	Video         playedVideo `json:"video"`
 }
 
 // youtubeSession is where the signed-in session stands: when its jar was set,
@@ -112,8 +115,9 @@ func (h *Handlers) listHistory(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			answer = append(answer, historyEntry{
-				Position: int64(i + 1),
-				Video:    playedVideo{ID: video.VideoID, Title: video.Title, ChannelTitle: video.ChannelTitle},
+				Position:      int64(i + 1),
+				ResumeSeconds: resumeSeconds(entry.ResumePercent, video.DurationSeconds),
+				Video:         playedVideo{ID: video.VideoID, Title: video.Title, ChannelTitle: video.ChannelTitle},
 			})
 		}
 		return nil
@@ -123,6 +127,17 @@ func (h *Handlers) listHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wire.JSON(w, http.StatusOK, orEmpty(answer))
+}
+
+// resumeSeconds is percent of a video's length, and nil without either. A
+// video watched to the end is drawn at 100, which says where it finished
+// rather than where anyone is, so it gives none.
+func resumeSeconds(percent *int, duration sql.NullInt64) *int64 {
+	if percent == nil || *percent >= 100 || !duration.Valid {
+		return nil
+	}
+	seconds := duration.Int64 * int64(*percent) / 100
+	return &seconds
 }
 
 // historyUnavailable answers 503 where the server has no yt-dlp to read the

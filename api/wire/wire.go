@@ -72,6 +72,7 @@ const (
 	CodeInvalidKind         Code = "invalid_kind"
 	CodeMessageRequired     Code = "message_required"
 	CodeMessageTooLong      Code = "message_too_long"
+	CodeInvalidPosition     Code = "invalid_position"
 	CodeTagTooLong          Code = "tag_too_long"
 	CodeTooManyTags         Code = "too_many_tags"
 	CodeInvalidCookieJar    Code = "invalid_cookie_jar"

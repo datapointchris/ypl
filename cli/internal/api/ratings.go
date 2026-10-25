@@ -9,23 +9,28 @@ import (
 // Rating is one like, dislike or note left on a mix, with its message and
 // tags. A mix holds as many as were left.
 type Rating struct {
-	ID      string      `json:"id"`
-	RatedTs string      `json:"rated_ts"`
-	Kind    string      `json:"kind"`
-	Message *string     `json:"message"`
-	Tags    []string    `json:"tags"`
-	Video   PlayedVideo `json:"video"`
+	ID                string      `json:"id"`
+	RatedTs           string      `json:"rated_ts"`
+	Kind              string      `json:"kind"`
+	Message           *string     `json:"message"`
+	PositionSeconds   *int64      `json:"position_seconds"`
+	PositionEstimated bool        `json:"position_estimated"`
+	Tags              []string    `json:"tags"`
+	Video             PlayedVideo `json:"video"`
 }
 
 // NewRating is what CreateRating sends. ID is a version 7 UUID the caller
 // makes, so a rating sent again after a lost answer is stored once. A note
-// needs a Message.
+// needs a Message. PositionSeconds is where in the mix it was left, and
+// PositionEstimated says it came from YouTube's resume point, not a person.
 type NewRating struct {
-	ID      string   `json:"id"`
-	VideoID string   `json:"video_id"`
-	Kind    string   `json:"kind"`
-	Message *string  `json:"message"`
-	Tags    []string `json:"tags"`
+	ID                string   `json:"id"`
+	VideoID           string   `json:"video_id"`
+	Kind              string   `json:"kind"`
+	Message           *string  `json:"message"`
+	PositionSeconds   *int64   `json:"position_seconds,omitempty"`
+	PositionEstimated bool     `json:"position_estimated,omitempty"`
+	Tags              []string `json:"tags"`
 }
 
 // TagCount is a tag and how many videos carry it.
@@ -36,9 +41,13 @@ type TagCount struct {
 
 // HistoryEntry is a library video in the watch history, at its place in it,
 // 1 being the newest.
+//
+// ResumeSeconds is where YouTube's resume point sits in it, approximate, and
+// nil where the server could not tell.
 type HistoryEntry struct {
-	Position int64       `json:"position"`
-	Video    PlayedVideo `json:"video"`
+	Position      int64       `json:"position"`
+	ResumeSeconds *int64      `json:"resume_seconds"`
+	Video         PlayedVideo `json:"video"`
 }
 
 // YouTubeSession is where the session the watch history is read with stands.

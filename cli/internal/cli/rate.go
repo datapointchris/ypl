@@ -26,6 +26,7 @@ func (a *app) rateCommand() *cobra.Command {
 	var (
 		like, dislike, note bool
 		message             string
+		at                  string
 		tags                []string
 		asJSON              bool
 	)
@@ -39,12 +40,14 @@ func (a *app) rateCommand() *cobra.Command {
 			"At a terminal with no video named, it offers the library in fzf, with the newest\n" +
 			"mixes in YouTube's watch history on top. Every player signed into the channel's\n" +
 			"account writes to that history. With no --like, --dislike or --note it then asks\n" +
-			"for the kind, the message and the tags; with one, it records what the flags gave.\n\n" +
+			"for the kind, the message, the tags and where in the mix, offering YouTube's resume\n" +
+			"point; with one, it records what the flags gave and nothing else.\n\n" +
 			"Without a terminal, or under --no-input, name the video and give the kind.",
 		Example: "  ypl rate                                       pick what is playing, then rate it\n" +
 			"  ypl rate --like -m 'great closing hour'        pick it, and like it\n" +
 			"  ypl rate dQw4w9WgXcQ --note -m 'too much talk'  a note on one mix\n" +
-			"  ypl rate 'mayan warrior' --dislike --tag dark  by part of its title",
+			"  ypl rate 'mayan warrior' --dislike --tag dark  by part of its title\n" +
+			"  ypl rate --dislike --at 1:12:30 -m 'vocals'    and where in the mix",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kind := ""
@@ -60,6 +63,14 @@ func (a *app) rateCommand() *cobra.Command {
 			if kind == "note" && strings.TrimSpace(message) == "" {
 				return goclikit.UsageError(errors.New("a note needs --message"))
 			}
+			var position *int64
+			if at != "" {
+				seconds, err := clockSeconds(at)
+				if err != nil {
+					return goclikit.UsageError(fmt.Errorf("--at: %w", err))
+				}
+				position = &seconds
+			}
 			interactive := !forbidsInput(cmd) && a.terminalIn(cmd)
 			if !interactive && len(args) == 0 {
 				return goclikit.UsageError(errors.New("name the video; only a terminal can pick it from the watch history"))
@@ -71,16 +82,20 @@ func (a *app) rateCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			var video api.PlayedVideo
+			var picked api.HistoryEntry
 			if len(args) == 1 {
-				video, err = namedVideo(cmd.Context(), client, args[0])
+				picked.Video, err = namedVideo(cmd.Context(), client, args[0])
 			} else {
-				video, err = pickVideo(cmd, client)
+				picked, err = pickVideo(cmd, client)
 			}
+			video := picked.Video
 			if err != nil {
 				return reported(err)
 			}
-			rating := api.NewRating{VideoID: video.ID, Kind: kind, Tags: tags}
+			rating := api.NewRating{VideoID: video.ID, Kind: kind, Tags: tags, PositionSeconds: position}
+			if kind == "" && position == nil && picked.ResumeSeconds != nil {
+				rating.PositionSeconds, rating.PositionEstimated = picked.ResumeSeconds, true
+			}
 			if strings.TrimSpace(message) != "" {
 				rating.Message = &message
 			}
@@ -109,6 +124,7 @@ func (a *app) rateCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&dislike, "dislike", false, "Dislike it")
 	cmd.Flags().BoolVar(&note, "note", false, "Leave a note on it, which needs --message")
 	cmd.Flags().StringVarP(&message, "message", "m", "", "What to say about it")
+	cmd.Flags().StringVar(&at, "at", "", "Where in the mix, as h:mm:ss, m:ss or seconds")
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "A tag for it (repeatable)")
 	addJSON(cmd, &asJSON, "the rating")
 	return goclikit.WithRecoveryHints(cmd, hintVideos)
@@ -129,13 +145,15 @@ func namedVideo(ctx context.Context, client *api.Client, ref string) (api.Played
 
 // pickVideo is a video chosen in fzf from the whole library, with the newest
 // library videos in the watch history at the top, each marked with its place
-// in the history. A history that cannot be read says why on stderr and the
-// library is offered alone, so a session that expired never stops a rating.
-func pickVideo(cmd *cobra.Command, client *api.Client) (api.PlayedVideo, error) {
+// in the history. It answers as a history entry, which for a video picked from
+// outside the history carries only the video. A history that cannot be read
+// says why on stderr and the library is offered alone, so a session that
+// expired never stops a rating.
+func pickVideo(cmd *cobra.Command, client *api.Client) (api.HistoryEntry, error) {
 	ctx := cmd.Context()
 	fzf, err := exec.LookPath("fzf")
 	if err != nil {
-		return api.PlayedVideo{}, errors.New("picking a mix needs fzf on PATH; name the video instead")
+		return api.HistoryEntry{}, errors.New("picking a mix needs fzf on PATH; name the video instead")
 	}
 	entries, err := client.History(ctx, historyOffered)
 	if err != nil {
@@ -144,23 +162,23 @@ func pickVideo(cmd *cobra.Command, client *api.Client) (api.PlayedVideo, error) 
 	}
 	videos, err := client.ListVideos(ctx, api.VideoFilter{Sort: "title"})
 	if err != nil {
-		return api.PlayedVideo{}, err
+		return api.HistoryEntry{}, err
 	}
-	byID := make(map[string]api.PlayedVideo, len(videos))
+	byID := make(map[string]api.HistoryEntry, len(videos))
 	var lines strings.Builder
 	for _, entry := range entries {
-		byID[entry.Video.ID] = entry.Video
+		byID[entry.Video.ID] = entry
 		_, _ = fmt.Fprintf(&lines, "%s\t%s\t%s  · %s\n", entry.Video.ID, historyMark(entry.Position), entry.Video.Title, entry.Video.ChannelTitle)
 	}
 	for _, video := range videos {
 		if _, listed := byID[video.ID]; listed {
 			continue
 		}
-		byID[video.ID] = api.PlayedVideo{ID: video.ID, Title: video.Title, ChannelTitle: video.ChannelTitle}
+		byID[video.ID] = api.HistoryEntry{Video: api.PlayedVideo{ID: video.ID, Title: video.Title, ChannelTitle: video.ChannelTitle}}
 		_, _ = fmt.Fprintf(&lines, "%s\t\t%s  · %s\n", video.ID, video.Title, video.ChannelTitle)
 	}
 	if len(byID) == 0 {
-		return api.PlayedVideo{}, errors.New("the library holds no video")
+		return api.HistoryEntry{}, errors.New("the library holds no video")
 	}
 	header := "Which mix? The numbers are places in your watch history, 1 the newest."
 	if len(entries) > 0 && entries[0].Position != 1 {
@@ -173,18 +191,18 @@ func pickVideo(cmd *cobra.Command, client *api.Client) (api.PlayedVideo, error) 
 	var exit *exec.ExitError
 	switch {
 	case errors.As(err, &exit) && exit.ExitCode() == 130:
-		return api.PlayedVideo{}, exitCode(130)
+		return api.HistoryEntry{}, exitCode(130)
 	case errors.As(err, &exit) && exit.ExitCode() == 1:
-		return api.PlayedVideo{}, errors.New("no mix matched; nothing was rated")
+		return api.HistoryEntry{}, errors.New("no mix matched; nothing was rated")
 	case err != nil:
-		return api.PlayedVideo{}, fmt.Errorf("run fzf: %w", err)
+		return api.HistoryEntry{}, fmt.Errorf("run fzf: %w", err)
 	}
 	id, _, _ := strings.Cut(string(chosen), "\t")
-	video, ok := byID[id]
+	entry, ok := byID[id]
 	if !ok {
-		return api.PlayedVideo{}, fmt.Errorf("fzf answered %q, which is no video offered", strings.TrimSpace(string(chosen)))
+		return api.HistoryEntry{}, fmt.Errorf("fzf answered %q, which is no video offered", strings.TrimSpace(string(chosen)))
 	}
-	return video, nil
+	return entry, nil
 }
 
 // historyMark is a history entry's place, written where a library video
@@ -203,6 +221,12 @@ func askRating(ctx context.Context, client *api.Client, video api.PlayedVideo, r
 		message = *rating.Message
 	}
 	fresh := ""
+	estimatedOffer := rating.PositionEstimated
+	at := clock(rating.PositionSeconds)
+	where := "Optional, as 1:12:30 or 45:10"
+	if rating.PositionEstimated {
+		where = "Estimated from YouTube's resume point; edit or clear it"
+	}
 	var chosen []string
 	used, err := client.ListTags(ctx)
 	if err != nil {
@@ -229,7 +253,17 @@ func askRating(ctx context.Context, client *api.Client, video api.PlayedVideo, r
 		}
 		fields = append(fields, huh.NewMultiSelect[string]().Title("Tags you have used").Description("Optional; / filters").Options(options...).Filterable(true).Height(10).Value(&chosen))
 	}
-	fields = append(fields, huh.NewInput().Title("New tags").Description("Optional, separated by commas").Value(&fresh))
+	fields = append(fields,
+		huh.NewInput().Title("New tags").Description("Optional, separated by commas").Value(&fresh),
+		huh.NewInput().Title("Where in the mix").Description(where).Value(&at).
+			Validate(func(reading string) error {
+				if strings.TrimSpace(reading) == "" {
+					return nil
+				}
+				_, err := clockSeconds(reading)
+				return err
+			}),
+	)
 	if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
 		return aborted(err)
 	}
@@ -237,6 +271,13 @@ func askRating(ctx context.Context, client *api.Client, video api.PlayedVideo, r
 	rating.Message = nil
 	if strings.TrimSpace(message) != "" {
 		rating.Message = &message
+	}
+	offered := rating.PositionSeconds
+	rating.PositionSeconds, rating.PositionEstimated = nil, false
+	if strings.TrimSpace(at) != "" {
+		seconds, _ := clockSeconds(at)
+		rating.PositionSeconds = &seconds
+		rating.PositionEstimated = offered != nil && *offered == seconds && estimatedOffer
 	}
 	rating.Tags = append(rating.Tags, chosen...)
 	for tag := range strings.SplitSeq(fresh, ",") {
@@ -259,6 +300,9 @@ func aborted(err error) error {
 // describeRating is one line saying what a rating recorded.
 func describeRating(r api.Rating) string {
 	line := map[string]string{"like": "Liked ", "dislike": "Disliked ", "note": "Noted on "}[r.Kind] + r.Video.Title
+	if at := positionCell(r); at != "" {
+		line += " at " + at
+	}
 	if r.Message != nil {
 		line += ": " + *r.Message
 	}
@@ -377,20 +421,26 @@ func (a *app) ratingsListCommand() *cobra.Command {
 
 // printRatingsOf lists one mix's ratings, where the title would repeat on
 // every row.
-func printRatingsOf(out io.Writer, width int, ratings []api.Rating) {
+func printRatingsOf(out io.Writer, width int, ratings []api.Rating, tracks []api.Track) {
 	rows := make([][]string, len(ratings))
 	for i, r := range ratings {
-		rows[i] = []string{ratingHandle(r.ID), r.RatedTs, r.Kind, text(r.Message), strings.Join(r.Tags, ", ")}
+		rows[i] = []string{ratingHandle(r.ID), r.RatedTs, r.Kind, positionCell(r), trackCell(tracks, r.PositionSeconds), text(r.Message), strings.Join(r.Tags, ", ")}
 	}
-	table(out, width, []column{whole("ID"), whole("WHEN"), whole("KIND"), prose("MESSAGE"), detail("TAGS")}, rows)
+	table(out, width, []column{whole("ID"), whole("WHEN"), whole("KIND"), whole("AT"), detail("TRACK"), prose("MESSAGE"), detail("TAGS")}, rows)
+}
+
+// trackCell names the track playing at position, and is "" where no track
+// holds it.
+func trackCell(tracks []api.Track, position *int64) string {
+	return trackName(trackAt(tracks, position))
 }
 
 func printRatings(out io.Writer, width int, ratings []api.Rating) {
 	rows := make([][]string, len(ratings))
 	for i, r := range ratings {
-		rows[i] = []string{ratingHandle(r.ID), r.RatedTs, r.Kind, r.Video.Title, text(r.Message), strings.Join(r.Tags, ", ")}
+		rows[i] = []string{ratingHandle(r.ID), r.RatedTs, r.Kind, r.Video.Title, positionCell(r), text(r.Message), strings.Join(r.Tags, ", ")}
 	}
-	table(out, width, []column{whole("ID"), whole("WHEN"), whole("KIND"), prose("TITLE"), detail("MESSAGE"), detail("TAGS")}, rows)
+	table(out, width, []column{whole("ID"), whole("WHEN"), whole("KIND"), prose("TITLE"), whole("AT"), detail("MESSAGE"), detail("TAGS")}, rows)
 }
 
 func (a *app) tagsCommand() *cobra.Command {

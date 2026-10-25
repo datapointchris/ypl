@@ -70,11 +70,13 @@ type PlaylistSort struct {
 }
 
 type Rating struct {
-	RatingID string
-	VideoID  string
-	Kind     string
-	Message  sql.NullString
-	RatedTs  string
+	RatingID            string
+	VideoID             string
+	Kind                string
+	Message             sql.NullString
+	RatedTs             string
+	PositionSeconds     sql.NullInt64
+	IsPositionEstimated bool
 }
 
 type RatingTag struct {

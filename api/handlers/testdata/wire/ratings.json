@@ -5,6 +5,8 @@
       "rated_ts": "2026-09-17T12:00:00Z",
       "kind": "like",
       "message": "n",
+      "position_seconds": 1800,
+      "position_estimated": true,
       "tags": [
         "deep"
       ],

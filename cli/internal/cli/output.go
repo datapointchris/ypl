@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+
+	"github.com/datapointchris/ypl/cli/internal/api"
 )
 
 // emitJSON writes v to out as the machine rendering. It is the only thing any
@@ -176,6 +179,34 @@ func clock(seconds *int64) string {
 		return fmt.Sprintf("%d:%02d:%02d", h, int64(d.Minutes())%60, *seconds%60)
 	}
 	return fmt.Sprintf("%d:%02d", int64(d.Minutes()), *seconds%60)
+}
+
+// clockSeconds is the seconds a clock reads, from h:mm:ss, m:ss or a bare
+// number of seconds.
+func clockSeconds(reading string) (int64, error) {
+	parts := strings.Split(strings.TrimSpace(reading), ":")
+	if len(parts) > 3 {
+		return 0, fmt.Errorf("%q is not h:mm:ss, m:ss or seconds", reading)
+	}
+	var seconds int64
+	for i, part := range parts {
+		n, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || n < 0 || (i > 0 && n > 59) {
+			return 0, fmt.Errorf("%q is not h:mm:ss, m:ss or seconds", reading)
+		}
+		seconds = seconds*60 + n
+	}
+	return seconds, nil
+}
+
+// positionCell is where in the mix a rating was left, marked ~ where it was
+// estimated from YouTube's resume point.
+func positionCell(r api.Rating) string {
+	at := clock(r.PositionSeconds)
+	if at != "" && r.PositionEstimated {
+		at = "~" + at
+	}
+	return at
 }
 
 // text is a pointer's string, and "" for one the server does not hold.

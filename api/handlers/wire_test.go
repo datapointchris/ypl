@@ -36,10 +36,10 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 	if played.Code != http.StatusCreated {
 		t.Fatalf("storing a play answered %d: %s", played.Code, played.Body)
 	}
-	if rated := f.do(http.MethodPost, "/api/v1/ratings", ratingBody(1, "a", `, "kind": "like", "message": "n", "tags": ["deep"]`)); rated.Code != http.StatusCreated {
+	if rated := f.do(http.MethodPost, "/api/v1/ratings", ratingBody(1, "a", `, "kind": "like", "message": "n", "position_seconds": 1800, "position_estimated": true, "tags": ["deep"]`)); rated.Code != http.StatusCreated {
 		t.Fatalf("storing a rating answered %d: %s", rated.Code, rated.Body)
 	}
-	f.h.ReadHistoryWith(&fakeHistory{entries: []ytdlp.HistoryEntry{{ID: "a"}}}, sealer(t))
+	f.h.ReadHistoryWith(&fakeHistory{entries: []ytdlp.HistoryEntry{{ID: "a", ResumePercent: new(50)}}}, sealer(t))
 	if set := f.do(http.MethodPut, "/api/v1/youtube/session", fmt.Sprintf(`{"cookie_jar": %q}`, cookieJar)); set.Code != http.StatusOK {
 		t.Fatalf("setting the session answered %d: %s", set.Code, set.Body)
 	}
