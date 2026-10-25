@@ -1,4 +1,4 @@
-# forge-toolchain: 52
+# forge-toolchain: 53
 name: CI
 
 on:
@@ -315,7 +315,7 @@ jobs:
             go-build-repo-mod
             go-mod-tidy-repo
             go-test-repo-mod
-            hadolint-docker
+            hadolint
             jactionlint
             sqlfluff-lint
           )
