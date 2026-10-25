@@ -20,18 +20,25 @@ import (
 
 // libraryVideo is a video as GET /api/v1/videos lists it: what decides whether
 // it belongs in a set without its tracklist being read. Artists come commonest
-// first, and playlists by title.
+// first, and playlists by title. Likes, Dislikes and Notes count its ratings
+// of each kind, and Tags is every tag they carried, alphabetically.
 type libraryVideo struct {
 	videoSummary
 	Artists   []string      `json:"artists"`
 	Playlists []playlistRef `json:"playlists"`
+	Likes     int64         `json:"likes"`
+	Dislikes  int64         `json:"dislikes"`
+	Notes     int64         `json:"notes"`
+	Tags      []string      `json:"tags"`
 }
 
-// video is one video with its description and tracklist.
+// video is one video with its description, tracklist, and every rating left
+// on it, newest first.
 type video struct {
 	libraryVideo
-	Description *string `json:"description"`
-	Tracks      []track `json:"tracks"`
+	Description *string  `json:"description"`
+	Tracks      []track  `json:"tracks"`
+	Ratings     []rating `json:"ratings"`
 }
 
 type playlistRef struct {
@@ -111,7 +118,10 @@ func orderNames() string {
 // listVideos answers a page of the available videos some playlist holds.
 // playlist keeps the videos that playlist holds, min_seconds and max_seconds
 // bound the duration, artist keeps the videos with an artist whose name
-// contains it ignoring case and accents, and sort names the order.
+// contains it ignoring case and accents, rated keeps the videos with a rating
+// of that kind, or with none under unrated, tag keeps the videos a rating
+// tagged with it, text keeps the videos a rating's message of contains it
+// ignoring case and accents, and sort names the order.
 //
 // A random order comes out new on every request, so it is a draw rather than a
 // page of a standing list: it answers limit videos, every video when limit is
@@ -136,6 +146,13 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	artist := r.URL.Query().Get("artist")
+	rated := r.URL.Query().Get("rated")
+	if rated != "" && rated != kindLike && rated != kindDislike && rated != kindNote && rated != ratedNone {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "rated %q is not like, dislike, note or unrated", rated)
+		return
+	}
+	tag := canonicalTag(r.URL.Query().Get("tag"))
+	text := r.URL.Query().Get("text")
 	limit, ok := limitParam(w, r, videosPage)
 	if !ok {
 		return
@@ -149,6 +166,7 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 	var rows []generated.ListLibraryVideosRow
 	var artists []generated.ListVideoArtistsRow
 	var playlists []generated.ListVideoPlaylistsRow
+	var opinions videoOpinions
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		if filter.PlaylistID.Valid {
 			id, err := resolvePlaylist(ctx, q, "playlist", filter.PlaylistID.String, loosely)
@@ -162,6 +180,9 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if artists, err = q.ListVideoArtists(ctx, sql.NullString{}); err != nil {
+			return err
+		}
+		if opinions, err = readOpinions(ctx, q, sql.NullString{}); err != nil {
 			return err
 		}
 		playlists, err = q.ListVideoPlaylists(ctx, sql.NullString{})
@@ -191,7 +212,17 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 			Artists:   orEmpty(artistsOf[row.VideoID]),
 			Playlists: orEmpty(playlistsOf[row.VideoID]),
 		}
+		opinions.fill(&v)
 		if artist != "" && !slices.ContainsFunc(v.Artists, func(a string) bool { return contains(matcher, a, artist) }) {
+			continue
+		}
+		if rated != "" && !opinions.rated(v, rated) {
+			continue
+		}
+		if tag != "" && !slices.Contains(v.Tags, tag) {
+			continue
+		}
+		if text != "" && !contains(matcher, opinions.messages[row.VideoID], text) {
 			continue
 		}
 		videos = append(videos, v)
@@ -238,6 +269,8 @@ func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 	var tracks []generated.Track
 	var artists []generated.ListVideoArtistsRow
 	var playlists []generated.ListVideoPlaylistsRow
+	var opinions videoOpinions
+	var ratings []rating
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		var err error
 		if id, err = resolveVideo(ctx, q, ref); err != nil {
@@ -252,6 +285,21 @@ func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 		}
 		if artists, err = q.ListVideoArtists(ctx, only); err != nil {
 			return err
+		}
+		if opinions, err = readOpinions(ctx, q, only); err != nil {
+			return err
+		}
+		rows, err := q.ListRatings(ctx, generated.ListRatingsParams{VideoID: only, MaxRows: everyRow})
+		if err != nil {
+			return err
+		}
+		tagRows, err := q.ListRatingTags(ctx, only)
+		if err != nil {
+			return err
+		}
+		tags := tagsByRating(tagRows)
+		for _, row := range rows {
+			ratings = append(ratings, ratingFrom(row, tags))
 		}
 		playlists, err = q.ListVideoPlaylists(ctx, only)
 		return err
@@ -278,7 +326,9 @@ func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 		},
 		Description: nullableText(stored.Description),
 		Tracks:      make([]track, len(tracks)),
+		Ratings:     orEmpty(ratings),
 	}
+	opinions.fill(&shown.libraryVideo)
 	for i, t := range tracks {
 		shown.Tracks[i] = track{
 			Position:     t.Position,
@@ -340,4 +390,63 @@ func orEmpty[T any](s []T) []T {
 		return []T{}
 	}
 	return s
+}
+
+// ratedNone is what the rated filter takes for a video with no rating.
+const ratedNone = "unrated"
+
+// videoOpinions is what ratings said of each video: its counts by kind, its
+// messages joined, and its tags without repeats, alphabetically.
+type videoOpinions struct {
+	counts   map[string]generated.ListVideoOpinionsRow
+	messages map[string]string
+	tags     map[string][]string
+}
+
+// readOpinions is what ratings said of every video, or of the video only names
+// when it is valid.
+func readOpinions(ctx context.Context, q *generated.Queries, only sql.NullString) (videoOpinions, error) {
+	opinions := videoOpinions{counts: map[string]generated.ListVideoOpinionsRow{}, messages: map[string]string{}, tags: map[string][]string{}}
+	rows, err := q.ListVideoOpinions(ctx, only)
+	if err != nil {
+		return opinions, err
+	}
+	for _, row := range rows {
+		opinions.counts[row.VideoID] = row
+		opinions.messages[row.VideoID] = row.Messages
+	}
+	tagRows, err := q.ListRatingTags(ctx, only)
+	if err != nil {
+		return opinions, err
+	}
+	for _, row := range tagRows {
+		if !slices.Contains(opinions.tags[row.VideoID], row.Tag) {
+			opinions.tags[row.VideoID] = append(opinions.tags[row.VideoID], row.Tag)
+		}
+	}
+	for _, tags := range opinions.tags {
+		slices.Sort(tags)
+	}
+	return opinions, nil
+}
+
+// fill sets v's counts and tags.
+func (o videoOpinions) fill(v *libraryVideo) {
+	counts := o.counts[v.ID]
+	v.Likes, v.Dislikes, v.Notes = counts.Likes, counts.Dislikes, counts.Notes
+	v.Tags = orEmpty(o.tags[v.ID])
+}
+
+// rated reports whether v holds a rating of kind, or none at all for
+// ratedNone.
+func (o videoOpinions) rated(v libraryVideo, kind string) bool {
+	switch kind {
+	case kindLike:
+		return v.Likes > 0
+	case kindDislike:
+		return v.Dislikes > 0
+	case kindNote:
+		return v.Notes > 0
+	}
+	return v.Likes+v.Dislikes+v.Notes == 0
 }

@@ -51,6 +51,7 @@ type wireStatus struct {
 	LastRun   *wireSyncRun    `json:"last_run"`
 	LastOKRun *wireSyncRun    `json:"last_ok_run"`
 	Sync      json.RawMessage `json:"sync"`
+	Session   json.RawMessage `json:"youtube_session"`
 }
 
 type wireLibrary struct {

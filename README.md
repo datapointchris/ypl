@@ -46,8 +46,9 @@ running.
 # The server, once, from a clone of this repository
 export YOUTUBE_CLIENT_ID=… YOUTUBE_CLIENT_SECRET=…    # the channel's Google OAuth client
 export YOUTUBE_REFRESH_TOKEN=$(go -C api run ./cmd/authorize-youtube | jq -r .refresh_token)  # approve as the channel
+export YOUTUBE_COOKIE_KEY=$(openssl rand -base64 32)  # seals the watch-history session in the store
 docker run -d --name ypl -p 8080:8080 -v ypl-db:/var/db/ypl \
-  -e YOUTUBE_CLIENT_ID -e YOUTUBE_CLIENT_SECRET -e YOUTUBE_REFRESH_TOKEN \
+  -e YOUTUBE_CLIENT_ID -e YOUTUBE_CLIENT_SECRET -e YOUTUBE_REFRESH_TOKEN -e YOUTUBE_COOKIE_KEY \
   -e OIDC_ISSUER=https://auth.example.com -e PUBLIC_URL=https://ypl.example.com \
   ghcr.io/datapointchris/ypl-api:latest               # its first pass syncs every playlist
 curl -fsS https://ypl.example.com/ready               # 200 once it has read the identity provider
@@ -112,7 +113,8 @@ Exit codes are 0 for success, 2 for an invocation the CLI would not accept, and 
 ran and failed. Three commands also spend 1 on a real state, after writing their answer: `ypl now`
 when nothing is playing, `ypl next` when there is nothing to suggest, and `ypl auth status` when
 this machine is not logged in. A status bar can run any of them unguarded. `ypl server status`
-spends 3 on a sync that has stopped keeping up.
+spends 3 on a sync that has stopped keeping up, and on a YouTube session that last read the watch
+history signed out.
 
 `--no-input` forbids every prompt, so a script can take the non-interactive path from a terminal. A
 delete then needs `--yes`. An edit then needs its buffer piped in.
@@ -127,6 +129,7 @@ delete then needs `--yes`. An edit then needs its buffer piped in.
 | Make, retitle, delete or reorder a playlist | `playlists create`, `rename`, `delete`, `edit` | the server, which writes to YouTube |
 | Which mixes run three hours, or name an artist | `videos` | the server's tracklists and lengths |
 | What have I heard lately | `plays` | the server's listening history |
+| What I said about a mix, wherever it is playing | `rate`, `ratings`, `tags`, `videos show` | the account's watch history, then the server's ratings |
 | Is the mirror keeping up with YouTube | `server` | the server's syncs and the day's quota |
 | Where this machine is pointed, and whether it is logged in | `auth status`, `config show` | the config file and this machine's keychain |
 | Is a newer release out | `update` | this repository's `cli/v*` releases |
@@ -171,6 +174,35 @@ or by part of its title. `ypl plays delete` asks first. `--yes` answers for it. 
 number is never given to another play, so a number typed from an old listing finds nothing rather
 than a different listen. Its id is never stored again either, so a retry arriving after the delete
 cannot record the play a second time.
+
+## `rate` — every like, dislike and note on a mix is kept, picked from the watch history
+
+```bash
+ypl rate                                        # pick the mix in fzf, the watch history on top, then asks
+ypl rate --like -m 'great closing hour'         # pick the mix, and like it with a message
+ypl rate 'mayan warrior' --note -m 'too much talk'  # a note on one mix, by part of its title
+ypl videos show 'mayan warrior'                 # every rating of that mix, newest first
+ypl videos list --rated dislike                 # the mixes with a dislike
+ypl videos list --tag sunrise --text closing    # tags and messages are what a mix is found by later
+ypl tags list                                   # every tag, with how many mixes carry it
+ypl ratings delete 3f9c2a1b                     # take one back, by the ID column of ratings list
+```
+
+A rating is about the mix, never a track inside it. It is a like, a dislike or a note, with a
+message and free-form tags. A note needs its message. A mix keeps every rating left on it, and
+nothing is worked out from them beyond counts, so the listing is the record.
+
+At a terminal with no mix named, `ypl rate` reads YouTube's watch history through the server. Every
+player signed into the channel's account writes to it, so a mix playing in a browser on another
+machine is near the top. The picker is fzf over the whole library, with the newest mixes in the
+history above the rest, each marked with its place there. A history that cannot be read is said on
+stderr, and the library is offered alone. Without a terminal, name the mix and give the flags.
+
+The server reads the history with a signed-in cookie jar, which `ypl server cookies set <file>`
+sends. `ypl server cookies set --help` gives the export steps. The jar has to come from a private
+window that is closed afterwards, because YouTube rotates the cookies of a session a browser keeps
+open. The server keeps the jar fresh itself after that, and `ypl server status` says when YouTube
+stops honoring it.
 
 ## `playlists` — a change takes the whole name, and reaches YouTube before it answers
 

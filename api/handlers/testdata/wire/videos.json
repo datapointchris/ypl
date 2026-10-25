@@ -19,6 +19,12 @@
           "id": "PLA",
           "title": "Alpha"
         }
+      ],
+      "likes": 1,
+      "dislikes": 0,
+      "notes": 0,
+      "tags": [
+        "deep"
       ]
     },
     {
@@ -36,7 +42,11 @@
           "id": "PLB",
           "title": "zulu"
         }
-      ]
+      ],
+      "likes": 0,
+      "dislikes": 0,
+      "notes": 0,
+      "tags": []
     },
     {
       "id": "b",
@@ -59,7 +69,11 @@
           "id": "PLB",
           "title": "zulu"
         }
-      ]
+      ],
+      "likes": 0,
+      "dislikes": 0,
+      "notes": 0,
+      "tags": []
     },
     {
       "id": "c",
@@ -76,7 +90,11 @@
           "id": "PLB",
           "title": "zulu"
         }
-      ]
+      ],
+      "likes": 0,
+      "dislikes": 0,
+      "notes": 0,
+      "tags": []
     }
   ],
   "has_more": false

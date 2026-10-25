@@ -11,7 +11,10 @@ each playlist's items, with an empty playlist still taking one.
 
 The server reads its settings from the environment, and refuses to start on one it cannot use.
 `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` name the OAuth client, and `YOUTUBE_REFRESH_TOKEN`
-is the channel's refresh token. All three are required. The server listens on `PORT`, 8080 when
+is the channel's refresh token. All three are required. `YOUTUBE_COOKIE_KEY`, the base64 of 32
+random bytes (`openssl rand -base64 32`), is what the watch-history cookie jar is sealed under in
+the store. Without it the history routes answer 503, and a value that is not such a key stops the
+server. The server listens on `PORT`, 8080 when
 unset. It keeps its store at `DATABASE_PATH`, or at `ypl/api.db` under `$XDG_DATA_HOME` when that
 is unset. The image sets `DATABASE_PATH` to `/var/db/ypl/ypl.db`, in a directory for the host to
 mount, since a store inside the container goes with the container. It also sets `TZ` to UTC, the
@@ -148,6 +151,12 @@ reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire t
 | `GET /api/v1/plays` | Plays newest first, a page at a time |
 | `GET /api/v1/plays/{id}` | One play |
 | `DELETE /api/v1/plays/{id}` | Nothing, once it has deleted the play |
+| `POST /api/v1/ratings` | The rating it records, from `{"id", "video_id", "kind", "message", "tags"}` |
+| `GET /api/v1/ratings` | Ratings newest first, of one video under `video`, a page at a time |
+| `DELETE /api/v1/ratings/{id}` | Nothing, once it has deleted the rating and its tags; `{id}` is the id or its last 8 or more characters |
+| `GET /api/v1/tags` | Every tag a rating carried, with how many videos carry it, most first |
+| `GET /api/v1/youtube/history` | The newest library videos in the account's watch history, up to `limit` |
+| `PUT /api/v1/youtube/session` | The session it keeps, from `{"cookie_jar"}`, once a read of the watch history with it answers signed in |
 | `GET /api/v1/suggestions` | What to play next: never-played videos first, then the least recently played |
 | `GET /api/v1/sync/runs` | Sync runs newest first with their failures, a page at a time |
 | `GET /api/v1/status` | What the store holds, the latest run, the latest run that ended ok, the day's quota, and each playlist waiting to be pushed |
@@ -188,6 +197,40 @@ A deleted play answers as deleted by every name it had. `GET /api/v1/plays/{id}`
 `play_deleted`. `DELETE` answers 204 again, since the play is gone as asked. Its id sent to
 `POST /api/v1/plays` again answers 410 with `play_deleted`, so a retry arriving after the delete
 cannot store the play a second time. A name no play ever had answers 404.
+
+A rating is a `like`, a `dislike` or a `note` left on a mix, with a `message` and `tags`. A note
+needs a message, and a like or a dislike may carry one. A mix holds every rating left on it, and
+nothing is derived from them but counts. Tags are lowercased with their whitespace collapsed.
+`GET /api/v1/videos` answers each video's `likes`, `dislikes` and `notes` counts and its `tags`, and
+`GET /api/v1/videos/{id}` adds every rating as `ratings`, newest first. The list narrows by `rated`
+(`like`, `dislike`, `note`, or `unrated` for none), `tag`, and `text`, which matches part of any
+rating's message ignoring case and accents. A rating's `id` is a client-made UUIDv7, as a play's is.
+
+The watch history is read through `yt-dlp` with a signed-in session, which is the one read made
+signed in. Every player signed into the channel's account writes to that history, so the newest
+library video in it is what is most likely playing, wherever it plays. The history says what was
+started and in what order, never when. A read asks for a fixed number of the newest entries and
+answers those the library holds. Reads are made only when asked for, one at a time, and one read
+answers for a short window, since YouTube may suspend an account it sees read through `yt-dlp` too
+often.
+
+The session is a Netscape cookie jar, kept in the store sealed with AES-256-GCM under
+`YOUTUBE_COOKIE_KEY`, so a copy of the store carries no usable session. A jar sealed under another
+key answers 409 `youtube_session_missing`, and is replaced by sending one again. YouTube rotates the cookies of a session
+open in a browser, which invalidates an exported copy. So the jar is exported from a private window
+that is then closed, and no browser opens the session again. `ypl server cookies set --help` gives
+the steps.
+
+`yt-dlp` writes the jar back after each read with whatever YouTube rotated, and the server keeps
+that version, so the session lasts until YouTube ends it. A jar that reads the history signed out
+is refused with 422 `cookie_jar_signed_out`, and the session already held is kept. A read refused signed out later answers 502
+`youtube_signed_out` and is recorded, and `GET /api/v1/status` answers the session's
+`last_ok_ts` and `last_refused_ts` under `youtube_session`, so a refusal later than the last ok
+read is the jar to export again. With no session, the history answers 409
+`youtube_session_missing`, and a server with no `yt-dlp` answers 503 `youtube_history_unavailable`.
+While YouTube refuses the server's address, as enrichment's pause records, the history answers 503
+`youtube_rate_limited` without reading, because a read sent into a refusal can turn it into a
+block on the account.
 
 Creating, renaming and deleting a playlist write to YouTube in the request, one request at a time.
 The server records each write before sending it and settles it with YouTube's answer, and the store

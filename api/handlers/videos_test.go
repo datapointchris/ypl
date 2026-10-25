@@ -19,12 +19,17 @@ type wireLibraryVideo struct {
 	wireVideoSummary
 	Artists   []string          `json:"artists"`
 	Playlists []wirePlaylistRef `json:"playlists"`
+	Likes     int64             `json:"likes"`
+	Dislikes  int64             `json:"dislikes"`
+	Notes     int64             `json:"notes"`
+	Tags      []string          `json:"tags"`
 }
 
 type wireVideo struct {
 	wireLibraryVideo
 	Description *string     `json:"description"`
 	Tracks      []wireTrack `json:"tracks"`
+	Ratings     []rating    `json:"ratings"`
 }
 
 type wirePlaylistRef struct {

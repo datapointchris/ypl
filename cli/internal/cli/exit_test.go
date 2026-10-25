@@ -82,6 +82,7 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		"ypl playlists delete": {"playlists", "delete", "sunday-morning"},
 		"ypl playlists edit":   {"playlists", "edit", "sunday-morning"},
 		"ypl plays delete":     {"plays", "delete", "41"},
+		"ypl ratings delete":   {"ratings", "delete", "3f9c2a1b"},
 	}
 	for path, args := range takesTerminal {
 		terminal := newFixture(t, serves(nil))
@@ -428,6 +429,8 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		{"videos", "list", "--artist", "nobody"},
 		{"plays", "list"},
 		{"server", "syncs", "list"},
+		{"ratings", "list"},
+		{"tags", "list"},
 		{"next"},
 		{"now"},
 		{"play", "Empty"},
@@ -443,6 +446,8 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 			"/api/v1/suggestions": `[]`,
 			"/api/v1/plays":       `{"data": [], "has_more": false}`,
 			"/api/v1/sync/runs":   `{"data": [], "has_more": false}`,
+			"/api/v1/ratings":     `{"data": [], "has_more": false}`,
+			"/api/v1/tags":        `[]`,
 			"/api/v1/playlists/Empty": `{"id": "PLA", "title": "Empty", "privacy": "private", "item_count": 1,
 				"enriched_count": 0, "unavailable_count": 1, "synced_ts": null, "items": [
 					{"position": 1, "video": {"id": "aaaaaaaaaaa", "title": "A", "channel_title": "One",
@@ -515,6 +520,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		"ypl playlists rename": true, "ypl playlists show": true,
 		"ypl plays add": true, "ypl plays delete": true, "ypl plays show": true,
 		"ypl server status": true, "ypl videos show": true, "ypl videos sorts": true,
+		"ypl rate": true, "ypl ratings delete": true, "ypl server cookies set": true,
 	}
 	grown := leaves(root())
 	for _, leaf := range grown {

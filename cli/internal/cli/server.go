@@ -23,10 +23,12 @@ func (a *app) serverCommand() *cobra.Command {
 		Use:     "server",
 		Short:   "What the server holds, and how its syncs with YouTube went",
 		GroupID: groupServer,
-		Long:    "The server syncs with YouTube on its own schedule. These commands only read.",
+		Long: "The server syncs with YouTube on its own schedule. Every command here reads,\n" +
+			"except `ypl server cookies set`, which sends the session the watch history is\n" +
+			"read with.",
 	}
 	goclikit.AsNamespace(cmd)
-	cmd.AddCommand(a.serverStatusCommand(), a.serverSyncsCommand())
+	cmd.AddCommand(a.serverStatusCommand(), a.serverSyncsCommand(), a.serverCookiesCommand())
 	return cmd
 }
 
@@ -41,8 +43,10 @@ func (a *app) serverStatusCommand() *cobra.Command {
 			"one last_ok_run. The day's YouTube quota and each playlist waiting to be\n" +
 			"pushed to YouTube are under sync.\n\n" +
 			"Exits 3 when the server has not finished an ok sync in the last hour, or in\n" +
-			"twelve of its ticks where those are longer, a state a person has to look\n" +
-			"at. Exits 1 when the server could not be asked.",
+			"twelve of its ticks where those are longer, a state a person has to look at.\n" +
+			"Exits 1 when the server could not be asked. A cookie jar YouTube last read\n" +
+			"signed out is printed, and is youtube_session in --json, but leaves the exit\n" +
+			"code alone, since a check on a timer reads 3 as the sync.",
 		Example: "  ypl server status         the library's size and the last sync\n" +
 			"  ypl server status --json  the same, for a check on a timer",
 		Args: cobra.NoArgs,
@@ -140,7 +144,8 @@ func printStatus(out io.Writer, status api.Status, now time.Time) {
 		_, _ = fmt.Fprintf(out, "%s read for a tracklist, %d unavailable\n",
 			count(library.EnrichedVideos, "video"), library.UnavailableVideos)
 	}
-	_, _ = fmt.Fprintf(out, "%s\n\n", backlog(status))
+	_, _ = fmt.Fprintf(out, "%s\n", backlog(status))
+	_, _ = fmt.Fprintf(out, "%s\n\n", sessionLine(status.YouTubeSession))
 
 	if status.LastRun == nil {
 		_, _ = fmt.Fprintln(out, "The server has not synced yet.")
@@ -174,6 +179,19 @@ func printStatus(out io.Writer, status api.Status, now time.Time) {
 	if misses := status.Sync.ProbeMissesLastDay; misses > 0 {
 		_, _ = fmt.Fprintf(out, "The sweep found %s on YouTube in the last day that the probe missed.\n", count(misses, "changed playlist"))
 	}
+}
+
+// sessionLine says where the session the watch history is read with stands.
+func sessionLine(session *api.YouTubeSession) string {
+	switch {
+	case session == nil:
+		return "No YouTube session, so the watch history is not read; `ypl server cookies set` sends one."
+	case session.Refused():
+		return fmt.Sprintf("YouTube answered the watch history signed out at %s; export the cookie jar again.", *session.LastRefusedTs)
+	case session.LastOKTs != nil:
+		return "Watch history last read signed in at " + *session.LastOKTs + "."
+	}
+	return "YouTube session set at " + session.StoredTs + "."
 }
 
 // resets is when the quota resets, as how long from now, and nothing where

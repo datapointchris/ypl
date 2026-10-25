@@ -69,6 +69,19 @@ type PlaylistSort struct {
 	Description string
 }
 
+type Rating struct {
+	RatingID string
+	VideoID  string
+	Kind     string
+	Message  sql.NullString
+	RatedTs  string
+}
+
+type RatingTag struct {
+	RatingID string
+	Tag      string
+}
+
 type SyncFailure struct {
 	SyncFailureID int64
 	RunID         int64
@@ -141,6 +154,15 @@ type Video struct {
 	UploadDate      sql.NullString
 	IsUnavailable   bool
 	EnrichedTs      sql.NullString
+}
+
+type YoutubeSession struct {
+	SessionID     int64
+	CookieJar     string
+	StoredTs      string
+	LastOkTs      sql.NullString
+	LastRefusedTs sql.NullString
+	LastError     sql.NullString
 }
 
 type YoutubeWrite struct {

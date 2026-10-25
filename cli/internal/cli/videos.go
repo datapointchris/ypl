@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -34,10 +35,13 @@ func (a *app) videosListCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List videos, filtered by length, artist or playlist",
+		Short: "List videos, filtered by length, artist, playlist or rating",
 		Example: "  ypl videos list --min-minutes 180         videos three hours long or more\n" +
 			"  ypl videos list --artist bjork            videos whose tracklist names Björk\n" +
 			"  ypl videos list --sort newest --limit 10  the ten latest uploads\n" +
+			"  ypl videos list --rated dislike           the mixes to trim\n" +
+			"  ypl videos list --tag sunrise             the mixes you tagged sunrise\n" +
+			"  ypl videos list --text closing            the mixes a message mentions closing on\n" +
 			"  ypl videos list --json                    the whole library, for a script",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -77,6 +81,10 @@ func (a *app) videosListCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&filter.Playlist, "playlist", "", "Only the videos this playlist holds, by title or id")
 	cmd.Flags().StringVar(&filter.Artist, "artist", "", "Only videos whose tracklist names an artist holding this, ignoring case and accents")
+	cmd.Flags().StringVar(&filter.Rated, "rated", "", "Only videos with a like, a dislike or a note, or unrated for those with none")
+	cmd.Flags().StringVar(&filter.Tag, "tag", "", "Only videos a rating tagged with this")
+	cmd.Flags().StringVar(&filter.Text, "text", "", "Only videos a rating's message holds this for, ignoring case and accents")
+	completeFlag(cmd, "rated", cobra.FixedCompletions(append(slices.Clone(api.RatingKinds), "unrated"), cobra.ShellCompDirectiveNoFileComp))
 	addMinutes(cmd, "min-minutes", &minMinutes, "Only videos at least this many minutes long; a video whose length is unknown is left out")
 	addMinutes(cmd, "max-minutes", &maxMinutes, "Only videos at most this many minutes long; a video whose length is unknown is left out")
 	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order: "+strings.Join(api.VideoSorts, ", ")+" (default "+api.VideoSorts[0]+"); newest and oldest go by upload date, and random under --limit draws at most "+strconv.Itoa(api.PageSize))
@@ -164,10 +172,22 @@ func printVideos(out io.Writer, width int, videos []api.LibraryVideo) {
 			video.ChannelTitle,
 			clock(video.DurationSeconds),
 			strconv.FormatInt(video.TrackCount, 10),
+			counted(video.Likes),
+			counted(video.Dislikes),
+			counted(video.Notes),
 			firstArtists(video.Artists),
 		}
 	}
-	table(out, width, []column{whole("VIDEO"), prose("TITLE"), detail("CHANNEL"), whole("LENGTH"), whole("TRACKS"), detail("ARTISTS")}, rows)
+	table(out, width, []column{whole("VIDEO"), prose("TITLE"), detail("CHANNEL"), whole("LENGTH"), whole("TRACKS"), whole("LIKES"), whole("DISLIKES"), whole("NOTES"), detail("ARTISTS")}, rows)
+}
+
+// counted is n, and blank for none, so a rated mix stands out in a column of
+// mostly unrated ones.
+func counted(n int64) string {
+	if n == 0 {
+		return ""
+	}
+	return strconv.FormatInt(n, 10)
 }
 
 // shownArtists is how many artists a row of the library names. A mix's
@@ -199,6 +219,10 @@ func printVideo(out io.Writer, width int, video api.Video) {
 			titles[i] = playlist.Title
 		}
 		_, _ = fmt.Fprintf(out, "In %s\n", strings.Join(titles, ", "))
+	}
+	if len(video.Ratings) > 0 {
+		_, _ = fmt.Fprintln(out, "\nRatings, newest first")
+		printRatingsOf(out, width, video.Ratings)
 	}
 	// A video YouTube will not serve is never read again — the enrichment queue
 	// filters it out — so promising a later run would be telling a reader to

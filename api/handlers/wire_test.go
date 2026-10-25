@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
 // update rewrites the wire documents instead of checking them.
@@ -33,6 +35,13 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		`{"id": "01920000-0000-7000-8000-000000000001", "video_id": "a", "played_ts": "2026-09-01T10:00:00Z"}`)
 	if played.Code != http.StatusCreated {
 		t.Fatalf("storing a play answered %d: %s", played.Code, played.Body)
+	}
+	if rated := f.do(http.MethodPost, "/api/v1/ratings", ratingBody(1, "a", `, "kind": "like", "message": "n", "tags": ["deep"]`)); rated.Code != http.StatusCreated {
+		t.Fatalf("storing a rating answered %d: %s", rated.Code, rated.Body)
+	}
+	f.h.ReadHistoryWith(&fakeHistory{entries: []ytdlp.HistoryEntry{{ID: "a"}}}, sealer(t))
+	if set := f.do(http.MethodPut, "/api/v1/youtube/session", fmt.Sprintf(`{"cookie_jar": %q}`, cookieJar)); set.Code != http.StatusOK {
+		t.Fatalf("setting the session answered %d: %s", set.Code, set.Body)
 	}
 	// An edit no sync has pushed, so the status document lists a push rather
 	// than none.
@@ -58,6 +67,9 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		{name: "suggestions", target: "/api/v1/suggestions?limit=4", sorted: true},
 		{name: "sync-runs", target: "/api/v1/sync/runs"},
 		{name: "status", target: "/api/v1/status"},
+		{name: "ratings", target: "/api/v1/ratings"},
+		{name: "tags", target: "/api/v1/tags"},
+		{name: "history", target: "/api/v1/youtube/history"},
 	} {
 		rec := f.get(doc.target)
 		if rec.Code != http.StatusOK {
@@ -91,6 +103,14 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		t.Fatalf("encode the slugs: %v", err)
 	}
 	pinned(t, "slugs", "the title slugs", body)
+
+	// The kinds of rating. The CLI offers them on Tab and sends one, and a kind
+	// it holds that the server does not is refused with invalid_kind.
+	body, err = json.Marshal([]string{kindLike, kindDislike, kindNote})
+	if err != nil {
+		t.Fatalf("encode the rating kinds: %v", err)
+	}
+	pinned(t, "rating_kinds", "the rating kinds", body)
 
 	// The routes each service scope reaches. The CLI requests a scope by name,
 	// and a name the server stops listing is a 403 on every call a service

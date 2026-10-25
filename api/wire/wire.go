@@ -43,7 +43,8 @@ const (
 	CodeMethodNotAllowed Code = "method_not_allowed"
 
 	// 409
-	CodePlayConflict Code = "play_conflict"
+	CodePlayConflict          Code = "play_conflict"
+	CodeYouTubeSessionMissing Code = "youtube_session_missing"
 
 	// 410
 	CodePlayDeleted Code = "play_deleted"
@@ -67,6 +68,14 @@ const (
 	CodeTooManyVideos       Code = "too_many_videos"
 	CodeInvalidVideoID      Code = "invalid_video_id"
 	CodeVideoUnavailable    Code = "video_unavailable"
+	CodeInvalidRatingID     Code = "invalid_rating_id"
+	CodeInvalidKind         Code = "invalid_kind"
+	CodeMessageRequired     Code = "message_required"
+	CodeMessageTooLong      Code = "message_too_long"
+	CodeTagTooLong          Code = "tag_too_long"
+	CodeTooManyTags         Code = "too_many_tags"
+	CodeInvalidCookieJar    Code = "invalid_cookie_jar"
+	CodeCookieJarSignedOut  Code = "cookie_jar_signed_out"
 
 	// 428
 	CodePreconditionRequired Code = "precondition_required"
@@ -78,11 +87,14 @@ const (
 	// 502
 	CodeYouTubeWriteFailed Code = "youtube_write_failed"
 	CodeYouTubeReadFailed  Code = "youtube_read_failed"
+	CodeYouTubeSignedOut   Code = "youtube_signed_out"
 
 	// 503
 	CodeIdentityProviderUnavailable Code = goapiauth.CodeIdentityProviderUnavailable
 	CodeYouTubeQuotaSpent           Code = "youtube_quota_spent"
 	CodeShuttingDown                Code = "shutting_down"
+	CodeYouTubeHistoryUnavailable   Code = "youtube_history_unavailable"
+	CodeYouTubeRateLimited          Code = "youtube_rate_limited"
 )
 
 // Refusal is the body of every answer that refuses a request.

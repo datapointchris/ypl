@@ -948,3 +948,134 @@ WHERE
     AND settled_ts > sqlc.arg(settled_after)
 ORDER BY settled_ts DESC, write_id DESC
 LIMIT 1;
+
+-- name: InsertRating :execrows
+-- Records a rating, and records nothing when one with that id is already
+-- stored.
+INSERT INTO ratings (rating_id, video_id, kind, message, rated_ts)
+VALUES (sqlc.arg(rating_id), sqlc.arg(video_id), sqlc.arg(kind), sqlc.narg(message), sqlc.arg(rated_ts))
+ON CONFLICT (rating_id) DO NOTHING;
+
+-- name: InsertRatingTag :exec
+INSERT INTO rating_tags (rating_id, tag)
+VALUES (sqlc.arg(rating_id), sqlc.arg(tag))
+ON CONFLICT DO NOTHING;
+
+-- name: GetRating :one
+-- A rating with its video.
+SELECT
+    r.rating_id,
+    r.kind,
+    r.message,
+    r.rated_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM ratings AS r
+INNER JOIN videos AS v ON r.video_id = v.video_id
+WHERE r.rating_id = ?;
+
+-- name: ListRatings :many
+-- Ratings newest first, each with its video: of the video video_id only when
+-- it is not NULL, and only those after the rating at before_ts with the id
+-- before_id when those are not NULL.
+SELECT
+    r.rating_id,
+    r.kind,
+    r.message,
+    r.rated_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM ratings AS r
+INNER JOIN videos AS v ON r.video_id = v.video_id
+WHERE
+    (CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR r.video_id = sqlc.narg(video_id))
+    AND (
+        CAST(sqlc.narg(before_ts) AS TEXT) IS NULL
+        OR (r.rated_ts, r.rating_id) < (sqlc.narg(before_ts), sqlc.narg(before_id))
+    )
+ORDER BY r.rated_ts DESC, r.rating_id DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListRatingTags :many
+-- The tags of every rating, or of the ratings of the video video_id only when it
+-- is not NULL, in no order.
+SELECT
+    rt.rating_id,
+    r.video_id,
+    rt.tag
+FROM rating_tags AS rt
+INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
+WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR r.video_id = sqlc.narg(video_id);
+
+-- name: ListRatingIDsEndingWith :many
+-- The ids of the ratings whose id ends with tail, a rating's whole id included.
+SELECT rating_id FROM ratings
+WHERE substr(rating_id, -length(sqlc.arg(tail))) = sqlc.arg(tail)
+ORDER BY rating_id;
+
+-- name: DeleteRating :exec
+-- Deletes a rating, and its tags with it.
+DELETE FROM ratings WHERE rating_id = ?;
+
+-- name: ListVideoOpinions :many
+-- Every rated video's likes, dislikes and notes counted, or the video video_id
+-- only when it is not NULL, and the messages of its ratings joined by newlines,
+-- oldest first.
+SELECT
+    r.video_id,
+    CAST(sum(r.kind = 'like') AS INTEGER) AS likes,
+    CAST(sum(r.kind = 'dislike') AS INTEGER) AS dislikes,
+    CAST(sum(r.kind = 'note') AS INTEGER) AS notes,
+    CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
+FROM (
+    SELECT * FROM ratings
+    WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR video_id = sqlc.narg(video_id)
+    ORDER BY rated_ts, rating_id
+) AS r
+GROUP BY r.video_id;
+
+-- name: ListTagCounts :many
+-- Every tag with how many videos carry it, most carried first.
+SELECT
+    rt.tag,
+    CAST(count(DISTINCT r.video_id) AS INTEGER) AS videos
+FROM rating_tags AS rt
+INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
+GROUP BY rt.tag
+ORDER BY videos DESC, rt.tag;
+
+-- name: GetYouTubeSession :one
+SELECT
+    cookie_jar,
+    stored_ts,
+    last_ok_ts,
+    last_refused_ts,
+    last_error
+FROM youtube_session
+WHERE session_id = 1;
+
+-- name: SetYouTubeSession :exec
+-- Replaces the session with a new cookie jar, read signed in at stored_ts.
+INSERT INTO youtube_session (session_id, cookie_jar, stored_ts, last_ok_ts, last_refused_ts, last_error)
+VALUES (1, sqlc.arg(cookie_jar), sqlc.arg(stored_ts), sqlc.arg(stored_ts), NULL, NULL)
+ON CONFLICT (session_id) DO UPDATE SET
+    cookie_jar = excluded.cookie_jar,
+    stored_ts = excluded.stored_ts,
+    last_ok_ts = excluded.last_ok_ts,
+    last_refused_ts = NULL,
+    last_error = NULL;
+
+-- name: RecordYouTubeSessionOK :exec
+-- Keeps the jar yt-dlp wrote back after a read YouTube answered signed in.
+UPDATE youtube_session SET
+    cookie_jar = sqlc.arg(cookie_jar),
+    last_ok_ts = sqlc.arg(read_ts)
+WHERE session_id = 1;
+
+-- name: RecordYouTubeSessionRefused :exec
+UPDATE youtube_session SET
+    last_refused_ts = sqlc.arg(read_ts),
+    last_error = sqlc.arg(last_error)
+WHERE session_id = 1;

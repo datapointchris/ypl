@@ -18,6 +18,12 @@
       "title": "Alpha"
     }
   ],
+  "likes": 1,
+  "dislikes": 0,
+  "notes": 0,
+  "tags": [
+    "deep"
+  ],
   "description": "A long set",
   "tracks": [
     {
@@ -55,6 +61,22 @@
       "title": "Track",
       "raw_text": "Âme - Track",
       "source": "chapter"
+    }
+  ],
+  "ratings": [
+    {
+      "id": "01920000-0000-7000-8000-000000000001",
+      "rated_ts": "2026-09-17T12:00:00Z",
+      "kind": "like",
+      "message": "n",
+      "tags": [
+        "deep"
+      ],
+      "video": {
+        "id": "a",
+        "title": "Zebra",
+        "channel_title": "One"
+      }
     }
   ]
 }

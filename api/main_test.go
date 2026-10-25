@@ -558,8 +558,8 @@ func TestSecondSignalEndsTheDrain(t *testing.T) {
 	// Well inside shutdownGrace, which is how long a swallowed second signal
 	// leaves the process draining.
 	select {
-	case <-exited:
-		if child.ProcessState.Success() {
+	case err := <-exited:
+		if err == nil {
 			t.Fatal("the second SIGINT let the drain finish instead of ending the process")
 		}
 	case <-time.After(3 * time.Second):
