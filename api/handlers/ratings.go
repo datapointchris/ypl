@@ -102,6 +102,10 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	position, estimated := sql.NullInt64{}, int64(0)
+	if body.PositionEstimated && body.PositionSeconds == nil {
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeInvalidPosition, "position_estimated needs position_seconds")
+		return
+	}
 	if body.PositionSeconds != nil {
 		if *body.PositionSeconds < 0 {
 			wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeInvalidPosition, "position_seconds %d is before the start of the mix", *body.PositionSeconds)

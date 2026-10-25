@@ -218,8 +218,9 @@ answers for a short window, since YouTube may suspend an account it sees read th
 often.
 
 Each entry carries `resume_seconds`, where YouTube's resume point sits in the video, and null where
-the page drew none or the video's length is unknown. YouTube draws it as a whole percentage of the
-length, and saves it while a video plays, keeping up with playback to within about a minute. So
+the page drew none, the video was watched to the end, or its length is unknown. YouTube draws it
+as a whole percentage of the length, so it is approximate by up to a hundredth of the video. It
+saves it while a video plays: a mix read twice four minutes apart had moved by four minutes. So
 for the newest entry it is near where the player is, and `ypl rate` offers it as the rating's
 position, marked approximate. It is read from the history page `yt-dlp` saves with
 `--write-pages` during the same read, so it costs no second request.

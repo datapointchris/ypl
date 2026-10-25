@@ -129,9 +129,11 @@ func (h *Handlers) listHistory(w http.ResponseWriter, r *http.Request) {
 	wire.JSON(w, http.StatusOK, orEmpty(answer))
 }
 
-// resumeSeconds is percent of a video's length, and nil without either.
+// resumeSeconds is percent of a video's length, and nil without either. A
+// video watched to the end is drawn at 100, which says where it finished
+// rather than where anyone is, so it gives none.
 func resumeSeconds(percent *int, duration sql.NullInt64) *int64 {
-	if percent == nil || !duration.Valid {
+	if percent == nil || *percent >= 100 || !duration.Valid {
 		return nil
 	}
 	seconds := duration.Int64 * int64(*percent) / 100

@@ -33,8 +33,8 @@ func TestAHistoryPageGivesEachVideoItsResumePercent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "history_https_-_www.youtube.com_feed_history.dump"), []byte(page), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := resumePercents(dir)
-	if len(got) != 1 || got["bSnA4mMcVHU"] != 46 {
+	got, err := resumePercents(dir)
+	if err != nil || len(got) != 1 || got["bSnA4mMcVHU"] != 46 {
 		t.Errorf("resume percents %v, want bSnA4mMcVHU at 46 and nothing for the video with no bar", got)
 	}
 }

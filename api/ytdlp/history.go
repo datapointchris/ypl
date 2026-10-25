@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,7 +75,10 @@ func (r *Reader) History(ctx context.Context, jar string, entries int) ([]Histor
 	if err != nil {
 		return nil, "", fmt.Errorf("read the watch history: %w", err)
 	}
-	percents := resumePercents(dir)
+	percents, err := resumePercents(dir)
+	if err != nil {
+		slog.Warn("the watch history was read without its resume points", "err", err)
+	}
 	for i := range read {
 		if percent, ok := percents[read[i].ID]; ok {
 			read[i].ResumePercent = &percent
@@ -139,11 +143,16 @@ func decodeHistory(output []byte) ([]HistoryEntry, error) {
 }
 
 // resumePercents is each video's resume point on the history pages yt-dlp
-// wrote into dir, by video id. A page that cannot be read gives none, since
-// the history answers without them.
-func resumePercents(dir string) map[string]int {
+// wrote into dir, by video id. The error says no page could be read, which the
+// history answers through without them; a page with no progress bar on it is
+// no error.
+func resumePercents(dir string) (map[string]int, error) {
 	percents := map[string]int{}
-	pages, _ := filepath.Glob(filepath.Join(dir, "*.dump"))
+	pages, err := filepath.Glob(filepath.Join(dir, "*.dump"))
+	if err != nil || len(pages) == 0 {
+		return percents, fmt.Errorf("yt-dlp left no history page in %s", dir)
+	}
+	read := 0
 	for _, page := range pages {
 		body, err := os.ReadFile(page)
 		if err != nil {
@@ -153,9 +162,13 @@ func resumePercents(dir string) map[string]int {
 		if !ok {
 			continue
 		}
+		read++
 		lockupPercents(data, percents)
 	}
-	return percents
+	if read == 0 {
+		return percents, errors.New("no history page held ytInitialData that decodes")
+	}
+	return percents, nil
 }
 
 // initialData is the ytInitialData object a YouTube page embeds.

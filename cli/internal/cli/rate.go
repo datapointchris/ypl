@@ -81,19 +81,19 @@ func (a *app) rateCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			var video api.PlayedVideo
-			var resume *int64
+			var picked api.HistoryEntry
 			if len(args) == 1 {
-				video, err = namedVideo(cmd.Context(), client, args[0])
+				picked.Video, err = namedVideo(cmd.Context(), client, args[0])
 			} else {
-				video, resume, err = pickVideo(cmd, client)
+				picked, err = pickVideo(cmd, client)
 			}
+			video := picked.Video
 			if err != nil {
 				return reported(err)
 			}
 			rating := api.NewRating{VideoID: video.ID, Kind: kind, Tags: tags, PositionSeconds: position}
-			if position == nil && resume != nil {
-				rating.PositionSeconds, rating.PositionEstimated = resume, true
+			if position == nil && picked.ResumeSeconds != nil {
+				rating.PositionSeconds, rating.PositionEstimated = picked.ResumeSeconds, true
 			}
 			if strings.TrimSpace(message) != "" {
 				rating.Message = &message
@@ -144,15 +144,15 @@ func namedVideo(ctx context.Context, client *api.Client, ref string) (api.Played
 
 // pickVideo is a video chosen in fzf from the whole library, with the newest
 // library videos in the watch history at the top, each marked with its place
-// in the history, and where YouTube's resume point sits in it when the choice
-// came from the history. A history that cannot be read says why on stderr and
-// the library is offered alone, so a session that expired never stops a
-// rating.
-func pickVideo(cmd *cobra.Command, client *api.Client) (api.PlayedVideo, *int64, error) {
+// in the history. It answers as a history entry, which for a video picked from
+// outside the history carries only the video. A history that cannot be read
+// says why on stderr and the library is offered alone, so a session that
+// expired never stops a rating.
+func pickVideo(cmd *cobra.Command, client *api.Client) (api.HistoryEntry, error) {
 	ctx := cmd.Context()
 	fzf, err := exec.LookPath("fzf")
 	if err != nil {
-		return api.PlayedVideo{}, nil, errors.New("picking a mix needs fzf on PATH; name the video instead")
+		return api.HistoryEntry{}, errors.New("picking a mix needs fzf on PATH; name the video instead")
 	}
 	entries, err := client.History(ctx, historyOffered)
 	if err != nil {
@@ -161,25 +161,23 @@ func pickVideo(cmd *cobra.Command, client *api.Client) (api.PlayedVideo, *int64,
 	}
 	videos, err := client.ListVideos(ctx, api.VideoFilter{Sort: "title"})
 	if err != nil {
-		return api.PlayedVideo{}, nil, err
+		return api.HistoryEntry{}, err
 	}
-	byID := make(map[string]api.PlayedVideo, len(videos))
-	resumes := make(map[string]*int64, len(entries))
+	byID := make(map[string]api.HistoryEntry, len(videos))
 	var lines strings.Builder
 	for _, entry := range entries {
-		byID[entry.Video.ID] = entry.Video
-		resumes[entry.Video.ID] = entry.ResumeSeconds
+		byID[entry.Video.ID] = entry
 		_, _ = fmt.Fprintf(&lines, "%s\t%s\t%s  · %s\n", entry.Video.ID, historyMark(entry.Position), entry.Video.Title, entry.Video.ChannelTitle)
 	}
 	for _, video := range videos {
 		if _, listed := byID[video.ID]; listed {
 			continue
 		}
-		byID[video.ID] = api.PlayedVideo{ID: video.ID, Title: video.Title, ChannelTitle: video.ChannelTitle}
+		byID[video.ID] = api.HistoryEntry{Video: api.PlayedVideo{ID: video.ID, Title: video.Title, ChannelTitle: video.ChannelTitle}}
 		_, _ = fmt.Fprintf(&lines, "%s\t\t%s  · %s\n", video.ID, video.Title, video.ChannelTitle)
 	}
 	if len(byID) == 0 {
-		return api.PlayedVideo{}, nil, errors.New("the library holds no video")
+		return api.HistoryEntry{}, errors.New("the library holds no video")
 	}
 	header := "Which mix? The numbers are places in your watch history, 1 the newest."
 	if len(entries) > 0 && entries[0].Position != 1 {
@@ -192,18 +190,18 @@ func pickVideo(cmd *cobra.Command, client *api.Client) (api.PlayedVideo, *int64,
 	var exit *exec.ExitError
 	switch {
 	case errors.As(err, &exit) && exit.ExitCode() == 130:
-		return api.PlayedVideo{}, nil, exitCode(130)
+		return api.HistoryEntry{}, exitCode(130)
 	case errors.As(err, &exit) && exit.ExitCode() == 1:
-		return api.PlayedVideo{}, nil, errors.New("no mix matched; nothing was rated")
+		return api.HistoryEntry{}, errors.New("no mix matched; nothing was rated")
 	case err != nil:
-		return api.PlayedVideo{}, nil, fmt.Errorf("run fzf: %w", err)
+		return api.HistoryEntry{}, fmt.Errorf("run fzf: %w", err)
 	}
 	id, _, _ := strings.Cut(string(chosen), "\t")
-	video, ok := byID[id]
+	entry, ok := byID[id]
 	if !ok {
-		return api.PlayedVideo{}, nil, fmt.Errorf("fzf answered %q, which is no video offered", strings.TrimSpace(string(chosen)))
+		return api.HistoryEntry{}, fmt.Errorf("fzf answered %q, which is no video offered", strings.TrimSpace(string(chosen)))
 	}
-	return video, resumes[id], nil
+	return entry, nil
 }
 
 // historyMark is a history entry's place, written where a library video
@@ -222,11 +220,11 @@ func askRating(ctx context.Context, client *api.Client, video api.PlayedVideo, r
 		message = *rating.Message
 	}
 	fresh := ""
+	estimatedOffer := rating.PositionEstimated
 	at := clock(rating.PositionSeconds)
-	offered := at
 	where := "Optional, as 1:12:30 or 45:10"
 	if rating.PositionEstimated {
-		where = "Estimated from YouTube's resume point, to about a minute; edit or clear it"
+		where = "Estimated from YouTube's resume point; edit or clear it"
 	}
 	var chosen []string
 	used, err := client.ListTags(ctx)
@@ -273,11 +271,12 @@ func askRating(ctx context.Context, client *api.Client, video api.PlayedVideo, r
 	if strings.TrimSpace(message) != "" {
 		rating.Message = &message
 	}
-	estimated := rating.PositionEstimated && strings.TrimSpace(at) == offered
+	offered := rating.PositionSeconds
 	rating.PositionSeconds, rating.PositionEstimated = nil, false
 	if strings.TrimSpace(at) != "" {
 		seconds, _ := clockSeconds(at)
-		rating.PositionSeconds, rating.PositionEstimated = &seconds, estimated
+		rating.PositionSeconds = &seconds
+		rating.PositionEstimated = offered != nil && *offered == seconds && estimatedOffer
 	}
 	rating.Tags = append(rating.Tags, chosen...)
 	for tag := range strings.SplitSeq(fresh, ",") {
