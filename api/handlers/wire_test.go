@@ -69,7 +69,7 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		{name: "status", target: "/api/v1/status"},
 		{name: "ratings", target: "/api/v1/ratings"},
 		{name: "tags", target: "/api/v1/tags"},
-		{name: "history", target: "/api/v1/history"},
+		{name: "history", target: "/api/v1/youtube/history"},
 	} {
 		rec := f.get(doc.target)
 		if rec.Code != http.StatusOK {
@@ -103,6 +103,14 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		t.Fatalf("encode the slugs: %v", err)
 	}
 	pinned(t, "slugs", "the title slugs", body)
+
+	// The kinds of rating. The CLI offers them on Tab and sends one, and a kind
+	// it holds that the server does not is refused with invalid_kind.
+	body, err = json.Marshal([]string{kindLike, kindDislike, kindNote})
+	if err != nil {
+		t.Fatalf("encode the rating kinds: %v", err)
+	}
+	pinned(t, "rating_kinds", "the rating kinds", body)
 
 	// The routes each service scope reaches. The CLI requests a scope by name,
 	// and a name the server stops listing is a 403 on every call a service

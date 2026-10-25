@@ -37,12 +37,13 @@ which is how mpv's IPC is asked anything and changes nothing about what is playi
 posted through the server door while mpv is still running, under an id made once, so a retry is
 stored once.
 
-`api/ytdlp.Reader.Video` and `Reader.History` are the only places in the server that start a process. In the CLI there
-are three, `ypl auth login`, `ypl playlists edit` and `ypl play`, and the first hands its
-subprocess the opposite of what the other two hand theirs. The browser launcher is given
-`os.DevNull`, because a pipe would keep the login blocked until the browser exits. The editor and
-mpv are given this process's own streams, because each draws an interface and takes keys, and a
-captured stream turns that interface into a string. Anything that needs more of what yt-dlp knows
+In the server, only `api/ytdlp` starts a process. In the CLI there are four, `ypl auth login`,
+`ypl playlists edit`, `ypl play` and `ypl rate`, and each is handed streams for what it does. The
+browser launcher is given `os.DevNull`, because a pipe would keep the login blocked until the
+browser exits. The editor and mpv are given this process's own streams, because each draws an
+interface and takes keys, and a captured stream turns that interface into a string. fzf, which
+`ypl rate` picks a mix with, draws on the terminal itself, so its stdin carries the rows and its
+stdout the one chosen. Anything that needs more of what yt-dlp knows
 extends that package rather than running the binary somewhere else.
 
 The CLI is given no credential of the server's and no part of the store. What it holds is a token
@@ -77,13 +78,14 @@ no part of the store.
 A watch-history read is the exception, and the only one. It is given the channel account's cookie
 jar, because the history exists only for a signed-in session. So a compromised yt-dlp could carry
 that session away. The jar is written to a mode-600 file in a directory removed when the read
-ends, the read takes `--no-cache-dir` beside the two flags above, and reads happen only when a
-person asks for the history. Nothing else is handed to yt-dlp with the jar, and a video read never
+ends. The read keeps config and plugins out the way a video read does, and adds `--no-cache-dir`,
+so yt-dlp keeps nothing on disk between reads. Reads happen only when a person asks for the
+history, and none is made while enrichment's pause on a refusal of the address holds. Nothing else is handed to yt-dlp with the jar, and a video read never
 sees it.
 
 The server needs yt-dlp only when it is configured to read videos. `ENRICH_PACE=off` is a
-supported configuration and starts without one. The history routes look for yt-dlp whatever
-`ENRICH_PACE` says, and answer 503 only where none is found.
+supported configuration and starts without one. The server looks for yt-dlp at start whatever
+`ENRICH_PACE` says, and the history routes answer 503 when it found none.
 
 ## Classifying another program's prose is the fragile part
 
@@ -120,10 +122,11 @@ requires every field it declares to arrive. Renaming a response field without re
 that catches, and it is the one mistake a green build on both sides would otherwise hide.
 
 A value the server *enforces* is the harder half. A shape the client has wrong degrades, because an
-unknown field is ignored. A value it has wrong is a refusal the client reports as a failure. Two
+unknown field is ignored. A value it has wrong is a refusal the client reports as a failure. Three
 such values are pinned. The slug Tab offers a playlist by is a derivation the server owns:
 `api/handlers` writes its own slug of a set of titles to `testdata/wire/slugs.json`, and the
-completion test holds the client's to every pair. The service client's scope is the other:
+completion test holds the client's to every pair. The service client's scope is the second:
 `api/handlers` writes `service-scopes.json` beside it, and the CLI's service test requires the scope
-it requests to reach the route `ypl server status` calls. `PageSize` and `VideoSorts` are unpinned
-copies of a number and words the server owns, with no door to read them through.
+it requests to reach the route `ypl server status` calls. The kinds of rating are the third:
+`rating_kinds.json` holds the server's, and the CLI's wire test requires `RatingKinds` to match.
+`PageSize` and `VideoSorts` are unpinned copies of a number and words the server owns, with no door to read them through.

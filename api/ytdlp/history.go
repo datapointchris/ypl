@@ -67,12 +67,6 @@ func (r *Reader) History(ctx context.Context, jar string, entries int) ([]Histor
 	if err != nil {
 		return nil, "", fmt.Errorf("read the watch history: %w", err)
 	}
-	// A session YouTube no longer honors can come back as a page with no
-	// history on it rather than as an error, and an account in use always has
-	// some.
-	if len(read) == 0 {
-		return nil, "", fmt.Errorf("read the watch history: %w: it came back empty", ErrSignedOut)
-	}
 	written, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", fmt.Errorf("read back the cookie jar: %w", err)

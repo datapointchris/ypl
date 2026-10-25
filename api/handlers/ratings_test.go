@@ -57,6 +57,12 @@ func TestEveryRatingIsKeptAndTheListFiltersByKindTagAndText(t *testing.T) {
 	if len(shown.Ratings) != 3 || shown.Ratings[0].Kind != "note" || shown.Ratings[2].Kind != "dislike" {
 		t.Errorf("video a lists %+v, want all three ratings newest first", shown.Ratings)
 	}
+	if got := f.do(http.MethodDelete, "/api/v1/ratings/000000000001", ""); got.Code != http.StatusNoContent {
+		t.Fatalf("deleting the dislike by its id's tail answered %d", got.Code)
+	}
+	if shown := decode[video](t, f.get("/api/v1/videos/a"), http.StatusOK); len(shown.Ratings) != 2 {
+		t.Errorf("video a lists %d ratings after one was deleted, want 2", len(shown.Ratings))
+	}
 	unrated := decode[page[libraryVideo]](t, f.get("/api/v1/videos?rated=unrated"), http.StatusOK)
 	for _, v := range unrated.Data {
 		if v.ID == "a" {
@@ -71,10 +77,10 @@ func TestTheHistoryAnswersLibraryVideosAndAJarReadSignedOutIsReported(t *testing
 	history := &fakeHistory{entries: []ytdlp.HistoryEntry{{ID: "zzzzzzzzzzz"}, {ID: "b"}, {ID: "a"}}}
 	f.h.ReadHistoryWith(history)
 
-	refused(t, f.get("/api/v1/history"), http.StatusConflict, wire.CodeYouTubeSessionMissing)
+	refused(t, f.get("/api/v1/youtube/history"), http.StatusConflict, wire.CodeYouTubeSessionMissing)
 	decode[youtubeSession](t, f.do(http.MethodPut, "/api/v1/youtube/session", fmt.Sprintf(`{"cookie_jar": %q}`, cookieJar)), http.StatusOK)
 
-	entries := decode[[]historyEntry](t, f.get("/api/v1/history"), http.StatusOK)
+	entries := decode[[]historyEntry](t, f.get("/api/v1/youtube/history"), http.StatusOK)
 	if len(entries) != 2 || entries[0].Video.ID != "b" || entries[0].Position != 2 {
 		t.Fatalf("history answered %+v, want b at 2 then a, skipping the video outside the library", entries)
 	}
@@ -84,7 +90,7 @@ func TestTheHistoryAnswersLibraryVideosAndAJarReadSignedOutIsReported(t *testing
 
 	history.err = fmt.Errorf("wrapped: %w", ytdlp.ErrSignedOut)
 	f.now = f.now.Add(historyReuse)
-	refused(t, f.get("/api/v1/history"), http.StatusBadGateway, wire.CodeYouTubeSignedOut)
+	refused(t, f.get("/api/v1/youtube/history"), http.StatusBadGateway, wire.CodeYouTubeSignedOut)
 	shown := decode[status](t, f.get("/api/v1/status"), http.StatusOK)
 	if s := shown.YouTubeSession; s == nil || s.LastRefusedTs == nil || *s.LastRefusedTs <= *s.LastOKTs {
 		t.Errorf("status session %+v, want a refusal after the last ok read", s)

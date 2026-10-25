@@ -82,6 +82,7 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		"ypl playlists delete": {"playlists", "delete", "sunday-morning"},
 		"ypl playlists edit":   {"playlists", "edit", "sunday-morning"},
 		"ypl plays delete":     {"plays", "delete", "41"},
+		"ypl ratings delete":   {"ratings", "delete", "3f9c2a1b"},
 	}
 	for path, args := range takesTerminal {
 		terminal := newFixture(t, serves(nil))
@@ -519,7 +520,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		"ypl playlists rename": true, "ypl playlists show": true,
 		"ypl plays add": true, "ypl plays delete": true, "ypl plays show": true,
 		"ypl server status": true, "ypl videos show": true, "ypl videos sorts": true,
-		"ypl rate": true, "ypl server cookies set": true,
+		"ypl rate": true, "ypl ratings delete": true, "ypl server cookies set": true,
 	}
 	grown := leaves(root())
 	for _, leaf := range grown {

@@ -43,9 +43,10 @@ func (a *app) serverStatusCommand() *cobra.Command {
 			"one last_ok_run. The day's YouTube quota and each playlist waiting to be\n" +
 			"pushed to YouTube are under sync.\n\n" +
 			"Exits 3 when the server has not finished an ok sync in the last hour, or in\n" +
-			"twelve of its ticks where those are longer, or when YouTube last answered the\n" +
-			"watch history signed out, states a person has to look at. Exits 1 when the\n" +
-			"server could not be asked.",
+			"twelve of its ticks where those are longer, a state a person has to look at.\n" +
+			"Exits 1 when the server could not be asked. A cookie jar YouTube last read\n" +
+			"signed out is printed, and is youtube_session in --json, but leaves the exit\n" +
+			"code alone, since a check on a timer reads 3 as the sync.",
 		Example: "  ypl server status         the library's size and the last sync\n" +
 			"  ypl server status --json  the same, for a check on a timer",
 		Args: cobra.NoArgs,
@@ -68,10 +69,6 @@ func (a *app) serverStatusCommand() *cobra.Command {
 			}
 			if stale(status, now) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "The server has not finished an ok sync in the last %s.\n", window(staleAfter(status)))
-				return exitCode(3)
-			}
-			if status.YouTubeSession.Refused() {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "YouTube answers the watch history signed out; export the cookie jar again and send it with `ypl server cookies set`.")
 				return exitCode(3)
 			}
 			return nil

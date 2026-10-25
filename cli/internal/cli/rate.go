@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -18,12 +19,8 @@ import (
 )
 
 // historyOffered is how many of the watch history's newest library videos the
-// picker offers before searching the library.
+// picker puts above the rest of the library.
 const historyOffered = 5
-
-// searchTheLibrary is the picker's option for a video the history does not
-// hold, a value no video id can be.
-const searchTheLibrary = "search"
 
 func (a *app) rateCommand() *cobra.Command {
 	var (
@@ -39,10 +36,10 @@ func (a *app) rateCommand() *cobra.Command {
 		Long: "Each rating is kept, so a mix holds every like, dislike and note left on it,\n" +
 			"and `ypl videos show` lists them. A note needs a message; a like or a dislike\n" +
 			"may carry one.\n\n" +
-			"At a terminal with no video named, it offers the newest mixes in YouTube's watch\n" +
-			"history, which every player signed into the channel's account writes to, then a\n" +
-			"search of the library. With no --like, --dislike or --note it then asks for the\n" +
-			"kind, the message and the tags.\n\n" +
+			"At a terminal with no video named, it offers the library in fzf, with the newest\n" +
+			"mixes in YouTube's watch history on top. Every player signed into the channel's\n" +
+			"account writes to that history. With no --like, --dislike or --note it then asks\n" +
+			"for the kind, the message and the tags; with one, it records what the flags gave.\n\n" +
 			"Without a terminal, or under --no-input, name the video and give the kind.",
 		Example: "  ypl rate                                       pick what is playing, then rate it\n" +
 			"  ypl rate --like -m 'great closing hour'        pick it, and like it\n" +
@@ -130,64 +127,70 @@ func namedVideo(ctx context.Context, client *api.Client, ref string) (api.Played
 	return api.PlayedVideo{ID: video.ID, Title: video.Title, ChannelTitle: video.ChannelTitle}, nil
 }
 
-// pickVideo offers the newest library videos in the watch history and a
-// search of the library, and is the one chosen. A history that cannot be read
-// says why on stderr and goes straight to the search, so a session that
-// expired never stops a rating.
+// pickVideo is a video chosen in fzf from the whole library, with the newest
+// library videos in the watch history at the top, each marked with its place
+// in the history. A history that cannot be read says why on stderr and the
+// library is offered alone, so a session that expired never stops a rating.
 func pickVideo(cmd *cobra.Command, client *api.Client) (api.PlayedVideo, error) {
 	ctx := cmd.Context()
+	fzf, err := exec.LookPath("fzf")
+	if err != nil {
+		return api.PlayedVideo{}, errors.New("picking a mix needs fzf on PATH; name the video instead")
+	}
 	entries, err := client.History(ctx, historyOffered)
 	if err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "The watch history could not be read: %v\n", err)
 		entries = nil
 	}
-	if len(entries) > 0 {
-		options := make([]huh.Option[string], 0, len(entries)+1)
-		for i, entry := range entries {
-			label := entry.Video.Title
-			if i == 0 {
-				label += "  (newest in your history)"
-			}
-			options = append(options, huh.NewOption(label, entry.Video.ID))
-		}
-		options = append(options, huh.NewOption("Search the library…", searchTheLibrary))
-		chosen := entries[0].Video.ID
-		if err := huh.NewSelect[string]().Title("Which mix?").Options(options...).Value(&chosen).Run(); err != nil {
-			return api.PlayedVideo{}, aborted(err)
-		}
-		for _, entry := range entries {
-			if entry.Video.ID == chosen {
-				return entry.Video, nil
-			}
-		}
-	}
-	return searchVideo(ctx, client)
-}
-
-// searchVideo is a video chosen from the whole library, filtered as it is
-// typed.
-func searchVideo(ctx context.Context, client *api.Client) (api.PlayedVideo, error) {
 	videos, err := client.ListVideos(ctx, api.VideoFilter{Sort: "title"})
 	if err != nil {
 		return api.PlayedVideo{}, err
 	}
-	if len(videos) == 0 {
-		return api.PlayedVideo{}, errors.New("the library holds no video")
-	}
-	options := make([]huh.Option[string], len(videos))
-	for i, video := range videos {
-		options[i] = huh.NewOption(video.Title+"  · "+video.ChannelTitle, video.ID)
-	}
-	var chosen string
-	if err := huh.NewSelect[string]().Title("Which mix? Type / to filter").Options(options...).Filtering(true).Height(15).Value(&chosen).Run(); err != nil {
-		return api.PlayedVideo{}, aborted(err)
+	byID := make(map[string]api.PlayedVideo, len(videos))
+	var lines strings.Builder
+	for _, entry := range entries {
+		byID[entry.Video.ID] = entry.Video
+		_, _ = fmt.Fprintf(&lines, "%s\t%s\t%s  · %s\n", entry.Video.ID, historyMark(entry.Position), entry.Video.Title, entry.Video.ChannelTitle)
 	}
 	for _, video := range videos {
-		if video.ID == chosen {
-			return api.PlayedVideo{ID: video.ID, Title: video.Title, ChannelTitle: video.ChannelTitle}, nil
+		if _, listed := byID[video.ID]; listed {
+			continue
 		}
+		byID[video.ID] = api.PlayedVideo{ID: video.ID, Title: video.Title, ChannelTitle: video.ChannelTitle}
+		_, _ = fmt.Fprintf(&lines, "%s\t\t%s  · %s\n", video.ID, video.Title, video.ChannelTitle)
 	}
-	return api.PlayedVideo{}, errors.New("no video was chosen")
+	if len(byID) == 0 {
+		return api.PlayedVideo{}, errors.New("the library holds no video")
+	}
+	header := "Which mix? The numbers are places in your watch history, 1 the newest."
+	if len(entries) > 0 && entries[0].Position != 1 {
+		header += "\nThe newest video in your history is not in the library."
+	}
+	picker := exec.CommandContext(ctx, fzf, "--delimiter=\t", "--with-nth=2..", "--no-sort", "--height=50%", "--reverse", "--header="+header)
+	picker.Stdin = strings.NewReader(lines.String())
+	picker.Stderr = cmd.ErrOrStderr()
+	chosen, err := picker.Output()
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit) && exit.ExitCode() == 130:
+		return api.PlayedVideo{}, exitCode(130)
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
+		return api.PlayedVideo{}, errors.New("no mix matched; nothing was rated")
+	case err != nil:
+		return api.PlayedVideo{}, fmt.Errorf("run fzf: %w", err)
+	}
+	id, _, _ := strings.Cut(string(chosen), "\t")
+	video, ok := byID[id]
+	if !ok {
+		return api.PlayedVideo{}, fmt.Errorf("fzf answered %q, which is no video offered", strings.TrimSpace(string(chosen)))
+	}
+	return video, nil
+}
+
+// historyMark is a history entry's place, written where a library video
+// outside the history leaves the column empty.
+func historyMark(position int64) string {
+	return "▶ " + strconv.FormatInt(position, 10)
 }
 
 // askRating asks for the kind, the message and tags, starting from what the
@@ -273,9 +276,60 @@ func (a *app) ratingsCommand() *cobra.Command {
 		Long:    "`ypl rate` records a rating. `ypl videos show` lists every rating of one mix.",
 	}
 	goclikit.AsNamespace(cmd)
-	cmd.AddCommand(a.ratingsListCommand())
+	cmd.AddCommand(a.ratingsListCommand(), a.ratingsDeleteCommand())
 	return cmd
 }
+
+func (a *app) ratingsDeleteCommand() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "delete <rating>",
+		Short: "Delete a rating left by mistake, with its tags",
+		Long: "Name the rating by the ID column of `ypl ratings list` or `ypl videos show`.\n" +
+			"It asks first; --yes answers for it.",
+		Example: "  ypl ratings delete 3f9c2a1b        ask, then delete it\n" +
+			"  ypl ratings delete 3f9c2a1b --yes  delete it without asking",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !yes {
+				if err := a.confirmable(cmd); err != nil {
+					return err
+				}
+			}
+			client, err := a.client(cmd.Context())
+			if err != nil {
+				return reported(err)
+			}
+			if !yes {
+				approved, err := a.confirm(cmd, "Delete rating "+args[0]+"?")
+				if err != nil {
+					return err
+				}
+				if !approved {
+					nothing(cmd, "Nothing was deleted.")
+					return exitCode(1)
+				}
+			}
+			if err := client.DeleteRating(cmd.Context(), args[0]); err != nil {
+				return reported(err)
+			}
+			nothing(cmd, "Deleted rating "+args[0]+".")
+			return nil
+		},
+	}
+	addYes(cmd, &yes, "delete it")
+	return cmd
+}
+
+// ratingHandle is the end of a rating's id that ypl ratings delete takes.
+func ratingHandle(id string) string {
+	if len(id) <= ratingHandleLength {
+		return id
+	}
+	return id[len(id)-ratingHandleLength:]
+}
+
+const ratingHandleLength = 8
 
 func (a *app) ratingsListCommand() *cobra.Command {
 	var (
@@ -326,17 +380,17 @@ func (a *app) ratingsListCommand() *cobra.Command {
 func printRatingsOf(out io.Writer, width int, ratings []api.Rating) {
 	rows := make([][]string, len(ratings))
 	for i, r := range ratings {
-		rows[i] = []string{r.RatedTs, r.Kind, text(r.Message), strings.Join(r.Tags, ", ")}
+		rows[i] = []string{ratingHandle(r.ID), r.RatedTs, r.Kind, text(r.Message), strings.Join(r.Tags, ", ")}
 	}
-	table(out, width, []column{whole("WHEN"), whole("KIND"), prose("MESSAGE"), detail("TAGS")}, rows)
+	table(out, width, []column{whole("ID"), whole("WHEN"), whole("KIND"), prose("MESSAGE"), detail("TAGS")}, rows)
 }
 
 func printRatings(out io.Writer, width int, ratings []api.Rating) {
 	rows := make([][]string, len(ratings))
 	for i, r := range ratings {
-		rows[i] = []string{r.RatedTs, r.Kind, r.Video.Title, text(r.Message), strings.Join(r.Tags, ", ")}
+		rows[i] = []string{ratingHandle(r.ID), r.RatedTs, r.Kind, r.Video.Title, text(r.Message), strings.Join(r.Tags, ", ")}
 	}
-	table(out, width, []column{whole("WHEN"), whole("KIND"), prose("TITLE"), detail("MESSAGE"), detail("TAGS")}, rows)
+	table(out, width, []column{whole("ID"), whole("WHEN"), whole("KIND"), prose("TITLE"), detail("MESSAGE"), detail("TAGS")}, rows)
 }
 
 func (a *app) tagsCommand() *cobra.Command {

@@ -83,7 +83,7 @@ func newRootCommand(a *app) *cobra.Command {
 			"  ypl now                            which track is playing\n" +
 			"  ypl videos list --min-minutes 180  videos three hours long or more\n" +
 			"  ypl plays list                     what you have listened to\n" +
-			"  ypl rate                           rate the mix playing, wherever it plays\n" +
+			"  ypl rate                           rate the mix the watch history says is playing\n" +
 			"  ypl server status                  what the server holds, and its last sync",
 		Version:       version,
 		SilenceUsage:  true,

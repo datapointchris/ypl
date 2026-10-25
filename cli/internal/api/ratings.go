@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/url"
 	"strconv"
 )
 
@@ -65,6 +66,12 @@ func (c *Client) CreateRating(ctx context.Context, rating NewRating) (Rating, er
 // RatingKinds is every kind of rating, as the server spells them.
 var RatingKinds = []string{"like", "dislike", "note"}
 
+// DeleteRating deletes the rating id names, by its whole id or the last eight
+// or more characters of it, and its tags with it.
+func (c *Client) DeleteRating(ctx context.Context, id string) error {
+	return c.Delete(ctx, "/api/v1/ratings/"+url.PathEscape(id))
+}
+
 // ListRatings is the newest limit ratings, of the video named by video when it
 // is not "".
 func (c *Client) ListRatings(ctx context.Context, video string, limit int) (Page[Rating], error) {
@@ -81,7 +88,7 @@ func (c *Client) ListTags(ctx context.Context) ([]TagCount, error) {
 // History is the newest limit library videos in the watch history.
 func (c *Client) History(ctx context.Context, limit int) ([]HistoryEntry, error) {
 	entries := []HistoryEntry{}
-	err := c.Get(ctx, query("/api/v1/history", [2]string{"limit", strconv.Itoa(limit)}), &entries)
+	err := c.Get(ctx, query("/api/v1/youtube/history", [2]string{"limit", strconv.Itoa(limit)}), &entries)
 	return entries, err
 }
 

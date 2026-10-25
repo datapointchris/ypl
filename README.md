@@ -177,13 +177,14 @@ cannot record the play a second time.
 ## `rate` — every like, dislike and note on a mix is kept, picked from the watch history
 
 ```bash
-ypl rate                                        # offers the newest mixes in the watch history, then asks
+ypl rate                                        # pick the mix in fzf, the watch history on top, then asks
 ypl rate --like -m 'great closing hour'         # pick the mix, and like it with a message
 ypl rate 'mayan warrior' --note -m 'too much talk'  # a note on one mix, by part of its title
 ypl videos show 'mayan warrior'                 # every rating of that mix, newest first
 ypl videos list --rated dislike                 # the mixes with a dislike
 ypl videos list --tag sunrise --text closing    # tags and messages are what a mix is found by later
 ypl tags list                                   # every tag, with how many mixes carry it
+ypl ratings delete 3f9c2a1b                     # take one back, by the ID column of ratings list
 ```
 
 A rating is about the mix, never a track inside it. It is a like, a dislike or a note, with a
@@ -192,8 +193,9 @@ nothing is worked out from them beyond counts, so the listing is the record.
 
 At a terminal with no mix named, `ypl rate` reads YouTube's watch history through the server. Every
 player signed into the channel's account writes to it, so a mix playing in a browser on another
-machine is the first one offered. A history that cannot be read is said on stderr, and the picker
-goes straight to a search of the library. Without a terminal, name the mix and give the flags.
+machine is near the top. The picker is fzf over the whole library, with the newest mixes in the
+history above the rest, each marked with its place there. A history that cannot be read is said on
+stderr, and the library is offered alone. Without a terminal, name the mix and give the flags.
 
 The server reads the history with a signed-in cookie jar, which `ypl server cookies set <file>`
 sends. `ypl server cookies set --help` gives the export steps. The jar has to come from a private

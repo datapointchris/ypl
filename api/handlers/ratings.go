@@ -149,12 +149,39 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 	wire.JSON(w, http.StatusOK, stored)
 }
 
-// normalizedTags is tags lowercased, trimmed and without repeats, in the order
-// given. ok is false once it has answered a 422.
+// deleteRating deletes the rating its whole id or the last tailLength or more
+// characters of its id name, with its tags, and answers 204.
+func (h *Handlers) deleteRating(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	ref := r.PathValue("id")
+	err := h.store.InTx(ctx, func(tx *store.Tx) error {
+		if utf8.RuneCountInString(ref) < tailLength {
+			return referenceError{name: "rating", value: ref}
+		}
+		ids, err := tx.ListRatingIDsEndingWith(ctx, ref)
+		switch {
+		case err != nil:
+			return err
+		case len(ids) == 0:
+			return referenceError{name: "rating", value: ref}
+		case len(ids) > 1:
+			return referenceError{name: "rating", value: ref, candidates: ids}
+		}
+		return tx.DeleteRating(ctx, ids[0])
+	})
+	if err != nil {
+		h.writeItemError(w, r, err, "rating "+ref)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// normalizedTags is tags in canonicalTag's form without repeats or empties, in
+// the order given. ok is false once it has answered a 422.
 func normalizedTags(w http.ResponseWriter, tags []string) ([]string, bool) {
 	var kept []string
 	for _, tag := range tags {
-		tag = strings.ToLower(strings.Join(strings.Fields(tag), " "))
+		tag = canonicalTag(tag)
 		if tag == "" || slices.Contains(kept, tag) {
 			continue
 		}
@@ -169,6 +196,12 @@ func normalizedTags(w http.ResponseWriter, tags []string) ([]string, bool) {
 		return nil, false
 	}
 	return kept, true
+}
+
+// canonicalTag is tag lowercased, with its runs of whitespace one space and
+// none at either end, the form tags are stored and filtered in.
+func canonicalTag(tag string) string {
+	return strings.ToLower(strings.Join(strings.Fields(tag), " "))
 }
 
 // listRatings answers a page of ratings newest first, of one video when video

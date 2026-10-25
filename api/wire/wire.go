@@ -75,6 +75,7 @@ const (
 	CodeTagTooLong          Code = "tag_too_long"
 	CodeTooManyTags         Code = "too_many_tags"
 	CodeInvalidCookieJar    Code = "invalid_cookie_jar"
+	CodeCookieJarSignedOut  Code = "cookie_jar_signed_out"
 
 	// 428
 	CodePreconditionRequired Code = "precondition_required"
@@ -92,7 +93,7 @@ const (
 	CodeIdentityProviderUnavailable Code = goapiauth.CodeIdentityProviderUnavailable
 	CodeYouTubeQuotaSpent           Code = "youtube_quota_spent"
 	CodeShuttingDown                Code = "shutting_down"
-	CodeHistoryUnavailable          Code = "history_unavailable"
+	CodeYouTubeHistoryUnavailable   Code = "youtube_history_unavailable"
 	CodeYouTubeRateLimited          Code = "youtube_rate_limited"
 )
 

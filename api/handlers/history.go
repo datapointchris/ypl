@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/datapointchris/ypl/api/enrich"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/wire"
@@ -27,10 +29,11 @@ type HistoryReader interface {
 // YouTube may ban an account it sees read too often, so reads are one at a
 // time and only on request.
 type historyReads struct {
-	reader HistoryReader
-	mu     sync.Mutex
-	at     time.Time
-	last   []ytdlp.HistoryEntry
+	reader       HistoryReader
+	mu           sync.Mutex
+	at           time.Time
+	last         []ytdlp.HistoryEntry
+	refusedUntil time.Time
 }
 
 // historyReuse is how long one read of the watch history answers for.
@@ -81,8 +84,7 @@ type newSession struct {
 // limit, newest first.
 func (h *Handlers) listHistory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if h.history == nil {
-		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeHistoryUnavailable, "this server reads no watch history: it has no yt-dlp")
+	if h.historyUnavailable(w) {
 		return
 	}
 	limit, ok := limitParam(w, r, historyPage)
@@ -120,18 +122,44 @@ func (h *Handlers) listHistory(w http.ResponseWriter, r *http.Request) {
 	wire.JSON(w, http.StatusOK, orEmpty(answer))
 }
 
+// historyUnavailable answers 503 where the server has no yt-dlp to read the
+// history with, and reports whether it answered.
+func (h *Handlers) historyUnavailable(w http.ResponseWriter) bool {
+	if h.history != nil {
+		return false
+	}
+	wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeHistoryUnavailable, "this server reads no watch history: it has no yt-dlp")
+	return true
+}
+
+// read reads the history with jar. A request ending early does not end the
+// read, because yt-dlp writes the rotated jar back only once it finishes, and
+// the jar stored before the read may no longer be honored.
+func (r *historyReads) read(ctx context.Context, jar string) ([]ytdlp.HistoryEntry, string, error) {
+	readCtx, cancel := context.WithTimeout(ctx, historyDuration)
+	defer cancel()
+	return r.reader.History(readCtx, jar, historyDepth)
+}
+
 // readHistory is the watch history, read with the stored jar or reused from a
 // read within historyReuse. Each read records how YouTube answered, and keeps
-// the jar yt-dlp wrote back.
+// the jar yt-dlp wrote back. While YouTube refuses the server's address, as
+// enrichment or an earlier history read found, no read is made, because a read
+// sent into a refusal is what turns a pause into a block.
 func (h *Handlers) readHistory(ctx context.Context) ([]ytdlp.HistoryEntry, error) {
+	ctx = context.WithoutCancel(ctx)
 	h.history.mu.Lock()
 	defer h.history.mu.Unlock()
 	if h.history.last != nil && h.now().Sub(h.history.at) < historyReuse {
 		return h.history.last, nil
 	}
 	var session generated.GetYouTubeSessionRow
+	var refused string
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		var err error
+		if refused, err = q.LatestRateLimitedRunFinished(ctx); err != nil {
+			return err
+		}
 		session, err = q.GetYouTubeSession(ctx)
 		return err
 	})
@@ -141,24 +169,35 @@ func (h *Handlers) readHistory(ctx context.Context) ([]ytdlp.HistoryEntry, error
 	if err != nil {
 		return nil, err
 	}
+	if at, err := time.Parse(time.RFC3339, refused); err == nil && at.Add(enrich.RateLimitPause).After(h.history.refusedUntil) {
+		h.history.refusedUntil = at.Add(enrich.RateLimitPause)
+	}
+	if h.now().Before(h.history.refusedUntil) {
+		return nil, fmt.Errorf("%w until %s", ytdlp.ErrRateLimited, store.Timestamp(h.history.refusedUntil))
+	}
 	entries, jar, err := h.readWith(ctx, session.CookieJar)
 	if err != nil {
 		return nil, err
 	}
-	h.history.at, h.history.last = h.now(), entries
-	return entries, h.store.InTx(ctx, func(tx *store.Tx) error {
+	err = h.store.InTx(ctx, func(tx *store.Tx) error {
 		return tx.RecordYouTubeSessionOK(ctx, generated.RecordYouTubeSessionOKParams{
 			CookieJar: jar, ReadTs: sql.NullString{String: store.Timestamp(h.now()), Valid: true},
 		})
 	})
+	if err != nil {
+		return nil, err
+	}
+	h.history.at, h.history.last = h.now(), entries
+	return entries, nil
 }
 
 // readWith reads the history with jar, recording a signed-out answer against
 // the stored session.
 func (h *Handlers) readWith(ctx context.Context, jar string) ([]ytdlp.HistoryEntry, string, error) {
-	readCtx, cancel := context.WithTimeout(ctx, historyDuration)
-	defer cancel()
-	entries, written, err := h.history.reader.History(readCtx, jar, historyDepth)
+	entries, written, err := h.history.read(ctx, jar)
+	if errors.Is(err, ytdlp.ErrRateLimited) {
+		h.history.refusedUntil = h.now().Add(enrich.RateLimitPause)
+	}
 	if errors.Is(err, ytdlp.ErrSignedOut) {
 		recorded := h.store.InTx(ctx, func(tx *store.Tx) error {
 			return tx.RecordYouTubeSessionRefused(ctx, generated.RecordYouTubeSessionRefusedParams{
@@ -196,8 +235,7 @@ func (h *Handlers) refuseHistory(w http.ResponseWriter, r *http.Request, err err
 // out is refused and the session already held is kept.
 func (h *Handlers) setSession(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if h.history == nil {
-		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeHistoryUnavailable, "this server reads no watch history: it has no yt-dlp")
+	if h.historyUnavailable(w) {
 		return
 	}
 	body, ok := decodeJSON[newSession](w, r, maxCookieBody, "a cookie jar")
@@ -208,13 +246,12 @@ func (h *Handlers) setSession(w http.ResponseWriter, r *http.Request) {
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeInvalidCookieJar, "cookie_jar is not a Netscape cookie jar holding youtube.com cookies")
 		return
 	}
+	ctx = context.WithoutCancel(ctx)
 	h.history.mu.Lock()
 	defer h.history.mu.Unlock()
-	readCtx, cancel := context.WithTimeout(ctx, historyDuration)
-	defer cancel()
-	entries, jar, err := h.history.reader.History(readCtx, body.CookieJar, historyDepth)
+	entries, jar, err := h.history.read(ctx, body.CookieJar)
 	if errors.Is(err, ytdlp.ErrSignedOut) {
-		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeYouTubeSignedOut, "YouTube reads the watch history signed out with this jar, so the session held is kept; export it again from a private window")
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeCookieJarSignedOut, "YouTube reads the watch history signed out with this jar, so the session held is kept; export it again from a private window")
 		return
 	}
 	if h.refuseHistory(w, r, err) {

@@ -151,7 +151,7 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "rated %q is not like, dislike, note or unrated", rated)
 		return
 	}
-	tag := strings.ToLower(strings.Join(strings.Fields(r.URL.Query().Get("tag")), " "))
+	tag := canonicalTag(r.URL.Query().Get("tag"))
 	text := r.URL.Query().Get("text")
 	limit, ok := limitParam(w, r, videosPage)
 	if !ok {
@@ -407,7 +407,7 @@ type videoOpinions struct {
 // when it is valid.
 func readOpinions(ctx context.Context, q *generated.Queries, only sql.NullString) (videoOpinions, error) {
 	opinions := videoOpinions{counts: map[string]generated.ListVideoOpinionsRow{}, messages: map[string]string{}, tags: map[string][]string{}}
-	rows, err := q.ListVideoOpinions(ctx)
+	rows, err := q.ListVideoOpinions(ctx, only)
 	if err != nil {
 		return opinions, err
 	}

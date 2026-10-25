@@ -1009,16 +1009,31 @@ FROM rating_tags AS rt
 INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
 WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR r.video_id = sqlc.narg(video_id);
 
+-- name: ListRatingIDsEndingWith :many
+-- The ids of the ratings whose id ends with tail, a rating's whole id included.
+SELECT rating_id FROM ratings
+WHERE substr(rating_id, -length(sqlc.arg(tail))) = sqlc.arg(tail)
+ORDER BY rating_id;
+
+-- name: DeleteRating :exec
+-- Deletes a rating, and its tags with it.
+DELETE FROM ratings WHERE rating_id = ?;
+
 -- name: ListVideoOpinions :many
--- Every rated video's likes, dislikes and notes counted, and the messages of
--- its ratings joined by newlines, oldest first.
+-- Every rated video's likes, dislikes and notes counted, or the video video_id
+-- only when it is not NULL, and the messages of its ratings joined by newlines,
+-- oldest first.
 SELECT
     r.video_id,
     CAST(sum(r.kind = 'like') AS INTEGER) AS likes,
     CAST(sum(r.kind = 'dislike') AS INTEGER) AS dislikes,
     CAST(sum(r.kind = 'note') AS INTEGER) AS notes,
     CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
-FROM (SELECT * FROM ratings ORDER BY rated_ts, rating_id) AS r
+FROM (
+    SELECT * FROM ratings
+    WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR video_id = sqlc.narg(video_id)
+    ORDER BY rated_ts, rating_id
+) AS r
 GROUP BY r.video_id;
 
 -- name: ListTagCounts :many

@@ -247,6 +247,16 @@ func (q *Queries) DeletePlaylist(ctx context.Context, playlistID string) error {
 	return err
 }
 
+const deleteRating = `-- name: DeleteRating :exec
+DELETE FROM ratings WHERE rating_id = ?
+`
+
+// Deletes a rating, and its tags with it.
+func (q *Queries) DeleteRating(ctx context.Context, ratingID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRating, ratingID)
+	return err
+}
+
 const deleteTracks = `-- name: DeleteTracks :exec
 DELETE FROM tracks
 WHERE video_id = ?
@@ -1821,6 +1831,36 @@ func (q *Queries) ListPlaysByTail(ctx context.Context, tail string) ([]ListPlays
 	return items, nil
 }
 
+const listRatingIDsEndingWith = `-- name: ListRatingIDsEndingWith :many
+SELECT rating_id FROM ratings
+WHERE substr(rating_id, -length(?1)) = ?1
+ORDER BY rating_id
+`
+
+// The ids of the ratings whose id ends with tail, a rating's whole id included.
+func (q *Queries) ListRatingIDsEndingWith(ctx context.Context, tail interface{}) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listRatingIDsEndingWith, tail)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var rating_id string
+		if err := rows.Scan(&rating_id); err != nil {
+			return nil, err
+		}
+		items = append(items, rating_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRatingTags = `-- name: ListRatingTags :many
 SELECT
     rt.rating_id,
@@ -2421,7 +2461,11 @@ SELECT
     CAST(sum(r.kind = 'dislike') AS INTEGER) AS dislikes,
     CAST(sum(r.kind = 'note') AS INTEGER) AS notes,
     CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
-FROM (SELECT rating_id, video_id, kind, message, rated_ts FROM ratings ORDER BY rated_ts, rating_id) AS r
+FROM (
+    SELECT rating_id, video_id, kind, message, rated_ts FROM ratings
+    WHERE CAST(?1 AS TEXT) IS NULL OR video_id = ?1
+    ORDER BY rated_ts, rating_id
+) AS r
 GROUP BY r.video_id
 `
 
@@ -2433,10 +2477,11 @@ type ListVideoOpinionsRow struct {
 	Messages string
 }
 
-// Every rated video's likes, dislikes and notes counted, and the messages of
-// its ratings joined by newlines, oldest first.
-func (q *Queries) ListVideoOpinions(ctx context.Context) ([]ListVideoOpinionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listVideoOpinions)
+// Every rated video's likes, dislikes and notes counted, or the video video_id
+// only when it is not NULL, and the messages of its ratings joined by newlines,
+// oldest first.
+func (q *Queries) ListVideoOpinions(ctx context.Context, videoID sql.NullString) ([]ListVideoOpinionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listVideoOpinions, videoID)
 	if err != nil {
 		return nil, err
 	}

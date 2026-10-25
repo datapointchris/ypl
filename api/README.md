@@ -150,8 +150,9 @@ reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire t
 | `DELETE /api/v1/plays/{id}` | Nothing, once it has deleted the play |
 | `POST /api/v1/ratings` | The rating it records, from `{"id", "video_id", "kind", "message", "tags"}` |
 | `GET /api/v1/ratings` | Ratings newest first, of one video under `video`, a page at a time |
+| `DELETE /api/v1/ratings/{id}` | Nothing, once it has deleted the rating and its tags; `{id}` is the id or its last 8 or more characters |
 | `GET /api/v1/tags` | Every tag a rating carried, with how many videos carry it, most first |
-| `GET /api/v1/history` | The newest library videos in the account's watch history, up to `limit` |
+| `GET /api/v1/youtube/history` | The newest library videos in the account's watch history, up to `limit` |
 | `PUT /api/v1/youtube/session` | The session it keeps, from `{"cookie_jar"}`, once a read of the watch history with it answers signed in |
 | `GET /api/v1/suggestions` | What to play next: never-played videos first, then the least recently played |
 | `GET /api/v1/sync/runs` | Sync runs newest first with their failures, a page at a time |
@@ -205,27 +206,26 @@ rating's message ignoring case and accents. A rating's `id` is a client-made UUI
 The watch history is read through `yt-dlp` with a signed-in session, which is the one read made
 signed in. Every player signed into the channel's account writes to that history, so the newest
 library video in it is what is most likely playing, wherever it plays. The history says what was
-started and in what order, never when. A read asks for the newest 25 entries and answers those the
-library holds. Reads are made only when asked for, one at a time, and one read answers for 30
-seconds, since YouTube may suspend an account it sees read through `yt-dlp` too often.
+started and in what order, never when. A read asks for a fixed number of the newest entries and
+answers those the library holds. Reads are made only when asked for, one at a time, and one read
+answers for a short window, since YouTube may suspend an account it sees read through `yt-dlp` too
+often.
 
 The session is a Netscape cookie jar, kept in the store. YouTube rotates the cookies of a session
-open in a browser, which invalidates an exported copy, so the jar is exported from a session no
-browser opens again:
-
-1. Open a private window and sign in to YouTube as the channel's account.
-2. In that tab, open `https://www.youtube.com/robots.txt`, with no other private tab open.
-3. Export the `youtube.com` cookies in Netscape format with a cookies.txt browser extension.
-4. Close the private window.
-5. Send the file with `ypl server cookies set <file>`.
+open in a browser, which invalidates an exported copy. So the jar is exported from a private window
+that is then closed, and no browser opens the session again. `ypl server cookies set --help` gives
+the steps.
 
 `yt-dlp` writes the jar back after each read with whatever YouTube rotated, and the server keeps
 that version, so the session lasts until YouTube ends it. A jar that reads the history signed out
-is refused and the session already held is kept. A read refused signed out later answers 502
+is refused with 422 `cookie_jar_signed_out`, and the session already held is kept. A read refused signed out later answers 502
 `youtube_signed_out` and is recorded, and `GET /api/v1/status` answers the session's
 `last_ok_ts` and `last_refused_ts` under `youtube_session`, so a refusal later than the last ok
 read is the jar to export again. With no session, the history answers 409
-`youtube_session_missing`, and a server with no `yt-dlp` answers 503 `history_unavailable`.
+`youtube_session_missing`, and a server with no `yt-dlp` answers 503 `youtube_history_unavailable`.
+While YouTube refuses the server's address, as enrichment's pause records, the history answers 503
+`youtube_rate_limited` without reading, because a read sent into a refusal can turn it into a
+block on the account.
 
 Creating, renaming and deleting a playlist write to YouTube in the request, one request at a time.
 The server records each write before sending it and settles it with YouTube's answer, and the store

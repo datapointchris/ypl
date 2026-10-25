@@ -22,7 +22,7 @@ CREATE INDEX ratings_by_video ON ratings (video_id, rated_ts);
 -- Ratings newest first, the order they are listed and paged in.
 CREATE INDEX ratings_by_time ON ratings (rated_ts, rating_id);
 
--- Free-form tags a rating carried, lowercased and trimmed by the server.
+-- Free-form tags a rating carried, in the canonical form the server stores.
 CREATE TABLE rating_tags (
     rating_id TEXT NOT NULL REFERENCES ratings (rating_id) ON DELETE CASCADE,
     tag TEXT NOT NULL CHECK (length(tag) > 0),

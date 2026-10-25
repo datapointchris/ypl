@@ -31,8 +31,8 @@ RUN apk add --no-cache ca-certificates tzdata
 # The checksum is the release's own SHA2-256SUMS entry, and a mismatch fails the
 # build rather than the read.
 ADD --chmod=0755 \
-    --checksum=sha256:f3dec9cfeaf304cec98290fe41c6ad465d4b747d302473559643e7af24929722 \
-    https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp_musllinux \
+    --checksum=sha256:d39487ff5c8eb1254d6f142bea05f495440d87ff529b2df786dcd3b5f66b23a8 \
+    https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/yt-dlp_musllinux \
     /usr/local/bin/yt-dlp
 
 # Running it once proves the binary executes on this base image and that its
