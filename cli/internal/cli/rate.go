@@ -40,7 +40,8 @@ func (a *app) rateCommand() *cobra.Command {
 			"At a terminal with no video named, it offers the library in fzf, with the newest\n" +
 			"mixes in YouTube's watch history on top. Every player signed into the channel's\n" +
 			"account writes to that history. With no --like, --dislike or --note it then asks\n" +
-			"for the kind, the message and the tags; with one, it records what the flags gave.\n\n" +
+			"for the kind, the message, the tags and where in the mix, offering YouTube's resume\n" +
+			"point; with one, it records what the flags gave and nothing else.\n\n" +
 			"Without a terminal, or under --no-input, name the video and give the kind.",
 		Example: "  ypl rate                                       pick what is playing, then rate it\n" +
 			"  ypl rate --like -m 'great closing hour'        pick it, and like it\n" +
@@ -92,7 +93,7 @@ func (a *app) rateCommand() *cobra.Command {
 				return reported(err)
 			}
 			rating := api.NewRating{VideoID: video.ID, Kind: kind, Tags: tags, PositionSeconds: position}
-			if position == nil && picked.ResumeSeconds != nil {
+			if kind == "" && position == nil && picked.ResumeSeconds != nil {
 				rating.PositionSeconds, rating.PositionEstimated = picked.ResumeSeconds, true
 			}
 			if strings.TrimSpace(message) != "" {
@@ -431,14 +432,7 @@ func printRatingsOf(out io.Writer, width int, ratings []api.Rating, tracks []api
 // trackCell names the track playing at position, and is "" where no track
 // holds it.
 func trackCell(tracks []api.Track, position *int64) string {
-	track := trackAt(tracks, position)
-	if track == nil {
-		return ""
-	}
-	if track.Artist != nil {
-		return *track.Artist + " - " + track.Title
-	}
-	return track.Title
+	return trackName(trackAt(tracks, position))
 }
 
 func printRatings(out io.Writer, width int, ratings []api.Rating) {

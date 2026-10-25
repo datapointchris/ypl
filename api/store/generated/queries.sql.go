@@ -561,7 +561,7 @@ SELECT
     r.kind,
     r.message,
     r.position_seconds,
-    r.position_estimated,
+    r.is_position_estimated,
     r.rated_ts,
     v.video_id,
     v.title,
@@ -572,15 +572,15 @@ WHERE r.rating_id = ?
 `
 
 type GetRatingRow struct {
-	RatingID          string
-	Kind              string
-	Message           sql.NullString
-	PositionSeconds   sql.NullInt64
-	PositionEstimated int64
-	RatedTs           string
-	VideoID           string
-	Title             string
-	ChannelTitle      string
+	RatingID            string
+	Kind                string
+	Message             sql.NullString
+	PositionSeconds     sql.NullInt64
+	IsPositionEstimated bool
+	RatedTs             string
+	VideoID             string
+	Title               string
+	ChannelTitle        string
 }
 
 // A rating with its video.
@@ -592,7 +592,7 @@ func (q *Queries) GetRating(ctx context.Context, ratingID string) (GetRatingRow,
 		&i.Kind,
 		&i.Message,
 		&i.PositionSeconds,
-		&i.PositionEstimated,
+		&i.IsPositionEstimated,
 		&i.RatedTs,
 		&i.VideoID,
 		&i.Title,
@@ -864,7 +864,7 @@ func (q *Queries) InsertPlay(ctx context.Context, arg InsertPlayParams) (int64, 
 }
 
 const insertRating = `-- name: InsertRating :execrows
-INSERT INTO ratings (rating_id, video_id, kind, message, position_seconds, position_estimated, rated_ts)
+INSERT INTO ratings (rating_id, video_id, kind, message, position_seconds, is_position_estimated, rated_ts)
 VALUES (
     ?1, ?2, ?3, ?4,
     ?5, ?6, ?7
@@ -873,13 +873,13 @@ ON CONFLICT (rating_id) DO NOTHING
 `
 
 type InsertRatingParams struct {
-	RatingID          string
-	VideoID           string
-	Kind              string
-	Message           sql.NullString
-	PositionSeconds   sql.NullInt64
-	PositionEstimated int64
-	RatedTs           string
+	RatingID            string
+	VideoID             string
+	Kind                string
+	Message             sql.NullString
+	PositionSeconds     sql.NullInt64
+	IsPositionEstimated bool
+	RatedTs             string
 }
 
 // Records a rating, and records nothing when one with that id is already
@@ -891,7 +891,7 @@ func (q *Queries) InsertRating(ctx context.Context, arg InsertRatingParams) (int
 		arg.Kind,
 		arg.Message,
 		arg.PositionSeconds,
-		arg.PositionEstimated,
+		arg.IsPositionEstimated,
 		arg.RatedTs,
 	)
 	if err != nil {
@@ -1921,7 +1921,7 @@ SELECT
     r.kind,
     r.message,
     r.position_seconds,
-    r.position_estimated,
+    r.is_position_estimated,
     r.rated_ts,
     v.video_id,
     v.title,
@@ -1946,15 +1946,15 @@ type ListRatingsParams struct {
 }
 
 type ListRatingsRow struct {
-	RatingID          string
-	Kind              string
-	Message           sql.NullString
-	PositionSeconds   sql.NullInt64
-	PositionEstimated int64
-	RatedTs           string
-	VideoID           string
-	Title             string
-	ChannelTitle      string
+	RatingID            string
+	Kind                string
+	Message             sql.NullString
+	PositionSeconds     sql.NullInt64
+	IsPositionEstimated bool
+	RatedTs             string
+	VideoID             string
+	Title               string
+	ChannelTitle        string
 }
 
 // Ratings newest first, each with its video: of the video video_id only when
@@ -1979,7 +1979,7 @@ func (q *Queries) ListRatings(ctx context.Context, arg ListRatingsParams) ([]Lis
 			&i.Kind,
 			&i.Message,
 			&i.PositionSeconds,
-			&i.PositionEstimated,
+			&i.IsPositionEstimated,
 			&i.RatedTs,
 			&i.VideoID,
 			&i.Title,
@@ -2481,7 +2481,7 @@ SELECT
     CAST(sum(r.kind = 'note') AS INTEGER) AS notes,
     CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
 FROM (
-    SELECT rating_id, video_id, kind, message, rated_ts, position_seconds, position_estimated FROM ratings
+    SELECT rating_id, video_id, kind, message, rated_ts, position_seconds, is_position_estimated FROM ratings
     WHERE CAST(?1 AS TEXT) IS NULL OR video_id = ?1
     ORDER BY rated_ts, rating_id
 ) AS r

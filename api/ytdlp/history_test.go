@@ -22,7 +22,7 @@ func TestAHistoryReadNeedingASessionIsSignedOutAndTheBotCheckIsARateLimit(t *tes
 	}
 }
 
-// The shape is the history page's as YouTube served it: a lockup per video,
+// The field names are the history page's: a lockup per video,
 // with the resume point as a progress bar on its thumbnail.
 func TestAHistoryPageGivesEachVideoItsResumePercent(t *testing.T) {
 	dir := t.TempDir()

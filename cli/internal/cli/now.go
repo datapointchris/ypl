@@ -152,14 +152,23 @@ func trackAt(tracks []api.Track, position *int64) *api.Track {
 	return &tracks[found]
 }
 
+// trackName is track as "Artist - Title", the title alone where no artist is
+// known, and "" for no track.
+func trackName(track *api.Track) string {
+	switch {
+	case track == nil:
+		return ""
+	case track.Artist != nil && *track.Artist != "":
+		return *track.Artist + " - " + track.Title
+	default:
+		return track.Title
+	}
+}
+
 func printNow(cmd *cobra.Command, found nowPlaying) {
 	out := cmd.OutOrStdout()
 	if found.Track != nil {
-		name := found.Track.Title
-		if found.Track.Artist != nil && *found.Track.Artist != "" {
-			name = *found.Track.Artist + " - " + name
-		}
-		_, _ = fmt.Fprintln(out, name)
+		_, _ = fmt.Fprintln(out, trackName(found.Track))
 	}
 	_, _ = fmt.Fprintf(out, "%s  %s / %s\n", found.Title, clock(found.PositionSeconds), clock(found.DurationSeconds))
 	if found.Channel != "" {

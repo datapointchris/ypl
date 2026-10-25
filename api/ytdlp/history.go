@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -24,8 +25,7 @@ var ErrSignedOut = errors.New("YouTube answered the watch history signed out")
 //
 // ResumePercent is how far into the video YouTube's resume point sits, the
 // whole percentage its history page draws as a progress bar, and nil where the
-// page carried none. YouTube saves it while a video plays, so for the newest
-// entry it is near where playback is.
+// page carried none.
 type HistoryEntry struct {
 	ID            string
 	Title         string
@@ -171,15 +171,18 @@ func resumePercents(dir string) (map[string]int, error) {
 	return percents, nil
 }
 
+// initialDataMarker is each way a page assigns ytInitialData, as yt-dlp's own
+// _YT_INITIAL_DATA_RE accepts them.
+var initialDataMarker = regexp.MustCompile(`ytInitialData"?\]?\s*=\s*`)
+
 // initialData is the ytInitialData object a YouTube page embeds.
 func initialData(page []byte) (any, bool) {
-	marker := []byte("var ytInitialData = ")
-	at := bytes.Index(page, marker)
-	if at < 0 {
+	at := initialDataMarker.FindIndex(page)
+	if at == nil {
 		return nil, false
 	}
 	var data any
-	if err := json.NewDecoder(bytes.NewReader(page[at+len(marker):])).Decode(&data); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(page[at[1]:])).Decode(&data); err != nil {
 		return nil, false
 	}
 	return data, true

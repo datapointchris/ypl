@@ -18,6 +18,8 @@ import (
 // maxRatingBody bounds the body of POST /api/v1/ratings.
 const maxRatingBody = 32 << 10
 
+var errPositionPastEnd = errors.New("position past the end of the mix")
+
 // Bounds on what a rating carries.
 const (
 	maxMessageLength = 5000
@@ -101,7 +103,7 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeMessageRequired, "a note needs a message")
 		return
 	}
-	position, estimated := sql.NullInt64{}, int64(0)
+	position := sql.NullInt64{}
 	if body.PositionEstimated && body.PositionSeconds == nil {
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeInvalidPosition, "position_estimated needs position_seconds")
 		return
@@ -112,9 +114,6 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		position = sql.NullInt64{Int64: *body.PositionSeconds, Valid: true}
-		if body.PositionEstimated {
-			estimated = 1
-		}
 	}
 	tags, ok := normalizedTags(w, body.Tags)
 	if !ok {
@@ -123,16 +122,22 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 
 	var stored rating
 	var created bool
+	var length int64
 	err = h.store.InTx(ctx, func(tx *store.Tx) error {
-		if _, err := tx.GetVideo(ctx, body.VideoID); err != nil {
+		video, err := tx.GetVideo(ctx, body.VideoID)
+		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errVideoNotStored
 			}
 			return err
 		}
+		if position.Valid && video.DurationSeconds.Valid && position.Int64 > video.DurationSeconds.Int64 {
+			length = video.DurationSeconds.Int64
+			return errPositionPastEnd
+		}
 		n, err := tx.InsertRating(ctx, generated.InsertRatingParams{
 			RatingID: body.ID, VideoID: body.VideoID, Kind: body.Kind, Message: message,
-			PositionSeconds: position, PositionEstimated: estimated, RatedTs: store.Timestamp(h.now()),
+			PositionSeconds: position, IsPositionEstimated: position.Valid && body.PositionEstimated, RatedTs: store.Timestamp(h.now()),
 		})
 		if err != nil {
 			return err
@@ -159,6 +164,9 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, errVideoNotStored):
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeVideoNotStored, "video %s is not in the store", body.VideoID)
+		return
+	case errors.Is(err, errPositionPastEnd):
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeInvalidPosition, "position_seconds %d is past the end of the mix, which is %d seconds long", position.Int64, length)
 		return
 	case err != nil:
 		h.writeInternalError(w, r, err)
@@ -317,7 +325,7 @@ func ratingFrom(row generated.ListRatingsRow, tags map[string][]string) rating {
 		Kind:              row.Kind,
 		Message:           nullableText(row.Message),
 		PositionSeconds:   nullableInt(row.PositionSeconds),
-		PositionEstimated: row.PositionEstimated == 1,
+		PositionEstimated: row.IsPositionEstimated,
 		Tags:              orEmpty(tags[row.RatingID]),
 		Video:             playedVideo{ID: row.VideoID, Title: row.Title, ChannelTitle: row.ChannelTitle},
 	}

@@ -952,10 +952,10 @@ LIMIT 1;
 -- name: InsertRating :execrows
 -- Records a rating, and records nothing when one with that id is already
 -- stored.
-INSERT INTO ratings (rating_id, video_id, kind, message, position_seconds, position_estimated, rated_ts)
+INSERT INTO ratings (rating_id, video_id, kind, message, position_seconds, is_position_estimated, rated_ts)
 VALUES (
     sqlc.arg(rating_id), sqlc.arg(video_id), sqlc.arg(kind), sqlc.narg(message),
-    sqlc.narg(position_seconds), sqlc.arg(position_estimated), sqlc.arg(rated_ts)
+    sqlc.narg(position_seconds), sqlc.arg(is_position_estimated), sqlc.arg(rated_ts)
 )
 ON CONFLICT (rating_id) DO NOTHING;
 
@@ -971,7 +971,7 @@ SELECT
     r.kind,
     r.message,
     r.position_seconds,
-    r.position_estimated,
+    r.is_position_estimated,
     r.rated_ts,
     v.video_id,
     v.title,
@@ -989,7 +989,7 @@ SELECT
     r.kind,
     r.message,
     r.position_seconds,
-    r.position_estimated,
+    r.is_position_estimated,
     r.rated_ts,
     v.video_id,
     v.title,
