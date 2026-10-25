@@ -79,7 +79,10 @@ A watch-history read is the exception, and the only one. It is given the channel
 jar, because the history exists only for a signed-in session. So a compromised yt-dlp could carry
 that session away. The jar is written to a mode-600 file in a directory removed when the read
 ends. The read keeps config and plugins out the way a video read does, and adds `--no-cache-dir`,
-so yt-dlp keeps nothing on disk between reads. Reads happen only when a person asks for the
+so yt-dlp keeps nothing on disk between reads. It also adds `--write-pages`, which leaves the
+history page in that directory, and `api/ytdlp` reads each entry's resume point from the page's
+`ytInitialData` before the directory goes. That parse is ours rather than yt-dlp's, so a page YouTube
+reshapes loses the resume points, never the history. Reads happen only when a person asks for the
 history, and none is made while enrichment's pause on a refusal of the address holds. Nothing else is handed to yt-dlp with the jar, and a video read never
 sees it. The store holds the jar sealed by `api/jarseal` under `YOUTUBE_COOKIE_KEY`, which reaches
 only the server's environment, so a backup of the store carries no usable session.

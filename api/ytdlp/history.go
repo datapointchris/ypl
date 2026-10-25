@@ -20,9 +20,15 @@ var ErrSignedOut = errors.New("YouTube answered the watch history signed out")
 
 // HistoryEntry is one video of the watch history, newest first. The history
 // says what was started and in what order, never when.
+//
+// ResumePercent is how far into the video YouTube's resume point sits, the
+// whole percentage its history page draws as a progress bar, and nil where the
+// page carried none. YouTube saves it while a video plays, so for the newest
+// entry it is near where playback is.
 type HistoryEntry struct {
-	ID    string
-	Title string
+	ID            string
+	Title         string
+	ResumePercent *int
 }
 
 // signedOutMarkers are what yt-dlp's error says when the history needs a
@@ -53,6 +59,7 @@ func (r *Reader) History(ctx context.Context, jar string, entries int) ([]Histor
 		return nil, "", fmt.Errorf("read the watch history: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, r.path, historyArguments(path, entries)...)
+	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.WaitDelay = waitDelay
@@ -67,6 +74,12 @@ func (r *Reader) History(ctx context.Context, jar string, entries int) ([]Histor
 	if err != nil {
 		return nil, "", fmt.Errorf("read the watch history: %w", err)
 	}
+	percents := resumePercents(dir)
+	for i := range read {
+		if percent, ok := percents[read[i].ID]; ok {
+			read[i].ResumePercent = &percent
+		}
+	}
 	written, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", fmt.Errorf("read back the cookie jar: %w", err)
@@ -76,13 +89,15 @@ func (r *Reader) History(ctx context.Context, jar string, entries int) ([]Histor
 
 // historyArguments is what a read of the watch history passes yt-dlp: no
 // config file, no plugin, no cache, and only the list of entries rather than
-// each video's page.
+// each video's page. --write-pages leaves the history page it read in the
+// working directory, which is where the resume points are.
 func historyArguments(cookies string, entries int) []string {
 	return []string{
 		"--ignore-config",
 		"--no-plugin-dirs",
 		"--no-cache-dir",
 		"--cookies", cookies,
+		"--write-pages",
 		"--flat-playlist",
 		"--playlist-end", strconv.Itoa(entries),
 		"--dump-single-json",
@@ -121,4 +136,86 @@ func decodeHistory(output []byte) ([]HistoryEntry, error) {
 		}
 	}
 	return entries, nil
+}
+
+// resumePercents is each video's resume point on the history pages yt-dlp
+// wrote into dir, by video id. A page that cannot be read gives none, since
+// the history answers without them.
+func resumePercents(dir string) map[string]int {
+	percents := map[string]int{}
+	pages, _ := filepath.Glob(filepath.Join(dir, "*.dump"))
+	for _, page := range pages {
+		body, err := os.ReadFile(page)
+		if err != nil {
+			continue
+		}
+		data, ok := initialData(body)
+		if !ok {
+			continue
+		}
+		lockupPercents(data, percents)
+	}
+	return percents
+}
+
+// initialData is the ytInitialData object a YouTube page embeds.
+func initialData(page []byte) (any, bool) {
+	marker := []byte("var ytInitialData = ")
+	at := bytes.Index(page, marker)
+	if at < 0 {
+		return nil, false
+	}
+	var data any
+	if err := json.NewDecoder(bytes.NewReader(page[at+len(marker):])).Decode(&data); err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+// lockupPercents adds to percents every video lockup under node with the
+// progress bar's start percent drawn on it.
+func lockupPercents(node any, percents map[string]int) {
+	switch value := node.(type) {
+	case map[string]any:
+		if lockup, ok := value["lockupViewModel"].(map[string]any); ok {
+			if id, ok := lockup["contentId"].(string); ok && videoID.MatchString(id) {
+				if percent, ok := progressPercent(lockup); ok {
+					if _, seen := percents[id]; !seen {
+						percents[id] = percent
+					}
+				}
+			}
+			return
+		}
+		for _, child := range value {
+			lockupPercents(child, percents)
+		}
+	case []any:
+		for _, child := range value {
+			lockupPercents(child, percents)
+		}
+	}
+}
+
+// progressPercent is the first progress bar's start percent under node.
+func progressPercent(node any) (int, bool) {
+	switch value := node.(type) {
+	case map[string]any:
+		if bar, ok := value["thumbnailOverlayProgressBarViewModel"].(map[string]any); ok {
+			percent, ok := bar["startPercent"].(float64)
+			return int(percent), ok
+		}
+		for _, child := range value {
+			if percent, ok := progressPercent(child); ok {
+				return percent, true
+			}
+		}
+	case []any:
+		for _, child := range value {
+			if percent, ok := progressPercent(child); ok {
+				return percent, true
+			}
+		}
+	}
+	return 0, false
 }

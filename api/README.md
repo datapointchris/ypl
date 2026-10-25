@@ -151,7 +151,7 @@ reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire t
 | `GET /api/v1/plays` | Plays newest first, a page at a time |
 | `GET /api/v1/plays/{id}` | One play |
 | `DELETE /api/v1/plays/{id}` | Nothing, once it has deleted the play |
-| `POST /api/v1/ratings` | The rating it records, from `{"id", "video_id", "kind", "message", "tags"}` |
+| `POST /api/v1/ratings` | The rating it records, from `{"id", "video_id", "kind", "message", "position_seconds", "position_estimated", "tags"}` |
 | `GET /api/v1/ratings` | Ratings newest first, of one video under `video`, a page at a time |
 | `DELETE /api/v1/ratings/{id}` | Nothing, once it has deleted the rating and its tags; `{id}` is the id or its last 8 or more characters |
 | `GET /api/v1/tags` | Every tag a rating carried, with how many videos carry it, most first |
@@ -205,6 +205,9 @@ nothing is derived from them but counts. Tags are lowercased with their whitespa
 `GET /api/v1/videos/{id}` adds every rating as `ratings`, newest first. The list narrows by `rated`
 (`like`, `dislike`, `note`, or `unrated` for none), `tag`, and `text`, which matches part of any
 rating's message ignoring case and accents. A rating's `id` is a client-made UUIDv7, as a play's is.
+`position_seconds` is where in the mix it was left, and null where nobody said;
+`position_estimated` is true when it came from YouTube's resume point rather than from a person.
+A negative position answers 422 `invalid_position`.
 
 The watch history is read through `yt-dlp` with a signed-in session, which is the one read made
 signed in. Every player signed into the channel's account writes to that history, so the newest
@@ -213,6 +216,13 @@ started and in what order, never when. A read asks for a fixed number of the new
 answers those the library holds. Reads are made only when asked for, one at a time, and one read
 answers for a short window, since YouTube may suspend an account it sees read through `yt-dlp` too
 often.
+
+Each entry carries `resume_seconds`, where YouTube's resume point sits in the video, and null where
+the page drew none or the video's length is unknown. YouTube draws it as a whole percentage of the
+length, and saves it while a video plays, keeping up with playback to within about a minute. So
+for the newest entry it is near where the player is, and `ypl rate` offers it as the rating's
+position, marked approximate. It is read from the history page `yt-dlp` saves with
+`--write-pages` during the same read, so it costs no second request.
 
 The session is a Netscape cookie jar, kept in the store sealed with AES-256-GCM under
 `YOUTUBE_COOKIE_KEY`, so a copy of the store carries no usable session. A jar sealed under another

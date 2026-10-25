@@ -36,23 +36,29 @@ const (
 // message and tags. A mix holds as many as were left, and nothing is derived
 // from them but counts.
 type rating struct {
-	ID      string      `json:"id"`
-	RatedTs string      `json:"rated_ts"`
-	Kind    string      `json:"kind"`
-	Message *string     `json:"message"`
-	Tags    []string    `json:"tags"`
-	Video   playedVideo `json:"video"`
+	ID                string      `json:"id"`
+	RatedTs           string      `json:"rated_ts"`
+	Kind              string      `json:"kind"`
+	Message           *string     `json:"message"`
+	PositionSeconds   *int64      `json:"position_seconds"`
+	PositionEstimated bool        `json:"position_estimated"`
+	Tags              []string    `json:"tags"`
+	Video             playedVideo `json:"video"`
 }
 
 // newRating is the body of POST /api/v1/ratings. ID is a UUIDv7 the client
 // generates, so sending the entry again stores it once. A note needs a
-// message, and a like or dislike may carry one.
+// message, and a like or dislike may carry one. PositionSeconds is where in
+// the mix it was left, and PositionEstimated says it came from YouTube's resume
+// point rather than from a person.
 type newRating struct {
-	ID      string   `json:"id"`
-	VideoID string   `json:"video_id"`
-	Kind    string   `json:"kind"`
-	Message *string  `json:"message"`
-	Tags    []string `json:"tags"`
+	ID                string   `json:"id"`
+	VideoID           string   `json:"video_id"`
+	Kind              string   `json:"kind"`
+	Message           *string  `json:"message"`
+	PositionSeconds   *int64   `json:"position_seconds"`
+	PositionEstimated bool     `json:"position_estimated"`
+	Tags              []string `json:"tags"`
 }
 
 // tagCount is a tag and how many videos carry it.
@@ -95,6 +101,17 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeMessageRequired, "a note needs a message")
 		return
 	}
+	position, estimated := sql.NullInt64{}, int64(0)
+	if body.PositionSeconds != nil {
+		if *body.PositionSeconds < 0 {
+			wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeInvalidPosition, "position_seconds %d is before the start of the mix", *body.PositionSeconds)
+			return
+		}
+		position = sql.NullInt64{Int64: *body.PositionSeconds, Valid: true}
+		if body.PositionEstimated {
+			estimated = 1
+		}
+	}
 	tags, ok := normalizedTags(w, body.Tags)
 	if !ok {
 		return
@@ -110,7 +127,8 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		n, err := tx.InsertRating(ctx, generated.InsertRatingParams{
-			RatingID: body.ID, VideoID: body.VideoID, Kind: body.Kind, Message: message, RatedTs: store.Timestamp(h.now()),
+			RatingID: body.ID, VideoID: body.VideoID, Kind: body.Kind, Message: message,
+			PositionSeconds: position, PositionEstimated: estimated, RatedTs: store.Timestamp(h.now()),
 		})
 		if err != nil {
 			return err
@@ -290,11 +308,13 @@ func tagsByRating(rows []generated.ListRatingTagsRow) map[string][]string {
 
 func ratingFrom(row generated.ListRatingsRow, tags map[string][]string) rating {
 	return rating{
-		ID:      row.RatingID,
-		RatedTs: row.RatedTs,
-		Kind:    row.Kind,
-		Message: nullableText(row.Message),
-		Tags:    orEmpty(tags[row.RatingID]),
-		Video:   playedVideo{ID: row.VideoID, Title: row.Title, ChannelTitle: row.ChannelTitle},
+		ID:                row.RatingID,
+		RatedTs:           row.RatedTs,
+		Kind:              row.Kind,
+		Message:           nullableText(row.Message),
+		PositionSeconds:   nullableInt(row.PositionSeconds),
+		PositionEstimated: row.PositionEstimated == 1,
+		Tags:              orEmpty(tags[row.RatingID]),
+		Video:             playedVideo{ID: row.VideoID, Title: row.Title, ChannelTitle: row.ChannelTitle},
 	}
 }
