@@ -15,7 +15,7 @@ The server, on the machine it is deployed to:
 | Door | Package | Reaches | Costs |
 | --- | --- | --- | --- |
 | The Data API | `api/youtube` | YouTube, over HTTPS, signed in as the channel with an OAuth refresh token | Quota units, 10,000 a day |
-| yt-dlp | `api/ytdlp` | YouTube, over HTTPS, signed in as nobody, through a subprocess | Nothing, and the address's standing with YouTube |
+| yt-dlp | `api/ytdlp` | YouTube, over HTTPS, through a subprocess: signed in as nobody for a video, and with the stored cookie jar for the watch history | Nothing, the address's standing with YouTube, and the account's for history reads |
 
 The CLI, on every workstation:
 
@@ -37,7 +37,7 @@ which is how mpv's IPC is asked anything and changes nothing about what is playi
 posted through the server door while mpv is still running, under an id made once, so a retry is
 stored once.
 
-`api/ytdlp.Reader.Video` is the only place in the server that starts a process. In the CLI there
+`api/ytdlp.Reader.Video` and `Reader.History` are the only places in the server that start a process. In the CLI there
 are three, `ypl auth login`, `ypl playlists edit` and `ypl play`, and the first hands its
 subprocess the opposite of what the other two hand theirs. The browser launcher is given
 `os.DevNull`, because a pipe would keep the login blocked until the browser exits. The editor and
@@ -70,11 +70,20 @@ therefore treated as untrusted input and given as little of the host as possible
 - **Only the fields a read keeps are decoded.** `api/ytdlp.info` names them; everything else in
   yt-dlp's answer is dropped rather than carried around.
 
-If yt-dlp egressed something it should not, what it holds is the video ids the server is reading
-and the address it reads from. It is given no credential, no cookie and no part of the store.
+If yt-dlp egressed something it should not during a video read, what it holds is the video ids the
+server is reading and the address it reads from. A video read is given no credential, no cookie and
+no part of the store.
+
+A watch-history read is the exception, and the only one. It is given the channel account's cookie
+jar, because the history exists only for a signed-in session. So a compromised yt-dlp could carry
+that session away. The jar is written to a mode-600 file in a directory removed when the read
+ends, the read takes `--no-cache-dir` beside the two flags above, and reads happen only when a
+person asks for the history. Nothing else is handed to yt-dlp with the jar, and a video read never
+sees it.
 
 The server needs yt-dlp only when it is configured to read videos. `ENRICH_PACE=off` is a
-supported configuration and starts without one.
+supported configuration and starts without one. The history routes look for yt-dlp whatever
+`ENRICH_PACE` says, and answer 503 only where none is found.
 
 ## Classifying another program's prose is the fragile part
 

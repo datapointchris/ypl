@@ -948,3 +948,122 @@ WHERE
     AND settled_ts > sqlc.arg(settled_after)
 ORDER BY settled_ts DESC, write_id DESC
 LIMIT 1;
+
+-- name: InsertRating :execrows
+-- Records a rating, and records nothing when one with that id is already
+-- stored.
+INSERT INTO ratings (rating_id, video_id, verdict, note, rated_ts)
+VALUES (sqlc.arg(rating_id), sqlc.arg(video_id), sqlc.narg(verdict), sqlc.narg(note), sqlc.arg(rated_ts))
+ON CONFLICT (rating_id) DO NOTHING;
+
+-- name: InsertRatingTag :exec
+INSERT INTO rating_tags (rating_id, tag)
+VALUES (sqlc.arg(rating_id), sqlc.arg(tag))
+ON CONFLICT DO NOTHING;
+
+-- name: GetRating :one
+-- A rating with its video.
+SELECT
+    r.rating_id,
+    r.verdict,
+    r.note,
+    r.rated_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM ratings AS r
+INNER JOIN videos AS v ON r.video_id = v.video_id
+WHERE r.rating_id = ?;
+
+-- name: ListRatings :many
+-- Ratings newest first, each with its video: of the video video_id only when
+-- it is not NULL, and only those after the rating at before_ts with the id
+-- before_id when those are not NULL.
+SELECT
+    r.rating_id,
+    r.verdict,
+    r.note,
+    r.rated_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM ratings AS r
+INNER JOIN videos AS v ON r.video_id = v.video_id
+WHERE
+    (CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR r.video_id = sqlc.narg(video_id))
+    AND (
+        CAST(sqlc.narg(before_ts) AS TEXT) IS NULL
+        OR (r.rated_ts, r.rating_id) < (sqlc.narg(before_ts), sqlc.narg(before_id))
+    )
+ORDER BY r.rated_ts DESC, r.rating_id DESC
+LIMIT sqlc.arg(max_rows);
+
+-- name: ListRatingTags :many
+-- The tags of every rating, or of the ratings of the video video_id only when it
+-- is not NULL, in no order.
+SELECT
+    rt.rating_id,
+    r.video_id,
+    rt.tag
+FROM rating_tags AS rt
+INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
+WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR r.video_id = sqlc.narg(video_id);
+
+-- name: ListVideoOpinions :many
+-- Every rated video's latest verdict, NULL when no rating of it carried one,
+-- and its notes joined by newlines, oldest first.
+SELECT
+    r.video_id,
+    (
+        SELECT latest.verdict FROM ratings AS latest
+        WHERE latest.video_id = r.video_id AND latest.verdict IS NOT NULL
+        ORDER BY latest.rated_ts DESC, latest.rating_id DESC
+        LIMIT 1
+    ) AS verdict,
+    CAST(coalesce(group_concat(r.note, char(10)), '') AS TEXT) AS notes
+FROM (SELECT * FROM ratings ORDER BY rated_ts, rating_id) AS r
+GROUP BY r.video_id;
+
+-- name: ListTagCounts :many
+-- Every tag with how many videos carry it, most carried first.
+SELECT
+    rt.tag,
+    CAST(count(DISTINCT r.video_id) AS INTEGER) AS videos
+FROM rating_tags AS rt
+INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
+GROUP BY rt.tag
+ORDER BY videos DESC, rt.tag;
+
+-- name: GetYouTubeSession :one
+SELECT
+    cookie_jar,
+    stored_ts,
+    last_ok_ts,
+    last_refused_ts,
+    last_error
+FROM youtube_session
+WHERE session_id = 1;
+
+-- name: SetYouTubeSession :exec
+-- Replaces the session with a new cookie jar, read signed in at stored_ts.
+INSERT INTO youtube_session (session_id, cookie_jar, stored_ts, last_ok_ts, last_refused_ts, last_error)
+VALUES (1, sqlc.arg(cookie_jar), sqlc.arg(stored_ts), sqlc.arg(stored_ts), NULL, NULL)
+ON CONFLICT (session_id) DO UPDATE SET
+    cookie_jar = excluded.cookie_jar,
+    stored_ts = excluded.stored_ts,
+    last_ok_ts = excluded.last_ok_ts,
+    last_refused_ts = NULL,
+    last_error = NULL;
+
+-- name: RecordYouTubeSessionOK :exec
+-- Keeps the jar yt-dlp wrote back after a read YouTube answered signed in.
+UPDATE youtube_session SET
+    cookie_jar = sqlc.arg(cookie_jar),
+    last_ok_ts = sqlc.arg(read_ts)
+WHERE session_id = 1;
+
+-- name: RecordYouTubeSessionRefused :exec
+UPDATE youtube_session SET
+    last_refused_ts = sqlc.arg(read_ts),
+    last_error = sqlc.arg(last_error)
+WHERE session_id = 1;

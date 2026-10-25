@@ -43,6 +43,7 @@ const (
 	groupPlaylists = "playlists"
 	groupVideos    = "videos"
 	groupPlays     = "plays"
+	groupRatings   = "ratings"
 	groupServer    = "server"
 	groupSetup     = "setup"
 )
@@ -82,6 +83,7 @@ func newRootCommand(a *app) *cobra.Command {
 			"  ypl now                            which track is playing\n" +
 			"  ypl videos list --min-minutes 180  videos three hours long or more\n" +
 			"  ypl plays list                     what you have listened to\n" +
+			"  ypl rate                           rate the mix playing, wherever it plays\n" +
 			"  ypl server status                  what the server holds, and its last sync",
 		Version:       version,
 		SilenceUsage:  true,
@@ -116,6 +118,7 @@ func newRootCommand(a *app) *cobra.Command {
 		&cobra.Group{ID: groupPlaylists, Title: "Playlist commands:"},
 		&cobra.Group{ID: groupVideos, Title: "Video commands:"},
 		&cobra.Group{ID: groupPlays, Title: "Listening history commands:"},
+		&cobra.Group{ID: groupRatings, Title: "Rating commands:"},
 		&cobra.Group{ID: groupServer, Title: "Server commands:"},
 		&cobra.Group{ID: groupSetup, Title: "Setup commands:"},
 	)
@@ -129,6 +132,9 @@ func newRootCommand(a *app) *cobra.Command {
 		withAPIFlag(a.playlistsCommand()),
 		withAPIFlag(a.videosCommand()),
 		withAPIFlag(a.playsCommand()),
+		withAPIFlag(a.rateCommand()),
+		withAPIFlag(a.ratingsCommand()),
+		withAPIFlag(a.tagsCommand()),
 		withAPIFlag(a.serverCommand()),
 		a.authCommand(),
 		newConfigCommand(),

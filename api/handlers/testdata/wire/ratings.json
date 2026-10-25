@@ -1,0 +1,19 @@
+{
+  "data": [
+    {
+      "id": "01920000-0000-7000-8000-000000000001",
+      "rated_ts": "2026-09-17T12:00:00Z",
+      "verdict": "up",
+      "note": "n",
+      "tags": [
+        "deep"
+      ],
+      "video": {
+        "id": "a",
+        "title": "Zebra",
+        "channel_title": "One"
+      }
+    }
+  ],
+  "has_more": false
+}

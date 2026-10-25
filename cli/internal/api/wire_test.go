@@ -84,6 +84,9 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 		{"suggestions", func() any { return &[]Suggestion{} }},
 		{"sync-runs", func() any { return &page[SyncRun]{} }},
 		{"status", func() any { return &Status{} }},
+		{"ratings", func() any { return &page[Rating]{} }},
+		{"tags", func() any { return &[]TagCount{} }},
+		{"history", func() any { return &[]HistoryEntry{} }},
 		// The order's revision is a header rather than a field, so it is marked
 		// as no part of the body and this walk sees only what the document
 		// carries.

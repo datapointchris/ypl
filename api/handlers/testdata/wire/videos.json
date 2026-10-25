@@ -19,6 +19,10 @@
           "id": "PLA",
           "title": "Alpha"
         }
+      ],
+      "verdict": "up",
+      "tags": [
+        "deep"
       ]
     },
     {
@@ -36,7 +40,9 @@
           "id": "PLB",
           "title": "zulu"
         }
-      ]
+      ],
+      "verdict": null,
+      "tags": []
     },
     {
       "id": "b",
@@ -59,7 +65,9 @@
           "id": "PLB",
           "title": "zulu"
         }
-      ]
+      ],
+      "verdict": null,
+      "tags": []
     },
     {
       "id": "c",
@@ -76,7 +84,9 @@
           "id": "PLB",
           "title": "zulu"
         }
-      ]
+      ],
+      "verdict": null,
+      "tags": []
     }
   ],
   "has_more": false

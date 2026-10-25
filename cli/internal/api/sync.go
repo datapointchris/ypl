@@ -48,6 +48,8 @@ type Status struct {
 	LastRun   *SyncRun  `json:"last_run"`
 	LastOKRun *SyncRun  `json:"last_ok_run"`
 	Sync      SyncState `json:"sync"`
+	// YouTubeSession is nil until a cookie jar is set.
+	YouTubeSession *YouTubeSession `json:"youtube_session"`
 }
 
 // SyncState is how the sync runs and what it has waiting: the mean wait

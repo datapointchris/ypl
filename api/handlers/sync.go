@@ -58,12 +58,14 @@ type syncFailure struct {
 }
 
 // status is where the server stands: what the store holds, the latest run, the
-// latest run that ended ok, and what the sync spends and has waiting.
+// latest run that ended ok, what the sync spends and has waiting, and the
+// YouTube session the watch history is read with, null until one is set.
 type status struct {
-	Library   library   `json:"library"`
-	LastRun   *syncRun  `json:"last_run"`
-	LastOKRun *syncRun  `json:"last_ok_run"`
-	Sync      syncState `json:"sync"`
+	Library        library         `json:"library"`
+	LastRun        *syncRun        `json:"last_run"`
+	LastOKRun      *syncRun        `json:"last_ok_run"`
+	Sync           syncState       `json:"sync"`
+	YouTubeSession *youtubeSession `json:"youtube_session"`
 }
 
 // syncState is how the sync runs and what it has waiting: the mean wait
@@ -186,6 +188,9 @@ func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
 			Plays:               counts.Plays,
 		}
 		if shown.Sync, err = h.syncState(ctx, q); err != nil {
+			return err
+		}
+		if shown.YouTubeSession, err = sessionState(ctx, q); err != nil {
 			return err
 		}
 		latest, err := q.ListNewestSyncRuns(ctx, 1)

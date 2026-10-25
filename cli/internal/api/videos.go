@@ -23,6 +23,10 @@ type LibraryVideo struct {
 	VideoSummary
 	Artists   []string      `json:"artists"`
 	Playlists []PlaylistRef `json:"playlists"`
+	// Verdict is the latest up or down a rating gave the video, and Tags every
+	// tag its ratings carried.
+	Verdict *string  `json:"verdict"`
+	Tags    []string `json:"tags"`
 }
 
 // Video is one video with its description and its tracklist.
@@ -62,6 +66,12 @@ type VideoFilter struct {
 	// MinSeconds and MaxSeconds bound the duration. Nil is no bound.
 	MinSeconds *int64
 	MaxSeconds *int64
+	// Verdict keeps the videos whose latest verdict is up or down, or that
+	// have none under "unrated". Tag keeps the videos a rating tagged with it,
+	// and Note those a note of holds it, ignoring case and accents.
+	Verdict string
+	Tag     string
+	Note    string
 	// Sort is the order, and "" is the server's own first one. The server owns
 	// the vocabulary and refuses an order it does not have, naming every one it
 	// does, so nothing here narrows what may be sent.
@@ -97,6 +107,9 @@ func (filter VideoFilter) pairs() [][2]string {
 		{"artist", filter.Artist},
 		{"min_seconds", seconds(filter.MinSeconds)},
 		{"max_seconds", seconds(filter.MaxSeconds)},
+		{"verdict", filter.Verdict},
+		{"tag", filter.Tag},
+		{"note", filter.Note},
 		{"sort", filter.Sort},
 	}
 }

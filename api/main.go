@@ -9,7 +9,8 @@
 // Beside the sync it reads tracklists with the yt-dlp binary YTDLP_PATH names
 // (yt-dlp on PATH when unset), one video at a time, at least ENRICH_PACE apart
 // (90s when unset) and up to twice that at random. ENRICH_PACE=off reads no
-// video, and reading no video needs no yt-dlp.
+// video, and reading no video needs no yt-dlp. The same binary reads the watch
+// history with the cookie jar `ypl server cookies set` stores, when asked.
 //
 // It answers /api/v1 only to a request carrying an access token the identity
 // provider OIDC_ISSUER signed for a client whose id starts with
@@ -132,6 +133,11 @@ func start(ctx context.Context) error {
 		return err
 	}
 	api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, slog.Default())
+	if history, err := ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp")); err == nil {
+		api.ReadHistoryWith(history)
+	} else {
+		slog.Warn("no yt-dlp, so the watch history is not read", "err", err)
+	}
 	work := func(ctx context.Context) {
 		var wg sync.WaitGroup
 		wg.Go(func() { worker.Run(ctx) })

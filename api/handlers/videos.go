@@ -20,11 +20,14 @@ import (
 
 // libraryVideo is a video as GET /api/v1/videos lists it: what decides whether
 // it belongs in a set without its tracklist being read. Artists come commonest
-// first, and playlists by title.
+// first, and playlists by title. Verdict is the latest up or down a rating
+// gave it, and Tags every tag its ratings carried, alphabetically.
 type libraryVideo struct {
 	videoSummary
 	Artists   []string      `json:"artists"`
 	Playlists []playlistRef `json:"playlists"`
+	Verdict   *string       `json:"verdict"`
+	Tags      []string      `json:"tags"`
 }
 
 // video is one video with its description and tracklist.
@@ -111,7 +114,10 @@ func orderNames() string {
 // listVideos answers a page of the available videos some playlist holds.
 // playlist keeps the videos that playlist holds, min_seconds and max_seconds
 // bound the duration, artist keeps the videos with an artist whose name
-// contains it ignoring case and accents, and sort names the order.
+// contains it ignoring case and accents, verdict keeps the videos whose latest
+// verdict is up or down or that have none (unrated), tag keeps the videos a
+// rating tagged with it, note keeps the videos a note of contains it ignoring
+// case and accents, and sort names the order.
 //
 // A random order comes out new on every request, so it is a draw rather than a
 // page of a standing list: it answers limit videos, every video when limit is
@@ -136,6 +142,13 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	artist := r.URL.Query().Get("artist")
+	verdict := r.URL.Query().Get("verdict")
+	if verdict != "" && verdict != verdictUp && verdict != verdictDown && verdict != verdictUnrated {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "verdict %q is not up, down or unrated", verdict)
+		return
+	}
+	tag := strings.ToLower(strings.Join(strings.Fields(r.URL.Query().Get("tag")), " "))
+	note := r.URL.Query().Get("note")
 	limit, ok := limitParam(w, r, videosPage)
 	if !ok {
 		return
@@ -149,6 +162,7 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 	var rows []generated.ListLibraryVideosRow
 	var artists []generated.ListVideoArtistsRow
 	var playlists []generated.ListVideoPlaylistsRow
+	var opinions videoOpinions
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		if filter.PlaylistID.Valid {
 			id, err := resolvePlaylist(ctx, q, "playlist", filter.PlaylistID.String, loosely)
@@ -162,6 +176,9 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if artists, err = q.ListVideoArtists(ctx, sql.NullString{}); err != nil {
+			return err
+		}
+		if opinions, err = readOpinions(ctx, q, sql.NullString{}); err != nil {
 			return err
 		}
 		playlists, err = q.ListVideoPlaylists(ctx, sql.NullString{})
@@ -190,8 +207,19 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 			},
 			Artists:   orEmpty(artistsOf[row.VideoID]),
 			Playlists: orEmpty(playlistsOf[row.VideoID]),
+			Verdict:   opinions.verdict(row.VideoID),
+			Tags:      orEmpty(opinions.tags[row.VideoID]),
 		}
 		if artist != "" && !slices.ContainsFunc(v.Artists, func(a string) bool { return contains(matcher, a, artist) }) {
+			continue
+		}
+		if verdict != "" && !opinions.hasVerdict(row.VideoID, verdict) {
+			continue
+		}
+		if tag != "" && !slices.Contains(v.Tags, tag) {
+			continue
+		}
+		if note != "" && !contains(matcher, opinions.notes[row.VideoID], note) {
 			continue
 		}
 		videos = append(videos, v)
@@ -238,6 +266,7 @@ func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 	var tracks []generated.Track
 	var artists []generated.ListVideoArtistsRow
 	var playlists []generated.ListVideoPlaylistsRow
+	var opinions videoOpinions
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
 		var err error
 		if id, err = resolveVideo(ctx, q, ref); err != nil {
@@ -251,6 +280,9 @@ func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if artists, err = q.ListVideoArtists(ctx, only); err != nil {
+			return err
+		}
+		if opinions, err = readOpinions(ctx, q, only); err != nil {
 			return err
 		}
 		playlists, err = q.ListVideoPlaylists(ctx, only)
@@ -275,6 +307,8 @@ func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 			},
 			Artists:   orEmpty(groupArtists(artists, c)[id]),
 			Playlists: orEmpty(groupPlaylists(playlists, c)[id]),
+			Verdict:   opinions.verdict(id),
+			Tags:      orEmpty(opinions.tags[id]),
 		},
 		Description: nullableText(stored.Description),
 		Tracks:      make([]track, len(tracks)),
@@ -340,4 +374,63 @@ func orEmpty[T any](s []T) []T {
 		return []T{}
 	}
 	return s
+}
+
+// verdictUnrated is what the verdict filter takes for a video no rating gave
+// an up or down.
+const verdictUnrated = "unrated"
+
+// videoOpinions is what ratings said of each video: its latest verdict, its
+// notes joined, and its tags without repeats, alphabetically.
+type videoOpinions struct {
+	verdicts map[string]string
+	notes    map[string]string
+	tags     map[string][]string
+}
+
+// readOpinions is what ratings said of every video, or of the video only names
+// when it is valid.
+func readOpinions(ctx context.Context, q *generated.Queries, only sql.NullString) (videoOpinions, error) {
+	opinions := videoOpinions{verdicts: map[string]string{}, notes: map[string]string{}, tags: map[string][]string{}}
+	rows, err := q.ListVideoOpinions(ctx)
+	if err != nil {
+		return opinions, err
+	}
+	for _, row := range rows {
+		if row.Verdict.Valid {
+			opinions.verdicts[row.VideoID] = row.Verdict.String
+		}
+		opinions.notes[row.VideoID] = row.Notes
+	}
+	tagRows, err := q.ListRatingTags(ctx, only)
+	if err != nil {
+		return opinions, err
+	}
+	for _, row := range tagRows {
+		if !slices.Contains(opinions.tags[row.VideoID], row.Tag) {
+			opinions.tags[row.VideoID] = append(opinions.tags[row.VideoID], row.Tag)
+		}
+	}
+	for _, tags := range opinions.tags {
+		slices.Sort(tags)
+	}
+	return opinions, nil
+}
+
+func (o videoOpinions) verdict(videoID string) *string {
+	v, ok := o.verdicts[videoID]
+	if !ok {
+		return nil
+	}
+	return &v
+}
+
+// hasVerdict reports whether the video's latest verdict is want, unrated
+// matching a video with none.
+func (o videoOpinions) hasVerdict(videoID, want string) bool {
+	v, ok := o.verdicts[videoID]
+	if want == verdictUnrated {
+		return !ok
+	}
+	return v == want
 }

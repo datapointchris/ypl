@@ -28,5 +28,11 @@
     ],
     "tracklist_reads_last_hour": 0,
     "probe_misses_last_day": 0
+  },
+  "youtube_session": {
+    "stored_ts": "2026-09-17T12:00:00Z",
+    "last_ok_ts": "2026-09-17T12:00:00Z",
+    "last_refused_ts": null,
+    "last_error": null
   }
 }

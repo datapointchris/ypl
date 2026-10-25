@@ -545,6 +545,46 @@ func (q *Queries) GetPlaylistSummary(ctx context.Context, playlistID string) (Ge
 	return i, err
 }
 
+const getRating = `-- name: GetRating :one
+SELECT
+    r.rating_id,
+    r.verdict,
+    r.note,
+    r.rated_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM ratings AS r
+INNER JOIN videos AS v ON r.video_id = v.video_id
+WHERE r.rating_id = ?
+`
+
+type GetRatingRow struct {
+	RatingID     string
+	Verdict      sql.NullString
+	Note         sql.NullString
+	RatedTs      string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// A rating with its video.
+func (q *Queries) GetRating(ctx context.Context, ratingID string) (GetRatingRow, error) {
+	row := q.db.QueryRowContext(ctx, getRating, ratingID)
+	var i GetRatingRow
+	err := row.Scan(
+		&i.RatingID,
+		&i.Verdict,
+		&i.Note,
+		&i.RatedTs,
+		&i.VideoID,
+		&i.Title,
+		&i.ChannelTitle,
+	)
+	return i, err
+}
+
 const getSyncRun = `-- name: GetSyncRun :one
 SELECT
     run_id,
@@ -629,6 +669,38 @@ func (q *Queries) GetVideo(ctx context.Context, videoID string) (Video, error) {
 		&i.UploadDate,
 		&i.IsUnavailable,
 		&i.EnrichedTs,
+	)
+	return i, err
+}
+
+const getYouTubeSession = `-- name: GetYouTubeSession :one
+SELECT
+    cookie_jar,
+    stored_ts,
+    last_ok_ts,
+    last_refused_ts,
+    last_error
+FROM youtube_session
+WHERE session_id = 1
+`
+
+type GetYouTubeSessionRow struct {
+	CookieJar     string
+	StoredTs      string
+	LastOkTs      sql.NullString
+	LastRefusedTs sql.NullString
+	LastError     sql.NullString
+}
+
+func (q *Queries) GetYouTubeSession(ctx context.Context) (GetYouTubeSessionRow, error) {
+	row := q.db.QueryRowContext(ctx, getYouTubeSession)
+	var i GetYouTubeSessionRow
+	err := row.Scan(
+		&i.CookieJar,
+		&i.StoredTs,
+		&i.LastOkTs,
+		&i.LastRefusedTs,
+		&i.LastError,
 	)
 	return i, err
 }
@@ -773,6 +845,52 @@ func (q *Queries) InsertPlay(ctx context.Context, arg InsertPlayParams) (int64, 
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const insertRating = `-- name: InsertRating :execrows
+INSERT INTO ratings (rating_id, video_id, verdict, note, rated_ts)
+VALUES (?1, ?2, ?3, ?4, ?5)
+ON CONFLICT (rating_id) DO NOTHING
+`
+
+type InsertRatingParams struct {
+	RatingID string
+	VideoID  string
+	Verdict  sql.NullString
+	Note     sql.NullString
+	RatedTs  string
+}
+
+// Records a rating, and records nothing when one with that id is already
+// stored.
+func (q *Queries) InsertRating(ctx context.Context, arg InsertRatingParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertRating,
+		arg.RatingID,
+		arg.VideoID,
+		arg.Verdict,
+		arg.Note,
+		arg.RatedTs,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const insertRatingTag = `-- name: InsertRatingTag :exec
+INSERT INTO rating_tags (rating_id, tag)
+VALUES (?1, ?2)
+ON CONFLICT DO NOTHING
+`
+
+type InsertRatingTagParams struct {
+	RatingID string
+	Tag      string
+}
+
+func (q *Queries) InsertRatingTag(ctx context.Context, arg InsertRatingTagParams) error {
+	_, err := q.db.ExecContext(ctx, insertRatingTag, arg.RatingID, arg.Tag)
+	return err
 }
 
 const insertSyncFailure = `-- name: InsertSyncFailure :exec
@@ -1703,6 +1821,124 @@ func (q *Queries) ListPlaysByTail(ctx context.Context, tail string) ([]ListPlays
 	return items, nil
 }
 
+const listRatingTags = `-- name: ListRatingTags :many
+SELECT
+    rt.rating_id,
+    r.video_id,
+    rt.tag
+FROM rating_tags AS rt
+INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
+WHERE CAST(?1 AS TEXT) IS NULL OR r.video_id = ?1
+`
+
+type ListRatingTagsRow struct {
+	RatingID string
+	VideoID  string
+	Tag      string
+}
+
+// The tags of every rating, or of the ratings of the video video_id only when it
+// is not NULL, in no order.
+func (q *Queries) ListRatingTags(ctx context.Context, videoID sql.NullString) ([]ListRatingTagsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRatingTags, videoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRatingTagsRow
+	for rows.Next() {
+		var i ListRatingTagsRow
+		if err := rows.Scan(&i.RatingID, &i.VideoID, &i.Tag); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRatings = `-- name: ListRatings :many
+SELECT
+    r.rating_id,
+    r.verdict,
+    r.note,
+    r.rated_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM ratings AS r
+INNER JOIN videos AS v ON r.video_id = v.video_id
+WHERE
+    (CAST(?1 AS TEXT) IS NULL OR r.video_id = ?1)
+    AND (
+        CAST(?2 AS TEXT) IS NULL
+        OR (r.rated_ts, r.rating_id) < (?2, ?3)
+    )
+ORDER BY r.rated_ts DESC, r.rating_id DESC
+LIMIT ?4
+`
+
+type ListRatingsParams struct {
+	VideoID  sql.NullString
+	BeforeTs sql.NullString
+	BeforeID sql.NullString
+	MaxRows  int64
+}
+
+type ListRatingsRow struct {
+	RatingID     string
+	Verdict      sql.NullString
+	Note         sql.NullString
+	RatedTs      string
+	VideoID      string
+	Title        string
+	ChannelTitle string
+}
+
+// Ratings newest first, each with its video: of the video video_id only when
+// it is not NULL, and only those after the rating at before_ts with the id
+// before_id when those are not NULL.
+func (q *Queries) ListRatings(ctx context.Context, arg ListRatingsParams) ([]ListRatingsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRatings,
+		arg.VideoID,
+		arg.BeforeTs,
+		arg.BeforeID,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRatingsRow
+	for rows.Next() {
+		var i ListRatingsRow
+		if err := rows.Scan(
+			&i.RatingID,
+			&i.Verdict,
+			&i.Note,
+			&i.RatedTs,
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSuggestions = `-- name: ListSuggestions :many
 SELECT
     v.video_id,
@@ -1947,6 +2183,45 @@ func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBefore
 	return items, nil
 }
 
+const listTagCounts = `-- name: ListTagCounts :many
+SELECT
+    rt.tag,
+    CAST(count(DISTINCT r.video_id) AS INTEGER) AS videos
+FROM rating_tags AS rt
+INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
+GROUP BY rt.tag
+ORDER BY videos DESC, rt.tag
+`
+
+type ListTagCountsRow struct {
+	Tag    string
+	Videos int64
+}
+
+// Every tag with how many videos carry it, most carried first.
+func (q *Queries) ListTagCounts(ctx context.Context) ([]ListTagCountsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTagCounts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTagCountsRow
+	for rows.Next() {
+		var i ListTagCountsRow
+		if err := rows.Scan(&i.Tag, &i.Videos); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTrackTexts = `-- name: ListTrackTexts :many
 SELECT
     track_id,
@@ -2139,6 +2414,51 @@ func (q *Queries) ListVideoAvailability(ctx context.Context, videoIds []string) 
 	return items, nil
 }
 
+const listVideoOpinions = `-- name: ListVideoOpinions :many
+SELECT
+    r.video_id,
+    (
+        SELECT latest.verdict FROM ratings AS latest
+        WHERE latest.video_id = r.video_id AND latest.verdict IS NOT NULL
+        ORDER BY latest.rated_ts DESC, latest.rating_id DESC
+        LIMIT 1
+    ) AS verdict,
+    CAST(coalesce(group_concat(r.note, char(10)), '') AS TEXT) AS notes
+FROM (SELECT rating_id, video_id, verdict, note, rated_ts FROM ratings ORDER BY rated_ts, rating_id) AS r
+GROUP BY r.video_id
+`
+
+type ListVideoOpinionsRow struct {
+	VideoID string
+	Verdict sql.NullString
+	Notes   string
+}
+
+// Every rated video's latest verdict, NULL when no rating of it carried one,
+// and its notes joined by newlines, oldest first.
+func (q *Queries) ListVideoOpinions(ctx context.Context) ([]ListVideoOpinionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listVideoOpinions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVideoOpinionsRow
+	for rows.Next() {
+		var i ListVideoOpinionsRow
+		if err := rows.Scan(&i.VideoID, &i.Verdict, &i.Notes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVideoPlaylists = `-- name: ListVideoPlaylists :many
 SELECT DISTINCT
     pe.video_id,
@@ -2308,6 +2628,41 @@ func (q *Queries) ListVideosWithoutLength(ctx context.Context, maxRows int64) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordYouTubeSessionOK = `-- name: RecordYouTubeSessionOK :exec
+UPDATE youtube_session SET
+    cookie_jar = ?1,
+    last_ok_ts = ?2
+WHERE session_id = 1
+`
+
+type RecordYouTubeSessionOKParams struct {
+	CookieJar string
+	ReadTs    sql.NullString
+}
+
+// Keeps the jar yt-dlp wrote back after a read YouTube answered signed in.
+func (q *Queries) RecordYouTubeSessionOK(ctx context.Context, arg RecordYouTubeSessionOKParams) error {
+	_, err := q.db.ExecContext(ctx, recordYouTubeSessionOK, arg.CookieJar, arg.ReadTs)
+	return err
+}
+
+const recordYouTubeSessionRefused = `-- name: RecordYouTubeSessionRefused :exec
+UPDATE youtube_session SET
+    last_refused_ts = ?1,
+    last_error = ?2
+WHERE session_id = 1
+`
+
+type RecordYouTubeSessionRefusedParams struct {
+	ReadTs    sql.NullString
+	LastError sql.NullString
+}
+
+func (q *Queries) RecordYouTubeSessionRefused(ctx context.Context, arg RecordYouTubeSessionRefusedParams) error {
+	_, err := q.db.ExecContext(ctx, recordYouTubeSessionRefused, arg.ReadTs, arg.LastError)
+	return err
 }
 
 const seedVideo = `-- name: SeedVideo :exec
@@ -2515,6 +2870,28 @@ type SetVideoLengthParams struct {
 // Stores the length of a video the store holds none for.
 func (q *Queries) SetVideoLength(ctx context.Context, arg SetVideoLengthParams) error {
 	_, err := q.db.ExecContext(ctx, setVideoLength, arg.DurationSeconds, arg.VideoID)
+	return err
+}
+
+const setYouTubeSession = `-- name: SetYouTubeSession :exec
+INSERT INTO youtube_session (session_id, cookie_jar, stored_ts, last_ok_ts, last_refused_ts, last_error)
+VALUES (1, ?1, ?2, ?2, NULL, NULL)
+ON CONFLICT (session_id) DO UPDATE SET
+    cookie_jar = excluded.cookie_jar,
+    stored_ts = excluded.stored_ts,
+    last_ok_ts = excluded.last_ok_ts,
+    last_refused_ts = NULL,
+    last_error = NULL
+`
+
+type SetYouTubeSessionParams struct {
+	CookieJar string
+	StoredTs  string
+}
+
+// Replaces the session with a new cookie jar, read signed in at stored_ts.
+func (q *Queries) SetYouTubeSession(ctx context.Context, arg SetYouTubeSessionParams) error {
+	_, err := q.db.ExecContext(ctx, setYouTubeSession, arg.CookieJar, arg.StoredTs)
 	return err
 }
 

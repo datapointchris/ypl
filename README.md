@@ -112,7 +112,8 @@ Exit codes are 0 for success, 2 for an invocation the CLI would not accept, and 
 ran and failed. Three commands also spend 1 on a real state, after writing their answer: `ypl now`
 when nothing is playing, `ypl next` when there is nothing to suggest, and `ypl auth status` when
 this machine is not logged in. A status bar can run any of them unguarded. `ypl server status`
-spends 3 on a sync that has stopped keeping up.
+spends 3 on a sync that has stopped keeping up, and on a YouTube session that last read the watch
+history signed out.
 
 `--no-input` forbids every prompt, so a script can take the non-interactive path from a terminal. A
 delete then needs `--yes`. An edit then needs its buffer piped in.
@@ -127,6 +128,7 @@ delete then needs `--yes`. An edit then needs its buffer piped in.
 | Make, retitle, delete or reorder a playlist | `playlists create`, `rename`, `delete`, `edit` | the server, which writes to YouTube |
 | Which mixes run three hours, or name an artist | `videos` | the server's tracklists and lengths |
 | What have I heard lately | `plays` | the server's listening history |
+| What did I think of this mix, wherever it is playing | `rate`, `ratings`, `tags` | the account's watch history, then the server's ratings |
 | Is the mirror keeping up with YouTube | `server` | the server's syncs and the day's quota |
 | Where this machine is pointed, and whether it is logged in | `auth status`, `config show` | the config file and this machine's keychain |
 | Is a newer release out | `update` | this repository's `cli/v*` releases |
@@ -171,6 +173,32 @@ or by part of its title. `ypl plays delete` asks first. `--yes` answers for it. 
 number is never given to another play, so a number typed from an old listing finds nothing rather
 than a different listen. Its id is never stored again either, so a retry arriving after the delete
 cannot record the play a second time.
+
+## `rate` — a verdict, a note or tags on a mix, picked from the watch history
+
+```bash
+ypl rate                                     # offers the newest mixes in the watch history, then asks
+ypl rate --up                                # pick the mix, and rate it up without being asked
+ypl rate 'mayan warrior' --note 'too much talk'  # a note with no verdict, by part of the title
+ypl videos list --verdict down               # the mixes to trim
+ypl videos list --tag sunrise --note closing # tags and notes are what a mix is found by later
+ypl tags list                                # every tag, with how many mixes carry it
+```
+
+A rating is about the mix, never a track inside it. It carries a verdict of up or down, a note,
+free-form tags, or any of them. Ratings are appended, so a mix's verdict is its latest up or down,
+and a note on its own leaves the verdict standing.
+
+At a terminal with no mix named, `ypl rate` reads YouTube's watch history through the server. Every
+player signed into the channel's account writes to it, so a mix playing in a browser on another
+machine is the first one offered. A history that cannot be read is said on stderr, and the picker
+goes straight to a search of the library. Without a terminal, name the mix and give the flags.
+
+The server reads the history with a signed-in cookie jar, which `ypl server cookies set <file>`
+sends. `ypl server cookies set --help` gives the export steps. The jar has to come from a private
+window that is closed afterwards, because YouTube rotates the cookies of a session a browser keeps
+open. The server keeps the jar fresh itself after that, and `ypl server status` says when YouTube
+stops honoring it.
 
 ## `playlists` — a change takes the whole name, and reaches YouTube before it answers
 

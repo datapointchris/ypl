@@ -50,6 +50,8 @@ type Handlers struct {
 	// draining is closed once Drain is called.
 	draining  chan struct{}
 	drainOnce sync.Once
+	// history reads the watch history, and is nil on a server with no yt-dlp.
+	history *historyReads
 }
 
 // Sync is what the API knows of the server's sync: who to tell that an edit
@@ -103,6 +105,11 @@ func (h *Handlers) routes() []route {
 		{http.MethodGet, "/api/v1/plays", h.listPlays},
 		{http.MethodGet, "/api/v1/plays/{id}", h.showPlay},
 		{http.MethodDelete, "/api/v1/plays/{id}", h.deletePlay},
+		{http.MethodPost, "/api/v1/ratings", h.createRating},
+		{http.MethodGet, "/api/v1/ratings", h.listRatings},
+		{http.MethodGet, "/api/v1/tags", h.listTags},
+		{http.MethodGet, "/api/v1/history", h.listHistory},
+		{http.MethodPut, "/api/v1/youtube/session", h.setSession},
 		{http.MethodGet, "/api/v1/suggestions", h.listSuggestions},
 		{http.MethodGet, "/api/v1/sync/runs", h.listSyncRuns},
 		{http.MethodGet, "/api/v1/status", h.showStatus},
@@ -304,6 +311,8 @@ const everyRow = math.MaxInt64
 
 var (
 	playsPage       = pageSize{fallback: 20, most: 100}
+	ratingsPage     = pageSize{fallback: 20, most: 100}
+	historyPage     = pageSize{fallback: 5, most: historyDepth}
 	runsPage        = pageSize{fallback: 20, most: 100}
 	suggestionsDraw = pageSize{fallback: 1, most: 100}
 	videosPage      = pageSize{fallback: everyRow, most: 100}

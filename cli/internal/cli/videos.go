@@ -34,10 +34,12 @@ func (a *app) videosListCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List videos, filtered by length, artist or playlist",
+		Short: "List videos, filtered by length, artist, playlist or rating",
 		Example: "  ypl videos list --min-minutes 180         videos three hours long or more\n" +
 			"  ypl videos list --artist bjork            videos whose tracklist names Björk\n" +
 			"  ypl videos list --sort newest --limit 10  the ten latest uploads\n" +
+			"  ypl videos list --verdict down            the mixes to trim\n" +
+			"  ypl videos list --tag sunrise             the mixes you tagged sunrise\n" +
 			"  ypl videos list --json                    the whole library, for a script",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -77,6 +79,10 @@ func (a *app) videosListCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&filter.Playlist, "playlist", "", "Only the videos this playlist holds, by title or id")
 	cmd.Flags().StringVar(&filter.Artist, "artist", "", "Only videos whose tracklist names an artist holding this, ignoring case and accents")
+	cmd.Flags().StringVar(&filter.Verdict, "verdict", "", "Only videos whose latest verdict is up or down, or unrated for those with none")
+	cmd.Flags().StringVar(&filter.Tag, "tag", "", "Only videos a rating tagged with this")
+	cmd.Flags().StringVar(&filter.Note, "note", "", "Only videos with a note holding this, ignoring case and accents")
+	completeFlag(cmd, "verdict", cobra.FixedCompletions([]string{"up", "down", "unrated"}, cobra.ShellCompDirectiveNoFileComp))
 	addMinutes(cmd, "min-minutes", &minMinutes, "Only videos at least this many minutes long; a video whose length is unknown is left out")
 	addMinutes(cmd, "max-minutes", &maxMinutes, "Only videos at most this many minutes long; a video whose length is unknown is left out")
 	cmd.Flags().StringVar(&filter.Sort, "sort", "", "The order: "+strings.Join(api.VideoSorts, ", ")+" (default "+api.VideoSorts[0]+"); newest and oldest go by upload date, and random under --limit draws at most "+strconv.Itoa(api.PageSize))
@@ -164,10 +170,11 @@ func printVideos(out io.Writer, width int, videos []api.LibraryVideo) {
 			video.ChannelTitle,
 			clock(video.DurationSeconds),
 			strconv.FormatInt(video.TrackCount, 10),
+			text(video.Verdict),
 			firstArtists(video.Artists),
 		}
 	}
-	table(out, width, []column{whole("VIDEO"), prose("TITLE"), detail("CHANNEL"), whole("LENGTH"), whole("TRACKS"), detail("ARTISTS")}, rows)
+	table(out, width, []column{whole("VIDEO"), prose("TITLE"), detail("CHANNEL"), whole("LENGTH"), whole("TRACKS"), whole("VERDICT"), detail("ARTISTS")}, rows)
 }
 
 // shownArtists is how many artists a row of the library names. A mix's
@@ -199,6 +206,12 @@ func printVideo(out io.Writer, width int, video api.Video) {
 			titles[i] = playlist.Title
 		}
 		_, _ = fmt.Fprintf(out, "In %s\n", strings.Join(titles, ", "))
+	}
+	if video.Verdict != nil {
+		_, _ = fmt.Fprintf(out, "Rated %s\n", *video.Verdict)
+	}
+	if len(video.Tags) > 0 {
+		_, _ = fmt.Fprintf(out, "Tagged %s\n", strings.Join(video.Tags, ", "))
 	}
 	// A video YouTube will not serve is never read again — the enrichment queue
 	// filters it out — so promising a later run would be telling a reader to
