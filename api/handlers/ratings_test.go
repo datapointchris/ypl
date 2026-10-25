@@ -33,35 +33,35 @@ func ratingBody(n int, video, rest string) string {
 	return fmt.Sprintf(`{"id": "01920000-0000-7000-8000-%012d", "video_id": %q%s}`, n, video, rest)
 }
 
-func TestAVideosVerdictIsItsLatestUpOrDownAndANoteLeavesIt(t *testing.T) {
+func TestEveryRatingIsKeptAndTheListFiltersByKindTagAndText(t *testing.T) {
 	f := newFixture(t)
 	f.withLibrary(t)
 	for i, rest := range []string{
-		`, "verdict": "down"`,
-		`, "verdict": "up", "tags": [" Deep  House ", "deep house", "Sunrise"]`,
-		`, "note": "great closing hour"`,
+		`, "kind": "dislike"`,
+		`, "kind": "like", "message": "great closing hour", "tags": [" Deep  House ", "deep house", "Sunrise"]`,
+		`, "kind": "note", "message": "too much talk early on"`,
 	} {
 		f.now = f.now.Add(time.Minute)
 		decode[rating](t, f.do(http.MethodPost, "/api/v1/ratings", ratingBody(i+1, "a", rest)), http.StatusCreated)
 	}
-	refused(t, f.do(http.MethodPost, "/api/v1/ratings", ratingBody(9, "b", "")), http.StatusUnprocessableEntity, wire.CodeRatingEmpty)
+	refused(t, f.do(http.MethodPost, "/api/v1/ratings", ratingBody(9, "b", `, "kind": "note"`)), http.StatusUnprocessableEntity, wire.CodeMessageRequired)
 
-	up := decode[page[libraryVideo]](t, f.get("/api/v1/videos?verdict=up&tag=deep%20house&note=CLOSING"), http.StatusOK)
-	if len(up.Data) != 1 || up.Data[0].ID != "a" || *up.Data[0].Verdict != "up" {
-		t.Fatalf("filtering by verdict, tag and note answered %+v, want video a rated up", up.Data)
+	liked := decode[page[libraryVideo]](t, f.get("/api/v1/videos?rated=like&tag=deep%20house&text=CLOSING"), http.StatusOK)
+	if len(liked.Data) != 1 || liked.Data[0].ID != "a" || liked.Data[0].Likes != 1 || liked.Data[0].Dislikes != 1 || liked.Data[0].Notes != 1 {
+		t.Fatalf("filtering by kind, tag and text answered %+v, want video a with one of each kind", liked.Data)
 	}
-	if got := up.Data[0].Tags; len(got) != 2 || got[0] != "deep house" || got[1] != "sunrise" {
+	if got := liked.Data[0].Tags; len(got) != 2 || got[0] != "deep house" || got[1] != "sunrise" {
 		t.Errorf("tags %v, want [deep house sunrise]", got)
 	}
-	unrated := decode[page[libraryVideo]](t, f.get("/api/v1/videos?verdict=unrated"), http.StatusOK)
+	shown := decode[video](t, f.get("/api/v1/videos/a"), http.StatusOK)
+	if len(shown.Ratings) != 3 || shown.Ratings[0].Kind != "note" || shown.Ratings[2].Kind != "dislike" {
+		t.Errorf("video a lists %+v, want all three ratings newest first", shown.Ratings)
+	}
+	unrated := decode[page[libraryVideo]](t, f.get("/api/v1/videos?rated=unrated"), http.StatusOK)
 	for _, v := range unrated.Data {
 		if v.ID == "a" {
 			t.Errorf("video a is listed as unrated")
 		}
-	}
-	tags := decode[[]tagCount](t, f.get("/api/v1/tags"), http.StatusOK)
-	if len(tags) != 2 || tags[0].Videos != 1 {
-		t.Errorf("tags answered %+v, want two each on one video", tags)
 	}
 }
 

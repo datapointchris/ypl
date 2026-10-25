@@ -952,8 +952,8 @@ LIMIT 1;
 -- name: InsertRating :execrows
 -- Records a rating, and records nothing when one with that id is already
 -- stored.
-INSERT INTO ratings (rating_id, video_id, verdict, note, rated_ts)
-VALUES (sqlc.arg(rating_id), sqlc.arg(video_id), sqlc.narg(verdict), sqlc.narg(note), sqlc.arg(rated_ts))
+INSERT INTO ratings (rating_id, video_id, kind, message, rated_ts)
+VALUES (sqlc.arg(rating_id), sqlc.arg(video_id), sqlc.arg(kind), sqlc.narg(message), sqlc.arg(rated_ts))
 ON CONFLICT (rating_id) DO NOTHING;
 
 -- name: InsertRatingTag :exec
@@ -965,8 +965,8 @@ ON CONFLICT DO NOTHING;
 -- A rating with its video.
 SELECT
     r.rating_id,
-    r.verdict,
-    r.note,
+    r.kind,
+    r.message,
     r.rated_ts,
     v.video_id,
     v.title,
@@ -981,8 +981,8 @@ WHERE r.rating_id = ?;
 -- before_id when those are not NULL.
 SELECT
     r.rating_id,
-    r.verdict,
-    r.note,
+    r.kind,
+    r.message,
     r.rated_ts,
     v.video_id,
     v.title,
@@ -1010,17 +1010,14 @@ INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
 WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR r.video_id = sqlc.narg(video_id);
 
 -- name: ListVideoOpinions :many
--- Every rated video's latest verdict, NULL when no rating of it carried one,
--- and its notes joined by newlines, oldest first.
+-- Every rated video's likes, dislikes and notes counted, and the messages of
+-- its ratings joined by newlines, oldest first.
 SELECT
     r.video_id,
-    (
-        SELECT latest.verdict FROM ratings AS latest
-        WHERE latest.video_id = r.video_id AND latest.verdict IS NOT NULL
-        ORDER BY latest.rated_ts DESC, latest.rating_id DESC
-        LIMIT 1
-    ) AS verdict,
-    CAST(coalesce(group_concat(r.note, char(10)), '') AS TEXT) AS notes
+    CAST(sum(r.kind = 'like') AS INTEGER) AS likes,
+    CAST(sum(r.kind = 'dislike') AS INTEGER) AS dislikes,
+    CAST(sum(r.kind = 'note') AS INTEGER) AS notes,
+    CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
 FROM (SELECT * FROM ratings ORDER BY rated_ts, rating_id) AS r
 GROUP BY r.video_id;
 

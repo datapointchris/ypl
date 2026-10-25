@@ -548,8 +548,8 @@ func (q *Queries) GetPlaylistSummary(ctx context.Context, playlistID string) (Ge
 const getRating = `-- name: GetRating :one
 SELECT
     r.rating_id,
-    r.verdict,
-    r.note,
+    r.kind,
+    r.message,
     r.rated_ts,
     v.video_id,
     v.title,
@@ -561,8 +561,8 @@ WHERE r.rating_id = ?
 
 type GetRatingRow struct {
 	RatingID     string
-	Verdict      sql.NullString
-	Note         sql.NullString
+	Kind         string
+	Message      sql.NullString
 	RatedTs      string
 	VideoID      string
 	Title        string
@@ -575,8 +575,8 @@ func (q *Queries) GetRating(ctx context.Context, ratingID string) (GetRatingRow,
 	var i GetRatingRow
 	err := row.Scan(
 		&i.RatingID,
-		&i.Verdict,
-		&i.Note,
+		&i.Kind,
+		&i.Message,
 		&i.RatedTs,
 		&i.VideoID,
 		&i.Title,
@@ -848,7 +848,7 @@ func (q *Queries) InsertPlay(ctx context.Context, arg InsertPlayParams) (int64, 
 }
 
 const insertRating = `-- name: InsertRating :execrows
-INSERT INTO ratings (rating_id, video_id, verdict, note, rated_ts)
+INSERT INTO ratings (rating_id, video_id, kind, message, rated_ts)
 VALUES (?1, ?2, ?3, ?4, ?5)
 ON CONFLICT (rating_id) DO NOTHING
 `
@@ -856,8 +856,8 @@ ON CONFLICT (rating_id) DO NOTHING
 type InsertRatingParams struct {
 	RatingID string
 	VideoID  string
-	Verdict  sql.NullString
-	Note     sql.NullString
+	Kind     string
+	Message  sql.NullString
 	RatedTs  string
 }
 
@@ -867,8 +867,8 @@ func (q *Queries) InsertRating(ctx context.Context, arg InsertRatingParams) (int
 	result, err := q.db.ExecContext(ctx, insertRating,
 		arg.RatingID,
 		arg.VideoID,
-		arg.Verdict,
-		arg.Note,
+		arg.Kind,
+		arg.Message,
 		arg.RatedTs,
 	)
 	if err != nil {
@@ -1865,8 +1865,8 @@ func (q *Queries) ListRatingTags(ctx context.Context, videoID sql.NullString) ([
 const listRatings = `-- name: ListRatings :many
 SELECT
     r.rating_id,
-    r.verdict,
-    r.note,
+    r.kind,
+    r.message,
     r.rated_ts,
     v.video_id,
     v.title,
@@ -1892,8 +1892,8 @@ type ListRatingsParams struct {
 
 type ListRatingsRow struct {
 	RatingID     string
-	Verdict      sql.NullString
-	Note         sql.NullString
+	Kind         string
+	Message      sql.NullString
 	RatedTs      string
 	VideoID      string
 	Title        string
@@ -1919,8 +1919,8 @@ func (q *Queries) ListRatings(ctx context.Context, arg ListRatingsParams) ([]Lis
 		var i ListRatingsRow
 		if err := rows.Scan(
 			&i.RatingID,
-			&i.Verdict,
-			&i.Note,
+			&i.Kind,
+			&i.Message,
 			&i.RatedTs,
 			&i.VideoID,
 			&i.Title,
@@ -2417,25 +2417,24 @@ func (q *Queries) ListVideoAvailability(ctx context.Context, videoIds []string) 
 const listVideoOpinions = `-- name: ListVideoOpinions :many
 SELECT
     r.video_id,
-    (
-        SELECT latest.verdict FROM ratings AS latest
-        WHERE latest.video_id = r.video_id AND latest.verdict IS NOT NULL
-        ORDER BY latest.rated_ts DESC, latest.rating_id DESC
-        LIMIT 1
-    ) AS verdict,
-    CAST(coalesce(group_concat(r.note, char(10)), '') AS TEXT) AS notes
-FROM (SELECT rating_id, video_id, verdict, note, rated_ts FROM ratings ORDER BY rated_ts, rating_id) AS r
+    CAST(sum(r.kind = 'like') AS INTEGER) AS likes,
+    CAST(sum(r.kind = 'dislike') AS INTEGER) AS dislikes,
+    CAST(sum(r.kind = 'note') AS INTEGER) AS notes,
+    CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
+FROM (SELECT rating_id, video_id, kind, message, rated_ts FROM ratings ORDER BY rated_ts, rating_id) AS r
 GROUP BY r.video_id
 `
 
 type ListVideoOpinionsRow struct {
-	VideoID string
-	Verdict sql.NullString
-	Notes   string
+	VideoID  string
+	Likes    int64
+	Dislikes int64
+	Notes    int64
+	Messages string
 }
 
-// Every rated video's latest verdict, NULL when no rating of it carried one,
-// and its notes joined by newlines, oldest first.
+// Every rated video's likes, dislikes and notes counted, and the messages of
+// its ratings joined by newlines, oldest first.
 func (q *Queries) ListVideoOpinions(ctx context.Context) ([]ListVideoOpinionsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listVideoOpinions)
 	if err != nil {
@@ -2445,7 +2444,13 @@ func (q *Queries) ListVideoOpinions(ctx context.Context) ([]ListVideoOpinionsRow
 	var items []ListVideoOpinionsRow
 	for rows.Next() {
 		var i ListVideoOpinionsRow
-		if err := rows.Scan(&i.VideoID, &i.Verdict, &i.Notes); err != nil {
+		if err := rows.Scan(
+			&i.VideoID,
+			&i.Likes,
+			&i.Dislikes,
+			&i.Notes,
+			&i.Messages,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

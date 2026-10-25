@@ -72,8 +72,8 @@ type PlaylistSort struct {
 type Rating struct {
 	RatingID string
 	VideoID  string
-	Verdict  sql.NullString
-	Note     sql.NullString
+	Kind     string
+	Message  sql.NullString
 	RatedTs  string
 }
 

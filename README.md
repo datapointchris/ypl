@@ -128,7 +128,7 @@ delete then needs `--yes`. An edit then needs its buffer piped in.
 | Make, retitle, delete or reorder a playlist | `playlists create`, `rename`, `delete`, `edit` | the server, which writes to YouTube |
 | Which mixes run three hours, or name an artist | `videos` | the server's tracklists and lengths |
 | What have I heard lately | `plays` | the server's listening history |
-| What did I think of this mix, wherever it is playing | `rate`, `ratings`, `tags` | the account's watch history, then the server's ratings |
+| What I said about a mix, wherever it is playing | `rate`, `ratings`, `tags`, `videos show` | the account's watch history, then the server's ratings |
 | Is the mirror keeping up with YouTube | `server` | the server's syncs and the day's quota |
 | Where this machine is pointed, and whether it is logged in | `auth status`, `config show` | the config file and this machine's keychain |
 | Is a newer release out | `update` | this repository's `cli/v*` releases |
@@ -174,20 +174,21 @@ number is never given to another play, so a number typed from an old listing fin
 than a different listen. Its id is never stored again either, so a retry arriving after the delete
 cannot record the play a second time.
 
-## `rate` — a verdict, a note or tags on a mix, picked from the watch history
+## `rate` — every like, dislike and note on a mix is kept, picked from the watch history
 
 ```bash
-ypl rate                                     # offers the newest mixes in the watch history, then asks
-ypl rate --up                                # pick the mix, and rate it up without being asked
-ypl rate 'mayan warrior' --note 'too much talk'  # a note with no verdict, by part of the title
-ypl videos list --verdict down               # the mixes to trim
-ypl videos list --tag sunrise --note closing # tags and notes are what a mix is found by later
-ypl tags list                                # every tag, with how many mixes carry it
+ypl rate                                        # offers the newest mixes in the watch history, then asks
+ypl rate --like -m 'great closing hour'         # pick the mix, and like it with a message
+ypl rate 'mayan warrior' --note -m 'too much talk'  # a note on one mix, by part of its title
+ypl videos show 'mayan warrior'                 # every rating of that mix, newest first
+ypl videos list --rated dislike                 # the mixes with a dislike
+ypl videos list --tag sunrise --text closing    # tags and messages are what a mix is found by later
+ypl tags list                                   # every tag, with how many mixes carry it
 ```
 
-A rating is about the mix, never a track inside it. It carries a verdict of up or down, a note,
-free-form tags, or any of them. Ratings are appended, so a mix's verdict is its latest up or down,
-and a note on its own leaves the verdict standing.
+A rating is about the mix, never a track inside it. It is a like, a dislike or a note, with a
+message and free-form tags. A note needs its message. A mix keeps every rating left on it, and
+nothing is worked out from them beyond counts, so the listing is the record.
 
 At a terminal with no mix named, `ypl rate` reads YouTube's watch history through the server. Every
 player signed into the channel's account writes to it, so a mix playing in a browser on another

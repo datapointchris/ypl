@@ -69,11 +69,11 @@ const (
 	CodeInvalidVideoID      Code = "invalid_video_id"
 	CodeVideoUnavailable    Code = "video_unavailable"
 	CodeInvalidRatingID     Code = "invalid_rating_id"
-	CodeInvalidVerdict      Code = "invalid_verdict"
-	CodeNoteTooLong         Code = "note_too_long"
+	CodeInvalidKind         Code = "invalid_kind"
+	CodeMessageRequired     Code = "message_required"
+	CodeMessageTooLong      Code = "message_too_long"
 	CodeTagTooLong          Code = "tag_too_long"
 	CodeTooManyTags         Code = "too_many_tags"
-	CodeRatingEmpty         Code = "rating_empty"
 	CodeInvalidCookieJar    Code = "invalid_cookie_jar"
 
 	// 428

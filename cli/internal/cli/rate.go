@@ -27,37 +27,48 @@ const searchTheLibrary = "search"
 
 func (a *app) rateCommand() *cobra.Command {
 	var (
-		up, down bool
-		note     string
-		tags     []string
-		asJSON   bool
+		like, dislike, note bool
+		message             string
+		tags                []string
+		asJSON              bool
 	)
 	cmd := &cobra.Command{
 		Use:     "rate [video]",
-		Short:   "Rate a mix up or down, or leave a note and tags on it",
+		Short:   "Like, dislike or leave a note on a mix, with a message and tags",
 		GroupID: groupRatings,
-		Long: "At a terminal with no video named, it offers the newest mixes in YouTube's watch\n" +
+		Long: "Each rating is kept, so a mix holds every like, dislike and note left on it,\n" +
+			"and `ypl videos show` lists them. A note needs a message; a like or a dislike\n" +
+			"may carry one.\n\n" +
+			"At a terminal with no video named, it offers the newest mixes in YouTube's watch\n" +
 			"history, which every player signed into the channel's account writes to, then a\n" +
-			"search of the library. It asks for each of the verdict, note and tags that no\n" +
-			"flag gave, and each may be left out, though one has to be given. A rating with\n" +
-			"no verdict leaves the mix's verdict as it was.\n\n" +
-			"Without a terminal, or under --no-input, name the video and give the flags.",
-		Example: "  ypl rate                                    pick what is playing, then rate it\n" +
-			"  ypl rate --up                               pick it, and rate it up\n" +
-			"  ypl rate dQw4w9WgXcQ --note 'too much talk'  a note, no verdict\n" +
-			"  ypl rate 'mayan warrior' --down --tag dark  by part of its title",
+			"search of the library. With no --like, --dislike or --note it then asks for the\n" +
+			"kind, the message and the tags.\n\n" +
+			"Without a terminal, or under --no-input, name the video and give the kind.",
+		Example: "  ypl rate                                       pick what is playing, then rate it\n" +
+			"  ypl rate --like -m 'great closing hour'        pick it, and like it\n" +
+			"  ypl rate dQw4w9WgXcQ --note -m 'too much talk'  a note on one mix\n" +
+			"  ypl rate 'mayan warrior' --dislike --tag dark  by part of its title",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if up && down {
-				return goclikit.UsageError(errors.New("--up and --down cannot both be given"))
+			kind := ""
+			for flag, given := range map[string]bool{"like": like, "dislike": dislike, "note": note} {
+				if !given {
+					continue
+				}
+				if kind != "" {
+					return goclikit.UsageError(errors.New("give one of --like, --dislike and --note"))
+				}
+				kind = flag
+			}
+			if kind == "note" && strings.TrimSpace(message) == "" {
+				return goclikit.UsageError(errors.New("a note needs --message"))
 			}
 			interactive := !forbidsInput(cmd) && a.terminalIn(cmd)
-			given := up || down || cmd.Flags().Changed("note") || cmd.Flags().Changed("tag")
 			if !interactive && len(args) == 0 {
 				return goclikit.UsageError(errors.New("name the video; only a terminal can pick it from the watch history"))
 			}
-			if !interactive && !given {
-				return goclikit.UsageError(errors.New("give --up, --down, --note or --tag; only a terminal is asked for them"))
+			if !interactive && kind == "" {
+				return goclikit.UsageError(errors.New("give --like, --dislike or --note; only a terminal is asked"))
 			}
 			client, err := a.client(cmd.Context())
 			if err != nil {
@@ -72,24 +83,14 @@ func (a *app) rateCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			rating := api.NewRating{VideoID: video.ID, Tags: tags}
-			switch {
-			case up:
-				rating.Verdict = ptr("up")
-			case down:
-				rating.Verdict = ptr("down")
+			rating := api.NewRating{VideoID: video.ID, Kind: kind, Tags: tags}
+			if strings.TrimSpace(message) != "" {
+				rating.Message = &message
 			}
-			if cmd.Flags().Changed("note") {
-				rating.Note = &note
-			}
-			if interactive && !given {
+			if kind == "" {
 				if err := askRating(cmd.Context(), client, video, &rating); err != nil {
 					return err
 				}
-			}
-			if rating.Verdict == nil && (rating.Note == nil || strings.TrimSpace(*rating.Note) == "") && len(rating.Tags) == 0 {
-				nothing(cmd, "Nothing was rated: no verdict, note or tag was given.")
-				return exitCode(1)
 			}
 			id, err := uuid.NewV7()
 			if err != nil {
@@ -107,10 +108,11 @@ func (a *app) rateCommand() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&up, "up", false, "Rate it up")
-	cmd.Flags().BoolVar(&down, "down", false, "Rate it down")
-	cmd.Flags().StringVar(&note, "note", "", "A note on the mix")
-	cmd.Flags().StringArrayVar(&tags, "tag", nil, "A tag for the mix (repeatable)")
+	cmd.Flags().BoolVar(&like, "like", false, "Like it")
+	cmd.Flags().BoolVar(&dislike, "dislike", false, "Dislike it")
+	cmd.Flags().BoolVar(&note, "note", false, "Leave a note on it, which needs --message")
+	cmd.Flags().StringVarP(&message, "message", "m", "", "What to say about it")
+	cmd.Flags().StringArrayVar(&tags, "tag", nil, "A tag for it (repeatable)")
 	addJSON(cmd, &asJSON, "the rating")
 	return goclikit.WithRecoveryHints(cmd, hintVideos)
 }
@@ -188,12 +190,15 @@ func searchVideo(ctx context.Context, client *api.Client) (api.PlayedVideo, erro
 	return api.PlayedVideo{}, errors.New("no video was chosen")
 }
 
-// askRating asks for the verdict, a note and tags, each of which may be left
-// out. Tags already used are offered to choose from, beside a line for new
-// ones.
+// askRating asks for the kind, the message and tags, starting from what the
+// flags gave. A note needs a message. Tags already used are offered to choose
+// from, beside a line for new ones.
 func askRating(ctx context.Context, client *api.Client, video api.PlayedVideo, rating *api.NewRating) error {
-	verdict := "up"
-	note := ""
+	kind := "like"
+	message := ""
+	if rating.Message != nil {
+		message = *rating.Message
+	}
 	fresh := ""
 	var chosen []string
 	used, err := client.ListTags(ctx)
@@ -201,12 +206,18 @@ func askRating(ctx context.Context, client *api.Client, video api.PlayedVideo, r
 		return reported(err)
 	}
 	fields := []huh.Field{
-		huh.NewSelect[string]().Title(video.Title).Description("Your verdict").Options(
-			huh.NewOption("Up", "up"),
-			huh.NewOption("Down", "down"),
-			huh.NewOption("No verdict, just a note or tags", ""),
-		).Height(5).Value(&verdict),
-		huh.NewText().Title("Note").Description("Optional").Value(&note),
+		huh.NewSelect[string]().Title(video.Title).Options(
+			huh.NewOption("Like", "like"),
+			huh.NewOption("Dislike", "dislike"),
+			huh.NewOption("Note", "note"),
+		).Height(4).Value(&kind),
+		huh.NewText().Title("Message").Description("Needed for a note, optional otherwise").Value(&message).
+			Validate(func(text string) error {
+				if kind == "note" && strings.TrimSpace(text) == "" {
+					return errors.New("a note needs a message")
+				}
+				return nil
+			}),
 	}
 	if len(used) > 0 {
 		options := make([]huh.Option[string], len(used))
@@ -219,11 +230,10 @@ func askRating(ctx context.Context, client *api.Client, video api.PlayedVideo, r
 	if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
 		return aborted(err)
 	}
-	if verdict != "" {
-		rating.Verdict = &verdict
-	}
-	if strings.TrimSpace(note) != "" {
-		rating.Note = &note
+	rating.Kind = kind
+	rating.Message = nil
+	if strings.TrimSpace(message) != "" {
+		rating.Message = &message
 	}
 	rating.Tags = append(rating.Tags, chosen...)
 	for tag := range strings.SplitSeq(fresh, ",") {
@@ -243,21 +253,16 @@ func aborted(err error) error {
 	return err
 }
 
-func ptr[T any](v T) *T { return &v }
-
 // describeRating is one line saying what a rating recorded.
 func describeRating(r api.Rating) string {
-	parts := []string{r.Video.Title}
-	if r.Verdict != nil {
-		parts = append(parts, "rated "+*r.Verdict)
-	}
-	if r.Note != nil {
-		parts = append(parts, "noted")
+	line := map[string]string{"like": "Liked ", "dislike": "Disliked ", "note": "Noted on "}[r.Kind] + r.Video.Title
+	if r.Message != nil {
+		line += ": " + *r.Message
 	}
 	if len(r.Tags) > 0 {
-		parts = append(parts, "tagged "+strings.Join(r.Tags, ", "))
+		line += " [" + strings.Join(r.Tags, ", ") + "]"
 	}
-	return strings.Join(parts, " · ")
+	return line
 }
 
 func (a *app) ratingsCommand() *cobra.Command {
@@ -265,7 +270,7 @@ func (a *app) ratingsCommand() *cobra.Command {
 		Use:     "ratings",
 		Short:   "What you said about mixes",
 		GroupID: groupRatings,
-		Long:    "`ypl rate` records a rating. A mix's verdict is its latest up or down.",
+		Long:    "`ypl rate` records a rating. `ypl videos show` lists every rating of one mix.",
 	}
 	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.ratingsListCommand())
@@ -316,12 +321,22 @@ func (a *app) ratingsListCommand() *cobra.Command {
 	return goclikit.WithRecoveryHints(cmd, hintVideos)
 }
 
+// printRatingsOf lists one mix's ratings, where the title would repeat on
+// every row.
+func printRatingsOf(out io.Writer, width int, ratings []api.Rating) {
+	rows := make([][]string, len(ratings))
+	for i, r := range ratings {
+		rows[i] = []string{r.RatedTs, r.Kind, text(r.Message), strings.Join(r.Tags, ", ")}
+	}
+	table(out, width, []column{whole("WHEN"), whole("KIND"), prose("MESSAGE"), detail("TAGS")}, rows)
+}
+
 func printRatings(out io.Writer, width int, ratings []api.Rating) {
 	rows := make([][]string, len(ratings))
 	for i, r := range ratings {
-		rows[i] = []string{r.RatedTs, text(r.Verdict), r.Video.Title, strings.Join(r.Tags, ", "), text(r.Note)}
+		rows[i] = []string{r.RatedTs, r.Kind, r.Video.Title, text(r.Message), strings.Join(r.Tags, ", ")}
 	}
-	table(out, width, []column{whole("WHEN"), whole("VERDICT"), prose("TITLE"), detail("TAGS"), detail("NOTE")}, rows)
+	table(out, width, []column{whole("WHEN"), whole("KIND"), prose("TITLE"), detail("MESSAGE"), detail("TAGS")}, rows)
 }
 
 func (a *app) tagsCommand() *cobra.Command {

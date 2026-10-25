@@ -5,24 +5,25 @@ import (
 	"strconv"
 )
 
-// Rating is one thing said about a mix: a verdict of up or down, a note, tags,
-// or any of them. A null verdict leaves the mix's standing verdict as it was.
+// Rating is one like, dislike or note left on a mix, with its message and
+// tags. A mix holds as many as were left.
 type Rating struct {
 	ID      string      `json:"id"`
 	RatedTs string      `json:"rated_ts"`
-	Verdict *string     `json:"verdict"`
-	Note    *string     `json:"note"`
+	Kind    string      `json:"kind"`
+	Message *string     `json:"message"`
 	Tags    []string    `json:"tags"`
 	Video   PlayedVideo `json:"video"`
 }
 
 // NewRating is what CreateRating sends. ID is a version 7 UUID the caller
-// makes, so a rating sent again after a lost answer is stored once.
+// makes, so a rating sent again after a lost answer is stored once. A note
+// needs a Message.
 type NewRating struct {
 	ID      string   `json:"id"`
 	VideoID string   `json:"video_id"`
-	Verdict *string  `json:"verdict"`
-	Note    *string  `json:"note"`
+	Kind    string   `json:"kind"`
+	Message *string  `json:"message"`
 	Tags    []string `json:"tags"`
 }
 
@@ -60,6 +61,9 @@ func (s *YouTubeSession) Refused() bool {
 func (c *Client) CreateRating(ctx context.Context, rating NewRating) (Rating, error) {
 	return post[Rating](ctx, c, "/api/v1/ratings", rating)
 }
+
+// RatingKinds is every kind of rating, as the server spells them.
+var RatingKinds = []string{"like", "dislike", "note"}
 
 // ListRatings is the newest limit ratings, of the video named by video when it
 // is not "".

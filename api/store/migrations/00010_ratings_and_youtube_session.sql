@@ -1,18 +1,20 @@
 -- +goose Up
 
--- One row per time a person rated or remarked on a mix. Rows are appended and
--- never edited, so a mix's verdict is its latest row with one, and a row
--- holding only a note or tags leaves that verdict as it was. rating_id is a
--- UUIDv7 the client generates, so an entry sent twice is stored once.
+-- One row per like, dislike or note a person left on a mix, as many as they
+-- like. Rows are appended and never edited, and nothing is derived from them
+-- but counts: the listing is the record. A like or a dislike may carry a
+-- message, and a note always does. rating_id is a UUIDv7 the client generates,
+-- so an entry sent twice is stored once.
 --
 -- rated_ts is an RFC 3339 timestamp in UTC to the second, as plays.played_ts.
 CREATE TABLE ratings (
     rating_id TEXT PRIMARY KEY,
     video_id TEXT NOT NULL REFERENCES videos (video_id),
-    verdict TEXT CHECK (verdict IN ('up', 'down')),
-    note TEXT CHECK (note IS NULL OR length(note) > 0),
+    kind TEXT NOT NULL CHECK (kind IN ('like', 'dislike', 'note')),
+    message TEXT CHECK (message IS NULL OR length(message) > 0),
     rated_ts TEXT NOT NULL
-    CHECK (rated_ts GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z')
+    CHECK (rated_ts GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'),
+    CHECK (kind != 'note' OR message IS NOT NULL)
 );
 
 CREATE INDEX ratings_by_video ON ratings (video_id, rated_ts);

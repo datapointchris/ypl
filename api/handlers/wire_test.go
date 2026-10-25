@@ -36,7 +36,7 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 	if played.Code != http.StatusCreated {
 		t.Fatalf("storing a play answered %d: %s", played.Code, played.Body)
 	}
-	if rated := f.do(http.MethodPost, "/api/v1/ratings", ratingBody(1, "a", `, "verdict": "up", "note": "n", "tags": ["deep"]`)); rated.Code != http.StatusCreated {
+	if rated := f.do(http.MethodPost, "/api/v1/ratings", ratingBody(1, "a", `, "kind": "like", "message": "n", "tags": ["deep"]`)); rated.Code != http.StatusCreated {
 		t.Fatalf("storing a rating answered %d: %s", rated.Code, rated.Body)
 	}
 	f.h.ReadHistoryWith(&fakeHistory{entries: []ytdlp.HistoryEntry{{ID: "a"}}})

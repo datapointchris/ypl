@@ -148,7 +148,7 @@ reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire t
 | `GET /api/v1/plays` | Plays newest first, a page at a time |
 | `GET /api/v1/plays/{id}` | One play |
 | `DELETE /api/v1/plays/{id}` | Nothing, once it has deleted the play |
-| `POST /api/v1/ratings` | The rating it records, from `{"id", "video_id", "verdict", "note", "tags"}` |
+| `POST /api/v1/ratings` | The rating it records, from `{"id", "video_id", "kind", "message", "tags"}` |
 | `GET /api/v1/ratings` | Ratings newest first, of one video under `video`, a page at a time |
 | `GET /api/v1/tags` | Every tag a rating carried, with how many videos carry it, most first |
 | `GET /api/v1/history` | The newest library videos in the account's watch history, up to `limit` |
@@ -194,13 +194,13 @@ A deleted play answers as deleted by every name it had. `GET /api/v1/plays/{id}`
 `POST /api/v1/plays` again answers 410 with `play_deleted`, so a retry arriving after the delete
 cannot store the play a second time. A name no play ever had answers 404.
 
-A rating is something said about a mix: a `verdict` of `up` or `down`, a `note`, `tags`, or any of
-them, and at least one. Ratings are appended and never edited. A video's verdict is its latest
-rating that carried one, so a rating with only a note or tags leaves it standing. Tags are
-lowercased with their whitespace collapsed, and a video's tags are every tag its ratings carried.
-`GET /api/v1/videos` and `GET /api/v1/videos/{id}` answer each video's `verdict` and `tags`, and
-the list narrows by `verdict` (`up`, `down` or `unrated`), `tag`, and `note`, which matches part of
-any of its notes ignoring case and accents. A rating's `id` is a client-made UUIDv7, as a play's is.
+A rating is a `like`, a `dislike` or a `note` left on a mix, with a `message` and `tags`. A note
+needs a message, and a like or a dislike may carry one. A mix holds every rating left on it, and
+nothing is derived from them but counts. Tags are lowercased with their whitespace collapsed.
+`GET /api/v1/videos` answers each video's `likes`, `dislikes` and `notes` counts and its `tags`, and
+`GET /api/v1/videos/{id}` adds every rating as `ratings`, newest first. The list narrows by `rated`
+(`like`, `dislike`, `note`, or `unrated` for none), `tag`, and `text`, which matches part of any
+rating's message ignoring case and accents. A rating's `id` is a client-made UUIDv7, as a play's is.
 
 The watch history is read through `yt-dlp` with a signed-in session, which is the one read made
 signed in. Every player signed into the channel's account writes to that history, so the newest

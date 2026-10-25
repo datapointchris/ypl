@@ -20,36 +20,38 @@ const maxRatingBody = 32 << 10
 
 // Bounds on what a rating carries.
 const (
-	maxNoteLength = 5000
-	maxTagLength  = 64
-	maxTags       = 20
+	maxMessageLength = 5000
+	maxTagLength     = 64
+	maxTags          = 20
 )
 
-// The verdicts a rating can carry.
+// The kinds of rating, the vocabulary ratings.kind draws from.
 const (
-	verdictUp   = "up"
-	verdictDown = "down"
+	kindLike    = "like"
+	kindDislike = "dislike"
+	kindNote    = "note"
 )
 
-// rating is one entry a person made about a mix: a verdict, a note, tags, or
-// any of those together. A null verdict leaves the mix's standing verdict as it
-// was.
+// rating is one like, dislike or note a person left on a mix, with its
+// message and tags. A mix holds as many as were left, and nothing is derived
+// from them but counts.
 type rating struct {
 	ID      string      `json:"id"`
 	RatedTs string      `json:"rated_ts"`
-	Verdict *string     `json:"verdict"`
-	Note    *string     `json:"note"`
+	Kind    string      `json:"kind"`
+	Message *string     `json:"message"`
 	Tags    []string    `json:"tags"`
 	Video   playedVideo `json:"video"`
 }
 
 // newRating is the body of POST /api/v1/ratings. ID is a UUIDv7 the client
-// generates, so sending the entry again stores it once.
+// generates, so sending the entry again stores it once. A note needs a
+// message, and a like or dislike may carry one.
 type newRating struct {
 	ID      string   `json:"id"`
 	VideoID string   `json:"video_id"`
-	Verdict *string  `json:"verdict"`
-	Note    *string  `json:"note"`
+	Kind    string   `json:"kind"`
+	Message *string  `json:"message"`
 	Tags    []string `json:"tags"`
 }
 
@@ -76,29 +78,25 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeVideoIDRequired, "video_id is required")
 		return
 	}
-	verdict := sql.NullString{}
-	if body.Verdict != nil {
-		if *body.Verdict != verdictUp && *body.Verdict != verdictDown {
-			wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeInvalidVerdict, "verdict %q is not up, down or null", *body.Verdict)
-			return
-		}
-		verdict = sql.NullString{String: *body.Verdict, Valid: true}
+	if body.Kind != kindLike && body.Kind != kindDislike && body.Kind != kindNote {
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeInvalidKind, "kind %q is not like, dislike or note", body.Kind)
+		return
 	}
-	note := sql.NullString{}
-	if body.Note != nil {
-		trimmed := strings.TrimSpace(*body.Note)
-		if utf8.RuneCountInString(trimmed) > maxNoteLength {
-			wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeNoteTooLong, "a note holds at most %d characters", maxNoteLength)
+	message := sql.NullString{}
+	if body.Message != nil {
+		trimmed := strings.TrimSpace(*body.Message)
+		if utf8.RuneCountInString(trimmed) > maxMessageLength {
+			wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeMessageTooLong, "a message holds at most %d characters", maxMessageLength)
 			return
 		}
-		note = sql.NullString{String: trimmed, Valid: trimmed != ""}
+		message = sql.NullString{String: trimmed, Valid: trimmed != ""}
+	}
+	if body.Kind == kindNote && !message.Valid {
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeMessageRequired, "a note needs a message")
+		return
 	}
 	tags, ok := normalizedTags(w, body.Tags)
 	if !ok {
-		return
-	}
-	if !verdict.Valid && !note.Valid && len(tags) == 0 {
-		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeRatingEmpty, "a rating carries a verdict, a note or a tag")
 		return
 	}
 
@@ -112,7 +110,7 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		n, err := tx.InsertRating(ctx, generated.InsertRatingParams{
-			RatingID: body.ID, VideoID: body.VideoID, Verdict: verdict, Note: note, RatedTs: store.Timestamp(h.now()),
+			RatingID: body.ID, VideoID: body.VideoID, Kind: body.Kind, Message: message, RatedTs: store.Timestamp(h.now()),
 		})
 		if err != nil {
 			return err
@@ -261,8 +259,8 @@ func ratingFrom(row generated.ListRatingsRow, tags map[string][]string) rating {
 	return rating{
 		ID:      row.RatingID,
 		RatedTs: row.RatedTs,
-		Verdict: nullableText(row.Verdict),
-		Note:    nullableText(row.Note),
+		Kind:    row.Kind,
+		Message: nullableText(row.Message),
 		Tags:    orEmpty(tags[row.RatingID]),
 		Video:   playedVideo{ID: row.VideoID, Title: row.Title, ChannelTitle: row.ChannelTitle},
 	}
