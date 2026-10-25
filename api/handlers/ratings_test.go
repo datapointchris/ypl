@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/datapointchris/ypl/api/jarseal"
 	"github.com/datapointchris/ypl/api/wire"
 	"github.com/datapointchris/ypl/api/ytdlp"
 )
@@ -25,6 +27,16 @@ func (f *fakeHistory) History(_ context.Context, jar string, _ int) ([]ytdlp.His
 		return nil, "", f.err
 	}
 	return f.entries, jar + "# rotated\n", nil
+}
+
+// sealer is a jarseal.Sealer under a fixed test key.
+func sealer(t *testing.T) *jarseal.Sealer {
+	t.Helper()
+	s, err := jarseal.New("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 const cookieJar = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc\n"
@@ -75,7 +87,7 @@ func TestTheHistoryAnswersLibraryVideosAndAJarReadSignedOutIsReported(t *testing
 	f := newFixture(t)
 	f.withLibrary(t)
 	history := &fakeHistory{entries: []ytdlp.HistoryEntry{{ID: "zzzzzzzzzzz"}, {ID: "b"}, {ID: "a"}}}
-	f.h.ReadHistoryWith(history)
+	f.h.ReadHistoryWith(history, sealer(t))
 
 	refused(t, f.get("/api/v1/youtube/history"), http.StatusConflict, wire.CodeYouTubeSessionMissing)
 	decode[youtubeSession](t, f.do(http.MethodPut, "/api/v1/youtube/session", fmt.Sprintf(`{"cookie_jar": %q}`, cookieJar)), http.StatusOK)
@@ -83,6 +95,10 @@ func TestTheHistoryAnswersLibraryVideosAndAJarReadSignedOutIsReported(t *testing
 	entries := decode[[]historyEntry](t, f.get("/api/v1/youtube/history"), http.StatusOK)
 	if len(entries) != 2 || entries[0].Video.ID != "b" || entries[0].Position != 2 {
 		t.Fatalf("history answered %+v, want b at 2 then a, skipping the video outside the library", entries)
+	}
+	stored, err := f.st.Queries.GetYouTubeSession(t.Context())
+	if err != nil || strings.Contains(stored.CookieJar, "SID") {
+		t.Errorf("the store holds the jar as %q (%v), want it sealed", stored.CookieJar, err)
 	}
 	if history.reads != 1 {
 		t.Errorf("%d reads, want the session's own read reused", history.reads)

@@ -81,7 +81,8 @@ that session away. The jar is written to a mode-600 file in a directory removed 
 ends. The read keeps config and plugins out the way a video read does, and adds `--no-cache-dir`,
 so yt-dlp keeps nothing on disk between reads. Reads happen only when a person asks for the
 history, and none is made while enrichment's pause on a refusal of the address holds. Nothing else is handed to yt-dlp with the jar, and a video read never
-sees it.
+sees it. The store holds the jar sealed by `api/jarseal` under `YOUTUBE_COOKIE_KEY`, which reaches
+only the server's environment, so a backup of the store carries no usable session.
 
 The server needs yt-dlp only when it is configured to read videos. `ENRICH_PACE=off` is a
 supported configuration and starts without one. The server looks for yt-dlp at start whatever

@@ -10,7 +10,8 @@
 // (yt-dlp on PATH when unset), one video at a time, at least ENRICH_PACE apart
 // (90s when unset) and up to twice that at random. ENRICH_PACE=off reads no
 // video, and reading no video needs no yt-dlp. The same binary reads the watch
-// history with the cookie jar `ypl server cookies set` stores, when asked.
+// history with the cookie jar `ypl server cookies set` stores, when asked and
+// when YOUTUBE_COOKIE_KEY holds the key the jar is sealed under in the store.
 //
 // It answers /api/v1 only to a request carrying an access token the identity
 // provider OIDC_ISSUER signed for a client whose id starts with
@@ -41,6 +42,7 @@ import (
 
 	"github.com/datapointchris/ypl/api/enrich"
 	"github.com/datapointchris/ypl/api/handlers"
+	"github.com/datapointchris/ypl/api/jarseal"
 	"github.com/datapointchris/ypl/api/reconcile"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/wire"
@@ -133,10 +135,8 @@ func start(ctx context.Context) error {
 		return err
 	}
 	api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, slog.Default())
-	if history, err := ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp")); err == nil {
-		api.ReadHistoryWith(history)
-	} else {
-		slog.Warn("no yt-dlp, so the watch history is not read", "err", err)
+	if err := readHistory(api); err != nil {
+		return err
 	}
 	work := func(ctx context.Context) {
 		var wg sync.WaitGroup
@@ -321,6 +321,28 @@ func routes(ready func() error) *http.ServeMux {
 
 func probe(w http.ResponseWriter, code int, status string) {
 	wire.JSON(w, code, map[string]string{"status": status})
+}
+
+// readHistory has api read the watch history when yt-dlp is found and
+// YOUTUBE_COOKIE_KEY is set, and logs which is missing otherwise. A key that is
+// set and unusable stops the server.
+func readHistory(api *handlers.Handlers) error {
+	key := os.Getenv("YOUTUBE_COOKIE_KEY")
+	if key == "" {
+		slog.Warn("no YOUTUBE_COOKIE_KEY, so the watch history is not read")
+		return nil
+	}
+	sealer, err := jarseal.New(key)
+	if err != nil {
+		return fmt.Errorf("YOUTUBE_COOKIE_KEY: %w", err)
+	}
+	history, err := ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp"))
+	if err != nil {
+		slog.Warn("no yt-dlp, so the watch history is not read", "err", err)
+		return nil
+	}
+	api.ReadHistoryWith(history, sealer)
+	return nil
 }
 
 // envOr reads key, treating an empty value as unset. An exported empty PORT

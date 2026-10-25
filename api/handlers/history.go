@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/ypl/api/enrich"
+	"github.com/datapointchris/ypl/api/jarseal"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
 	"github.com/datapointchris/ypl/api/wire"
@@ -30,6 +31,7 @@ type HistoryReader interface {
 // time and only on request.
 type historyReads struct {
 	reader       HistoryReader
+	sealer       *jarseal.Sealer
 	mu           sync.Mutex
 	at           time.Time
 	last         []ytdlp.HistoryEntry
@@ -51,10 +53,11 @@ const historyDuration = 60 * time.Second
 // size of a jar of YouTube's cookies.
 const maxCookieBody = 256 << 10
 
-// ReadHistoryWith sets what the watch history is read through. Without it the
-// history and session routes answer 503.
-func (h *Handlers) ReadHistoryWith(reader HistoryReader) {
-	h.history = &historyReads{reader: reader}
+// ReadHistoryWith sets what the watch history is read through, and the sealer
+// the cookie jar is stored under. Without it the history and session routes
+// answer 503.
+func (h *Handlers) ReadHistoryWith(reader HistoryReader, sealer *jarseal.Sealer) {
+	h.history = &historyReads{reader: reader, sealer: sealer}
 }
 
 // historyEntry is a library video the watch history holds, at its place in the
@@ -175,13 +178,21 @@ func (h *Handlers) readHistory(ctx context.Context) ([]ytdlp.HistoryEntry, error
 	if h.now().Before(h.history.refusedUntil) {
 		return nil, fmt.Errorf("%w until %s", ytdlp.ErrRateLimited, store.Timestamp(h.history.refusedUntil))
 	}
-	entries, jar, err := h.readWith(ctx, session.CookieJar)
+	opened, err := h.history.sealer.Open(session.CookieJar)
+	if err != nil {
+		return nil, err
+	}
+	entries, jar, err := h.readWith(ctx, opened)
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := h.history.sealer.Seal(jar)
 	if err != nil {
 		return nil, err
 	}
 	err = h.store.InTx(ctx, func(tx *store.Tx) error {
 		return tx.RecordYouTubeSessionOK(ctx, generated.RecordYouTubeSessionOKParams{
-			CookieJar: jar, ReadTs: sql.NullString{String: store.Timestamp(h.now()), Valid: true},
+			CookieJar: sealed, ReadTs: sql.NullString{String: store.Timestamp(h.now()), Valid: true},
 		})
 	})
 	if err != nil {
@@ -220,6 +231,8 @@ func (h *Handlers) refuseHistory(w http.ResponseWriter, r *http.Request, err err
 		return false
 	case errors.Is(err, errNoSession):
 		wire.Refuse(w, http.StatusConflict, wire.CodeYouTubeSessionMissing, "the server holds no YouTube session; export a cookie jar and send it with `ypl server cookies set`")
+	case errors.Is(err, jarseal.ErrUnopenable):
+		wire.Refuse(w, http.StatusConflict, wire.CodeYouTubeSessionMissing, "the server's YouTube session was sealed under another key; export a cookie jar and send it with `ypl server cookies set`")
 	case errors.Is(err, ytdlp.ErrSignedOut):
 		wire.Refuse(w, http.StatusBadGateway, wire.CodeYouTubeSignedOut, "YouTube answered the watch history signed out; export the cookie jar again and send it with `ypl server cookies set`")
 	case errors.Is(err, ytdlp.ErrRateLimited):
@@ -257,9 +270,14 @@ func (h *Handlers) setSession(w http.ResponseWriter, r *http.Request) {
 	if h.refuseHistory(w, r, err) {
 		return
 	}
+	sealed, err := h.history.sealer.Seal(jar)
+	if err != nil {
+		h.writeInternalError(w, r, err)
+		return
+	}
 	storedTs := store.Timestamp(h.now())
 	err = h.store.InTx(ctx, func(tx *store.Tx) error {
-		return tx.SetYouTubeSession(ctx, generated.SetYouTubeSessionParams{CookieJar: jar, StoredTs: storedTs})
+		return tx.SetYouTubeSession(ctx, generated.SetYouTubeSessionParams{CookieJar: sealed, StoredTs: storedTs})
 	})
 	if err != nil {
 		h.writeInternalError(w, r, err)

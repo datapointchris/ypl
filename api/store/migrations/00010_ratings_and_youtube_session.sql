@@ -32,7 +32,8 @@ CREATE TABLE rating_tags (
 CREATE INDEX rating_tags_by_tag ON rating_tags (tag);
 
 -- The signed-in YouTube session the watch history is read with, as a Netscape
--- cookie jar. One row at most. yt-dlp writes the jar back after each read with
+-- cookie jar sealed by api/jarseal under a key the store never holds. One row
+-- at most. yt-dlp writes the jar back after each read with
 -- the cookies YouTube rotated, and the server stores that version, so the
 -- session lasts as long as nobody opens it in a browser.
 --

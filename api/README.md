@@ -11,7 +11,10 @@ each playlist's items, with an empty playlist still taking one.
 
 The server reads its settings from the environment, and refuses to start on one it cannot use.
 `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` name the OAuth client, and `YOUTUBE_REFRESH_TOKEN`
-is the channel's refresh token. All three are required. The server listens on `PORT`, 8080 when
+is the channel's refresh token. All three are required. `YOUTUBE_COOKIE_KEY`, the base64 of 32
+random bytes (`openssl rand -base64 32`), is what the watch-history cookie jar is sealed under in
+the store. Without it the history routes answer 503, and a value that is not such a key stops the
+server. The server listens on `PORT`, 8080 when
 unset. It keeps its store at `DATABASE_PATH`, or at `ypl/api.db` under `$XDG_DATA_HOME` when that
 is unset. The image sets `DATABASE_PATH` to `/var/db/ypl/ypl.db`, in a directory for the host to
 mount, since a store inside the container goes with the container. It also sets `TZ` to UTC, the
@@ -211,7 +214,9 @@ answers those the library holds. Reads are made only when asked for, one at a ti
 answers for a short window, since YouTube may suspend an account it sees read through `yt-dlp` too
 often.
 
-The session is a Netscape cookie jar, kept in the store. YouTube rotates the cookies of a session
+The session is a Netscape cookie jar, kept in the store sealed with AES-256-GCM under
+`YOUTUBE_COOKIE_KEY`, so a copy of the store carries no usable session. A jar sealed under another
+key answers 409 `youtube_session_missing`, and is replaced by sending one again. YouTube rotates the cookies of a session
 open in a browser, which invalidates an exported copy. So the jar is exported from a private window
 that is then closed, and no browser opens the session again. `ypl server cookies set --help` gives
 the steps.

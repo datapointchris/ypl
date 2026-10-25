@@ -46,8 +46,9 @@ running.
 # The server, once, from a clone of this repository
 export YOUTUBE_CLIENT_ID=… YOUTUBE_CLIENT_SECRET=…    # the channel's Google OAuth client
 export YOUTUBE_REFRESH_TOKEN=$(go -C api run ./cmd/authorize-youtube | jq -r .refresh_token)  # approve as the channel
+export YOUTUBE_COOKIE_KEY=$(openssl rand -base64 32)  # seals the watch-history session in the store
 docker run -d --name ypl -p 8080:8080 -v ypl-db:/var/db/ypl \
-  -e YOUTUBE_CLIENT_ID -e YOUTUBE_CLIENT_SECRET -e YOUTUBE_REFRESH_TOKEN \
+  -e YOUTUBE_CLIENT_ID -e YOUTUBE_CLIENT_SECRET -e YOUTUBE_REFRESH_TOKEN -e YOUTUBE_COOKIE_KEY \
   -e OIDC_ISSUER=https://auth.example.com -e PUBLIC_URL=https://ypl.example.com \
   ghcr.io/datapointchris/ypl-api:latest               # its first pass syncs every playlist
 curl -fsS https://ypl.example.com/ready               # 200 once it has read the identity provider
