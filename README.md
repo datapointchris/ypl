@@ -189,12 +189,13 @@ ypl tags list                                   # every tag, with how many mixes
 ypl ratings delete 3f9c2a1b                     # take one back, by the ID column of ratings list
 ```
 
-A rating is about the mix as a whole, and may say where in it the rating was left. It is a like, a dislike or a note, with a
-message and free-form tags. A note needs its message. A mix keeps every rating left on it, and
-nothing is worked out from them beyond counts, so the listing is the record. A rating can say
-where in the mix it was left, with `--at` or the form's last question. A mix picked from the watch
-history comes with YouTube's resume point already filled in, rounded to a whole percentage of the
-mix's length and kept marked `~` unless it is edited. A rating given by flags records only `--at`. `ypl videos show` then names the track playing there, from the mix's tracklist.
+A rating is about the mix as a whole. It is a like, a dislike or a note, with a message and
+free-form tags, and a note needs its message. A mix keeps every rating left on it, and nothing is
+worked out from them beyond counts, so the listing is the record. A rating can say where in the
+mix it was left, with `--at` or the form's last question. A mix picked from the watch history
+comes with YouTube's resume point already filled in, rounded to a whole percentage of the mix's
+length and marked `~` unless it is edited. A rating given by flags records only `--at`. `ypl videos
+show` then names the track playing at that position, from the mix's tracklist.
 
 At a terminal with no mix named, `ypl rate` reads YouTube's watch history through the server. Every
 player signed into the channel's account writes to it, so a mix playing in a browser on another

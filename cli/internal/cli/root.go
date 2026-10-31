@@ -27,8 +27,9 @@ var version = "dev"
 // previous tree's value.
 var apiOverride string
 
-// withAPIFlag declares --api on cmd and everything under it. Only the commands
-// that reach the server carry it, so one that never reads it does not offer it.
+// withAPIFlag declares --api on cmd and everything under it. `ypl auth logout`,
+// `ypl config path` and `ypl update` never reach the server, so they are built
+// without it.
 func withAPIFlag(cmd *cobra.Command) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&apiOverride, "api", "",
 		"Use this API instead of the config file's; it must trust the file's login server")

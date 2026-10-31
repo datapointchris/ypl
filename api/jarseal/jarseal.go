@@ -58,7 +58,8 @@ func (s *Sealer) Seal(jar string) (string, error) {
 	return prefix + base64.StdEncoding.EncodeToString(sealed), nil
 }
 
-// Open is the jar sealed holds, or ErrUnopenable.
+// Open returns the jar inside sealed, or ErrUnopenable when this key did not
+// seal it.
 func (s *Sealer) Open(sealed string) (string, error) {
 	encoded, ok := strings.CutPrefix(sealed, prefix)
 	if !ok {

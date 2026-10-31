@@ -69,7 +69,7 @@ type tagCount struct {
 	Videos int64  `json:"videos"`
 }
 
-// createRating records a rating, which answers 201. The same id sent again
+// createRating records a rating and answers 201. The same id sent again
 // answers 200 with the rating as stored.
 func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

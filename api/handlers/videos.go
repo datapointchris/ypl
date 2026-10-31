@@ -115,13 +115,16 @@ func orderNames() string {
 	return strings.Join(names, ", ")
 }
 
-// listVideos answers a page of the available videos some playlist holds.
-// playlist keeps the videos that playlist holds, min_seconds and max_seconds
-// bound the duration, artist keeps the videos with an artist whose name
-// contains it ignoring case and accents, rated keeps the videos with a rating
-// of that kind, or with none under unrated, tag keeps the videos a rating
-// tagged with it, text keeps the videos a rating's message of contains it
-// ignoring case and accents, and sort names the order.
+// listVideos answers a page of the available videos some playlist holds,
+// narrowed by each parameter given:
+//
+//   - playlist: the videos that playlist holds
+//   - min_seconds, max_seconds: bounds on the duration
+//   - artist: an artist's name contains it, ignoring case and accents
+//   - rated: a rating of that kind, or none at all under unrated
+//   - tag: a rating was tagged with it
+//   - text: a rating's message contains it, ignoring case and accents
+//   - sort: the order
 //
 // A random order comes out new on every request, so it is a draw rather than a
 // page of a standing list: it answers limit videos, every video when limit is
@@ -430,7 +433,6 @@ func readOpinions(ctx context.Context, q *generated.Queries, only sql.NullString
 	return opinions, nil
 }
 
-// fill sets v's counts and tags.
 func (o videoOpinions) fill(v *libraryVideo) {
 	counts := o.counts[v.ID]
 	v.Likes, v.Dislikes, v.Notes = counts.Likes, counts.Dislikes, counts.Notes

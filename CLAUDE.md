@@ -27,6 +27,7 @@ The CLI, on every workstation:
 | A browser | `pkg/browser` | Whatever `xdg-open` or `open` resolves to, once, during `ypl auth login` | A subprocess |
 | An editor | `cli/internal/editbuffer` | Whatever `$VISUAL` or `$EDITOR` names, holding the terminal, during `ypl playlists edit` | A subprocess, and the terminal until it exits |
 | mpv | `cli/internal/mpv` | mpv on `PATH`, holding the terminal, during `ypl play`; and its IPC socket at `$XDG_STATE_HOME/ypl/mpv.sock` during `ypl play` itself and `ypl now` | A subprocess, the terminal until it exits, and whatever mpv itself reaches |
+| fzf | `cli/internal/cli` | fzf on `PATH`, drawing on the terminal, during `ypl rate` with no video named | A subprocess, and the terminal until a mix is picked |
 
 mpv makes its own network requests, as yt-dlp does. What crosses to it is the watch URLs, the
 socket path, `--no-video` under `--audio`, and whatever `--mpv` was given — no credential, no token,
@@ -37,14 +38,14 @@ which is how mpv's IPC is asked anything and changes nothing about what is playi
 posted through the server door while mpv is still running, under an id made once, so a retry is
 stored once.
 
-In the server, only `api/ytdlp` starts a process. In the CLI there are four, `ypl auth login`,
-`ypl playlists edit`, `ypl play` and `ypl rate`, and each is handed streams for what it does. The
-browser launcher is given `os.DevNull`, because a pipe would keep the login blocked until the
-browser exits. The editor and mpv are given this process's own streams, because each draws an
-interface and takes keys, and a captured stream turns that interface into a string. fzf, which
-`ypl rate` picks a mix with, draws on the terminal itself, so its stdin carries the rows and its
-stdout the one chosen. Anything that needs more of what yt-dlp knows
-extends that package rather than running the binary somewhere else.
+In the server, only `api/ytdlp` starts a process, and anything that needs more of what yt-dlp
+knows extends that package rather than running the binary somewhere else. In the CLI there are
+four, `ypl auth login`, `ypl playlists edit`, `ypl play` and `ypl rate`, and each child gets the
+streams its interface needs. The browser launcher is given `os.DevNull`, because a pipe would keep
+the login blocked until the browser exits. The editor and mpv are given this process's own
+streams, because each draws an interface and takes keys, and a captured stream turns that
+interface into a string. fzf, which `ypl rate` picks a mix with, draws on the terminal itself, so
+its stdin carries the rows and its stdout the one chosen.
 
 The CLI is given no credential of the server's and no part of the store. What it holds is a token
 for one machine, revocable on its own without touching any other. A service running the CLI holds
@@ -83,9 +84,10 @@ so yt-dlp keeps nothing on disk between reads. It also adds `--write-pages`, whi
 history page in that directory, and `api/ytdlp` reads each entry's resume point from the page's
 `ytInitialData` before the directory goes. That parse is ours rather than yt-dlp's, so a page YouTube
 reshapes loses the resume points, never the history. Reads happen only when a person asks for the
-history, and none is made while enrichment's pause on a refusal of the address holds. Nothing else is handed to yt-dlp with the jar, and a video read never
-sees it. The store holds the jar sealed by `api/jarseal` under `YOUTUBE_COOKIE_KEY`, which reaches
-only the server's environment, so a backup of the store carries no usable session.
+history, and none is made while enrichment's pause on a refusal of the address holds. Nothing else
+is handed to yt-dlp with the jar, and a video read never sees it. The store holds the jar sealed
+by `api/jarseal` under `YOUTUBE_COOKIE_KEY`, which reaches only the server's environment, so a
+backup of the store carries no usable session.
 
 The server needs yt-dlp only when it is configured to read videos. `ENRICH_PACE=off` is a
 supported configuration and starts without one. The server looks for yt-dlp at start whatever
@@ -133,4 +135,5 @@ completion test holds the client's to every pair. The service client's scope is 
 `api/handlers` writes `service-scopes.json` beside it, and the CLI's service test requires the scope
 it requests to reach the route `ypl server status` calls. The kinds of rating are the third:
 `rating_kinds.json` holds the server's, and the CLI's wire test requires `RatingKinds` to match.
-`PageSize` and `VideoSorts` are unpinned copies of a number and words the server owns, with no door to read them through.
+`PageSize` and `VideoSorts` are unpinned copies of a number and words the server owns, with no
+door to read them through.

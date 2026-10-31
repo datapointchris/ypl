@@ -110,8 +110,10 @@ func historyArguments(cookies string, entries int) []string {
 	}
 }
 
-// historyRefusal is refusal with a signed-out answer told apart, after the
-// rate limit, whose bot check also asks to sign in.
+// historyRefusal is refusal, except that a stderr carrying a signed-out marker
+// wraps ErrSignedOut. ErrRateLimited is checked first, because YouTube's bot
+// check on a rate-limited address also asks to sign in, and would otherwise be
+// reported as a jar that needs exporting again.
 func historyRefusal(stderr string, exit error) error {
 	err := refusal(stderr, exit)
 	if errors.Is(err, ErrRateLimited) {
@@ -143,9 +145,9 @@ func decodeHistory(output []byte) ([]HistoryEntry, error) {
 }
 
 // resumePercents is each video's resume point on the history pages yt-dlp
-// wrote into dir, by video id. The error says no page could be read, which the
-// history answers through without them; a page with no progress bar on it is
-// no error.
+// wrote into dir, by video id. It errors only when no page could be read, and
+// History then logs a warning and answers every entry with no resume point. A
+// page with no progress bar on it is not an error.
 func resumePercents(dir string) (map[string]int, error) {
 	percents := map[string]int{}
 	pages, err := filepath.Glob(filepath.Join(dir, "*.dump"))
