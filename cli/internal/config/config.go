@@ -42,6 +42,10 @@ const ClientSecretEnv = "YPL_CLIENT_SECRET"
 // since a service has no login.
 func Load(ctx context.Context, api string) (goclilogin.Deployment, error) {
 	d, err := goclilogin.LoadDeployment(ctx, product, api)
+	if d.HandsTokens() && IsService() {
+		return d, fmt.Errorf("%s sets token_command and %s is set, so ypl has two credentials; keep one",
+			d.Path, ClientSecretEnv)
+	}
 	if !IsService() || !errors.Is(err, goclilogin.ErrNotConfigured) {
 		return d, err
 	}

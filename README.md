@@ -302,8 +302,15 @@ the client-credentials grant, asking for `ypl.status.read`. It stores nothing. T
 token read `GET /api/v1/status`, which is what `ypl server status` calls. Any other route answers
 that token with 403. `ypl auth login` and `ypl auth logout` refuse in that mode.
 
+A workload whose broker hands it short-lived tokens holds no secret instead. Its config file names
+the broker's command as `token_command`, an argv such as `["broker", "token", "ypl"]`, and needs
+only `api` beside it. ypl runs the command whenever its last token has expired, and sends the
+`access_token` it prints (RFC 6749 § 5.1). Login and logout refuse, and a 401 names the command
+rather than a login. A file setting `token_command` while `YPL_CLIENT_SECRET` is set is refused.
+
 `ypl auth status --json` names the credential it checked in `type`: `authorized_user` for a person's
-login, or `service_account` for a service, as Google's credential files do. A service's status exits
+login, `service_account` for a service, or `external_account` for a handed token, as Google's
+credential files do. A service's status exits
 1 unless the provider grants a token. Its `session` then says why: `rejected` for a secret the
 provider refused, `unverified` for a provider it could not reach.
 

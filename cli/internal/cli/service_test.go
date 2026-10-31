@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +82,32 @@ func TestAServiceReadsTheStatusWithTheClientCredentialsToken(t *testing.T) {
 	entries, _ := os.ReadDir(os.Getenv("XDG_STATE_HOME"))
 	if len(entries) != 0 {
 		t.Errorf("a service run wrote %v under its state directory, want nothing stored", entries)
+	}
+}
+
+func TestAHandedTokenReachesTheServerAsTheCommandPrintedIt(t *testing.T) {
+	f := newFixture(t, serves(map[string]string{"/api/v1/status": freshStatus()}))
+	command := filepath.Join(t.TempDir(), "hand-token")
+	script := "#!/bin/sh\necho '{\"access_token\": \"handed-access-token\", \"expires_in\": 300}'\n"
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "ypl", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf("api = %q\ntoken_command = [%q]\n", f.server, command)
+	if err := os.WriteFile(config, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.app.client = newAPIClient
+
+	got := f.run("server", "status", "--json")
+	if got.code != 0 {
+		t.Fatalf("exited %d: %s%s", got.code, got.out, got.err)
+	}
+	if authorization := f.sent[len(f.sent)-1].Header.Get("Authorization"); authorization != "Bearer handed-access-token" {
+		t.Errorf("the server saw Authorization %q, want the handed token", authorization)
 	}
 }
 

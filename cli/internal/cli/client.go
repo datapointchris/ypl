@@ -37,9 +37,13 @@ func newAPIClient(ctx context.Context) (*api.Client, error) {
 	return api.New(deployment.API.Value, oauth2.NewClient(ctx, source)), nil
 }
 
-// tokenSource is the client-credentials grant when YPL_CLIENT_SECRET is set,
-// and otherwise the token this machine logged in for, read from tokens.
+// tokenSource is the config file's token_command where it names one, the
+// client-credentials grant when YPL_CLIENT_SECRET is set, and otherwise the
+// token this machine logged in for, read from tokens.
 func tokenSource(ctx context.Context, d goclilogin.Deployment, tokens func(goclilogin.Config) *goclilogin.TokenStore) (oauth2.TokenSource, error) {
+	if d.HandsTokens() {
+		return goclilogin.CommandTokenSource(ctx, d.TokenCommand.Argv())
+	}
 	if config.IsService() {
 		return goclilogin.ClientCredentialsTokenSource(ctx, config.Service(d), config.ClientSecret())
 	}
@@ -74,8 +78,19 @@ func reported(err error) error {
 		return errors.New("not logged in — run `ypl auth login`")
 	}
 	var refusal *api.Refusal
-	// A service has no login to renew, so it is pointed at its id and secret.
+	// A handed token's remedy is whatever handed it, so it names the command.
 	// The file is read without --api, so reporting an error sends nothing.
+	if d, _ := config.Load(context.Background(), ""); d.HandsTokens() {
+		var failed *goclilogin.TokenCommandError
+		switch {
+		case errors.As(err, &failed):
+			return fmt.Errorf("token_command in %s handed no token: %w", d.Path, failed)
+		case errors.As(err, &refusal) && refusal.Unauthorized():
+			return fmt.Errorf("the server refused the token %q handed", d.TokenCommand)
+		}
+		return err
+	}
+	// A service has no login to renew, so it is pointed at its id and secret.
 	if config.IsService() {
 		d, _ := config.Load(context.Background(), "")
 		switch {

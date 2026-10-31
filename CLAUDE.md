@@ -23,6 +23,7 @@ The CLI, on every workstation:
 | --- | --- | --- | --- |
 | The ypl server | `cli/internal/api`; `goclilogin` for the metadata | The configured server, over HTTPS: the API with a bearer token, and its RFC 9728 metadata with none, during `ypl auth login <url>` and for an `--api` other than the file's | Nothing |
 | The identity provider | `goclilogin` | The configured issuer, for discovery and the device grant, or the client-credentials grant where `YPL_CLIENT_SECRET` is set | Nothing, and it is reached on every command |
+| A token command | `goclilogin` | The argv the config file's `token_command` names, once its last token has expired, in place of the identity provider | A subprocess |
 | This machine's keychain | `goclilogin` | The OS keychain, or a mode-600 file where there is none | The refresh token lives there |
 | A browser | `pkg/browser` | Whatever `xdg-open` or `open` resolves to, once, during `ypl auth login` | A subprocess |
 | An editor | `cli/internal/editbuffer` | Whatever `$VISUAL` or `$EDITOR` names, holding the terminal, during `ypl playlists edit` | A subprocess, and the terminal until it exits |

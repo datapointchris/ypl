@@ -156,6 +156,9 @@ func (a *app) authLogoutCommand() *cobra.Command {
 			if err != nil && !errors.Is(err, goclilogin.ErrNotConfigured) {
 				return err
 			}
+			if deployment.HandsTokens() {
+				return fmt.Errorf("%s sets token_command, so ypl is handed its tokens and stores none to remove", deployment.Path)
+			}
 			if deployment.ClientID.Value == "" {
 				deployment.ClientID.Value = config.DefaultClientID()
 			}
@@ -199,7 +202,7 @@ func (a *app) authTokenCommand() *cobra.Command {
 				return err
 			}
 			token, err := source.Token()
-			if err != nil && config.IsService() {
+			if err != nil && (config.IsService() || deployment.HandsTokens()) {
 				return reported(err)
 			}
 			if err != nil {
@@ -220,6 +223,9 @@ const (
 	authorizedUser credentialType = "authorized_user"
 	// serviceAccount is the client-credentials grant YPL_CLIENT_SECRET selects.
 	serviceAccount credentialType = "service_account"
+	// externalAccount is a token the config file's token_command hands, as
+	// Google names a credential an executable supplies.
+	externalAccount credentialType = "external_account"
 )
 
 // authStatus is what `ypl auth status --json` writes. The token is opaque to
@@ -272,13 +278,20 @@ func (a *app) authStatusCommand() *cobra.Command {
 				ClientID:   deployment.ClientID.Value,
 				Issuer:     deployment.Issuer.Value,
 			}
-			if config.IsService() {
+			switch {
+			case deployment.HandsTokens():
+				status.Type = externalAccount
+			case config.IsService():
 				status.Type = serviceAccount
 			}
 			switch {
 			case !status.Configured:
-			case config.IsService():
-				serviceStatus(cmd.Context(), deployment, &status)
+			case status.Type == externalAccount:
+				source, err := goclilogin.CommandTokenSource(cmd.Context(), deployment.TokenCommand.Argv())
+				grantedStatus(source, err, &status)
+			case status.Type == serviceAccount:
+				source, err := goclilogin.ClientCredentialsTokenSource(cmd.Context(), config.Service(deployment), config.ClientSecret())
+				grantedStatus(source, err, &status)
 			default:
 				if err := a.loginStatus(deployment, &status); err != nil {
 					return err
@@ -292,7 +305,7 @@ func (a *app) authStatusCommand() *cobra.Command {
 			case !status.Configured:
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%v\n", loadErr)
 				goclilogin.WriteDeployment(cmd.OutOrStdout(), deployment)
-			case config.IsService():
+			case status.Type != authorizedUser:
 				printServiceStatus(cmd.OutOrStdout(), status, deployment)
 			default:
 				printAuthStatus(cmd.OutOrStdout(), status, deployment)
@@ -330,10 +343,9 @@ func (a *app) loginStatus(d goclilogin.Deployment, status *authStatus) error {
 	return nil
 }
 
-// serviceStatus requests a token, because a service stores none that could say
-// whether its credentials still work, and reports what the provider answered.
-func serviceStatus(ctx context.Context, d goclilogin.Deployment, status *authStatus) {
-	source, err := goclilogin.ClientCredentialsTokenSource(ctx, config.Service(d), config.ClientSecret())
+// grantedStatus asks source for a token, because a service or a handed token
+// stores none that could say whether the next command will get one.
+func grantedStatus(source oauth2.TokenSource, err error, status *authStatus) {
 	var token *oauth2.Token
 	if err == nil {
 		token, err = source.Token()
@@ -349,10 +361,14 @@ func serviceStatus(ctx context.Context, d goclilogin.Deployment, status *authSta
 // starts its values in: its widest key is client_id, padded by two.
 
 func printServiceStatus(out io.Writer, status authStatus, d goclilogin.Deployment) {
-	switch status.Session {
-	case goclilogin.SessionRejected:
+	switch {
+	case status.Type == externalAccount && status.LoggedIn:
+		_, _ = fmt.Fprintln(out, "Handed a token by token_command")
+	case status.Type == externalAccount:
+		_, _ = fmt.Fprintf(out, "token_command handed no token. Check what %q asks.\n", d.TokenCommand)
+	case status.Session == goclilogin.SessionRejected:
 		_, _ = fmt.Fprintf(out, "Service client refused by %s. Check client_id in the config file, and %s.\n", status.Issuer, config.ClientSecretEnv)
-	case goclilogin.SessionUnverified:
+	case status.Session == goclilogin.SessionUnverified:
 		_, _ = fmt.Fprintf(out, "Service client configured, but %s could not be reached.\n", status.Issuer)
 	default:
 		_, _ = fmt.Fprintln(out, "Service client (client credentials)")
