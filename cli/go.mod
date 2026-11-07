@@ -6,7 +6,7 @@ toolchain go1.26.10
 
 require (
 	github.com/charmbracelet/huh v1.0.0
-	github.com/datapointchris/goclikit v0.4.3
+	github.com/datapointchris/goclikit v0.5.3
 	github.com/datapointchris/goclilogin v0.7.0
 	github.com/datapointchris/goselfupdate v0.11.0
 	github.com/datapointchris/gotermstyle v0.2.0

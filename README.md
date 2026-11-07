@@ -178,15 +178,15 @@ cannot record the play a second time.
 ## `rate` — every like, dislike and note on a mix is kept, picked from the watch history
 
 ```bash
-ypl rate                                        # pick the mix in fzf, the watch history on top, then asks
-ypl rate --like -m 'great closing hour'         # pick the mix, and like it with a message
-ypl rate 'mayan warrior' --note -m 'too much talk'  # a note on one mix, by part of its title
-ypl rate --dislike --at 1:12:30 -m 'vocals'     # and where in the mix it was
-ypl videos show 'mayan warrior'                 # every rating of that mix, newest first
-ypl videos list --rated dislike                 # the mixes with a dislike
-ypl videos list --tag sunrise --text closing    # tags and messages are what a mix is found by later
-ypl tags list                                   # every tag, with how many mixes carry it
-ypl ratings delete 3f9c2a1b                     # take one back, by the ID column of ratings list
+ypl rate                                                  # pick the mix in fzf, the watch history on top, then asks
+ypl rate --like -m 'great closing hour'                   # pick the mix, and like it with a message
+ypl rate 'robot heart link up' --note -m 'too much talk'  # a note on one mix, by part of its title
+ypl rate --dislike --at 1:12:30 -m 'vocals'               # and where in the mix it was
+ypl videos show 'robot heart link up'                     # every rating of that mix, newest first
+ypl videos list --rated dislike                           # the mixes with a dislike
+ypl videos list --tag sunrise --text closing              # tags and messages are what a mix is found by later
+ypl tags list                                             # every tag, with how many mixes carry it
+ypl ratings delete 3f9c2a1b                               # take one back, by the ID column of ratings list
 ```
 
 A rating is about the mix as a whole. It is a like, a dislike or a note, with a message and
@@ -238,9 +238,9 @@ that applies it. By then the editor has closed, so that file is the only copy of
 ## `videos` — the library searched by what its tracklists name
 
 ```bash
-ypl videos list --min-minutes 180   # three hours or more; a video of unknown length is left out
-ypl videos list --artist bjork      # every mix whose tracklist names Björk
-ypl videos show 'mayan warrior'     # one mix's tracklist, by its link, its id or part of its title
+ypl videos list --min-minutes 180       # three hours or more; a video of unknown length is left out
+ypl videos list --artist bjork          # every mix whose tracklist names Björk
+ypl videos show 'robot heart link up'   # one mix's tracklist, by its link, its id or part of its title
 ```
 
 A tracklist is the video's chapters, or failing those the timestamped lines of its description, or

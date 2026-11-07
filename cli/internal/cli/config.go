@@ -18,6 +18,8 @@ func newConfigCommand() *cobra.Command {
 		GroupID: groupSetup,
 		Long: "The server's address, its identity provider and this machine's client, from\n" +
 			"one config file. `ypl auth login <url>` fills in whatever it lacks.",
+		Example: "  ypl config show  each setting, and whether the file or a flag set it\n" +
+			"  ypl config path  where the file goes, whether or not it exists",
 	}
 	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(withAPIFlag(newConfigShowCommand()), newConfigPathCommand())

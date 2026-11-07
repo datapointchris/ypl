@@ -27,6 +27,8 @@ func (a *app) playsCommand() *cobra.Command {
 		GroupID: groupPlays,
 		Long: "`ypl play` records a video once it has played long enough.\n" +
 			"Name a play by the number in the PLAY column of `ypl plays list`.",
+		Example: "  ypl plays list             what has been on lately\n" +
+			"  ypl plays add dQw4w9WgXcQ  record a mix heard somewhere else",
 	}
 	goclikit.AsNamespace(cmd)
 	splitReadingFromChanging(cmd)
@@ -102,7 +104,7 @@ func (a *app) playsAddCommand() *cobra.Command {
 			"a phone, and records it as heard now. Name the video as `ypl videos show` does.",
 		Example: "  ypl plays add dQw4w9WgXcQ                          record one by id\n" +
 			"  ypl plays add 'https://youtu.be/dQw4w9WgXcQ?t=42'  record one from a link\n" +
-			"  ypl plays add 'mayan warrior'                      by part of its title",
+			"  ypl plays add 'robot heart link up'                by part of its title",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if strings.TrimSpace(args[0]) == "" {

@@ -11,8 +11,9 @@ import (
 
 func (a *app) serverCookiesCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "cookies",
-		Short: "The YouTube session the server reads the watch history with",
+		Use:     "cookies",
+		Short:   "The YouTube session the server reads the watch history with",
+		Example: "  ypl server cookies set ~/Downloads/cookies.txt  send it, then delete it",
 	}
 	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.serverCookiesSetCommand())

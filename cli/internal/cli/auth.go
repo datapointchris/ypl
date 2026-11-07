@@ -36,6 +36,8 @@ func (a *app) authCommand() *cobra.Command {
 			"confidential client the config file's client_id names, through the\n" +
 			"client-credentials grant, requests a token per run, and stores nothing.\n" +
 			"There is no login.",
+		Example: "  ypl auth status  is this machine logged in, and where is it pointed\n" +
+			"  ypl auth login   log this machine in, once per machine",
 	}
 	goclikit.AsNamespace(cmd)
 	splitReadingFromChanging(cmd)

@@ -43,11 +43,11 @@ func (a *app) rateCommand() *cobra.Command {
 			"for the kind, the message, the tags and where in the mix, offering YouTube's resume\n" +
 			"point; with one, it records what the flags gave and nothing else.\n\n" +
 			"Without a terminal, or under --no-input, name the video and give the kind.",
-		Example: "  ypl rate                                       pick what is playing, then rate it\n" +
-			"  ypl rate --like -m 'great closing hour'        pick it, and like it\n" +
-			"  ypl rate dQw4w9WgXcQ --note -m 'too much talk'  a note on one mix\n" +
-			"  ypl rate 'mayan warrior' --dislike --tag dark  by part of its title\n" +
-			"  ypl rate --dislike --at 1:12:30 -m 'vocals'    and where in the mix",
+		Example: "  ypl rate                                             pick what is playing, then rate it\n" +
+			"  ypl rate --like -m 'great closing hour'              pick it, and like it\n" +
+			"  ypl rate dQw4w9WgXcQ --note -m 'too much talk'       a note on one mix\n" +
+			"  ypl rate 'robot heart link up' --dislike --tag dark  by part of its title\n" +
+			"  ypl rate --dislike --at 1:12:30 -m 'vocals'          and where in the mix",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kind := ""
@@ -318,6 +318,8 @@ func (a *app) ratingsCommand() *cobra.Command {
 		Short:   "What you said about mixes",
 		GroupID: groupRatings,
 		Long:    "`ypl rate` records a rating. `ypl videos show` lists every rating of one mix.",
+		Example: "  ypl ratings list                                what you rated lately\n" +
+			"  ypl ratings list --video 'robot heart link up'  every rating of one mix",
 	}
 	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.ratingsListCommand(), a.ratingsDeleteCommand())
@@ -384,8 +386,8 @@ func (a *app) ratingsListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List ratings, newest first",
-		Example: "  ypl ratings list                          what you rated lately\n" +
-			"  ypl ratings list --video 'mayan warrior'  every rating of one mix",
+		Example: "  ypl ratings list                                what you rated lately\n" +
+			"  ypl ratings list --video 'robot heart link up'  every rating of one mix",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := a.client(cmd.Context())
@@ -448,6 +450,7 @@ func (a *app) tagsCommand() *cobra.Command {
 		Use:     "tags",
 		Short:   "The tags your ratings carried",
 		GroupID: groupRatings,
+		Example: "  ypl tags list  every tag, most carried first",
 	}
 	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.tagsListCommand())

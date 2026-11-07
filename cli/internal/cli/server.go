@@ -26,6 +26,8 @@ func (a *app) serverCommand() *cobra.Command {
 		Long: "The server syncs with YouTube on its own schedule. Every command here reads,\n" +
 			"except `ypl server cookies set`, which sends the session the watch history is\n" +
 			"read with.",
+		Example: "  ypl server status      the library's size and the last sync\n" +
+			"  ypl server syncs list  what each recent sync changed, read and spent",
 	}
 	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.serverStatusCommand(), a.serverSyncsCommand(), a.serverCookiesCommand())
@@ -80,8 +82,9 @@ func (a *app) serverStatusCommand() *cobra.Command {
 
 func (a *app) serverSyncsCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "syncs",
-		Short: "The server's syncs with YouTube",
+		Use:     "syncs",
+		Short:   "The server's syncs with YouTube",
+		Example: "  ypl server syncs list --limit 5 --json  the last five, for a script",
 	}
 	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.serverSyncsListCommand())

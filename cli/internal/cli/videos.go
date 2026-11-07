@@ -19,6 +19,8 @@ func (a *app) videosCommand() *cobra.Command {
 		Use:     "videos",
 		Short:   "Every video across all playlists",
 		GroupID: groupVideos,
+		Example: "  ypl videos list --min-minutes 180      the mixes three hours long or more\n" +
+			"  ypl videos show 'robot heart link up'  one mix's tracklist, by part of its title",
 	}
 	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.videosListCommand(), a.videosShowCommand(), a.videosSortsCommand())
@@ -102,9 +104,9 @@ func (a *app) videosShowCommand() *cobra.Command {
 		Short: "Show a video's tracklist, by its link, id or title",
 		Long: "Name the video by its link, its id, its title, or part of the title.\n" +
 			"FROM is the part of the video each track was read from.",
-		Example: "  ypl videos show dQw4w9WgXcQ         the video, track by track\n" +
-			"  ypl videos show 'mayan warrior'     by part of its title\n" +
-			"  ypl videos show dQw4w9WgXcQ --json  the same, for a script",
+		Example: "  ypl videos show dQw4w9WgXcQ            the video, track by track\n" +
+			"  ypl videos show 'robot heart link up'  by part of its title\n" +
+			"  ypl videos show dQw4w9WgXcQ --json     the same, for a script",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := a.client(cmd.Context())
