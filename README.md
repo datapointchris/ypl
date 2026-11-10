@@ -37,6 +37,10 @@ docker pull ghcr.io/datapointchris/ypl-api   # the server's image; :sha-<short> 
 A check at most once a day says when a newer release is out. `ypl update` refuses to replace a
 development build.
 
+The server refuses a request holding a field it does not take. Its error then ends with a line
+naming the CLI's version and the server's, each as that side reports it, such as
+`versions: ypl v0.13.0, server sha-1a2b3c4`.
+
 ## Starting from scratch
 
 A machine plays from a server, so the server comes first. Skip the first group where one is already

@@ -78,6 +78,9 @@ func reported(err error) error {
 		return errors.New("not logged in — run `ypl auth login`")
 	}
 	var refusal *api.Refusal
+	if errors.As(err, &refusal) && refusal.Code == api.CodeUnknownField {
+		return fmt.Errorf("%w\n%s", err, versions(refusal.ServerVersion))
+	}
 	// A handed token's remedy is whatever handed it, so it names the command.
 	// The file is read without --api, so reporting an error sends nothing.
 	if d, _ := config.Load(context.Background(), ""); d.HandsTokens() {
@@ -111,4 +114,16 @@ func reported(err error) error {
 		return errors.New("the server refused the session — run `ypl auth login`")
 	}
 	return err
+}
+
+// versions is the line a refusal of a field the server does not take adds:
+// this build's version and the server's, each as that side reports it. It
+// draws nothing from the two, because whichever side a person would call
+// behind depends on what the client cannot see, such as a server pinned or
+// rolled back on purpose. server is "" where it could not be read.
+func versions(server string) string {
+	if server == "" {
+		server = "unread"
+	}
+	return fmt.Sprintf("versions: ypl %s, server %s", version, server)
 }

@@ -3,7 +3,9 @@
 // Every type here is the shape of a JSON body the server sends or takes, and
 // none of them is the server's own. A field the server adds is ignored rather
 // than refused, so a CLI older than the server it is talking to keeps working,
-// and the two are free to move at their own pace.
+// and the two are free to move at their own pace. A field this client sends
+// that the server does not take is refused, and that refusal carries the
+// version the server reports.
 //
 // Nothing here handles a token. The *http.Client it is given adds the
 // Authorization header and refreshes what is behind it.
@@ -46,6 +48,19 @@ type Refusal struct {
 	Message string
 	// VideoIDs names the videos a refusal about particular videos is about.
 	VideoIDs []string
+	// ServerVersion is the release the server reports it was built from. It is
+	// read only for a refusal coded CodeUnknownField, and is "" where it could
+	// not be read.
+	ServerVersion string
+}
+
+// CodeUnknownField is the server refusing a field of the body it was sent
+// that its route does not take.
+const CodeUnknownField = "unknown_field"
+
+// Version is the release a server reports it was built from.
+type Version struct {
+	Version string `json:"version"`
 }
 
 // Error is the server's own sentence, and the status where the answer carried
@@ -126,7 +141,11 @@ func (c *Client) send(ctx context.Context, method, path string, header http.Head
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return resp.Header, refusalFrom(resp)
+		refusal := refusalFrom(resp)
+		if refusal.Code == CodeUnknownField {
+			refusal.ServerVersion = c.serverVersion(ctx)
+		}
+		return resp.Header, refusal
 	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -146,7 +165,7 @@ const maxRefusalBody = 8 << 10
 // body is one. A body that is not — a proxy's HTML, an identity provider's
 // redirect — still gives a Refusal carrying the status, since the status is the
 // part a caller can always act on.
-func refusalFrom(resp *http.Response) error {
+func refusalFrom(resp *http.Response) *Refusal {
 	refusal := &Refusal{Status: resp.StatusCode}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefusalBody))
 	var envelope struct {
@@ -158,6 +177,16 @@ func refusalFrom(resp *http.Response) error {
 		refusal.Message, refusal.Code, refusal.VideoIDs = envelope.Message, envelope.Code, envelope.VideoIDs
 	}
 	return refusal
+}
+
+// serverVersion is the release the server reports it was built from, and ""
+// where it could not be read.
+func (c *Client) serverVersion(ctx context.Context) string {
+	var reported Version
+	if err := c.Get(ctx, "/api/v1/version", &reported); err != nil {
+		return ""
+	}
+	return reported.Version
 }
 
 // query is path with every named parameter that has a value, in the order
