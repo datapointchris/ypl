@@ -29,6 +29,12 @@ type EnrichFailure struct {
 	RetryTs     sql.NullString
 }
 
+type LatestVideoRead struct {
+	LatestID  int64
+	VideoID   string
+	StartedTs string
+}
+
 type Play struct {
 	PlayID   string
 	Handle   int64

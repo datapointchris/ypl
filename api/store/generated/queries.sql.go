@@ -1164,6 +1164,18 @@ func (q *Queries) LatestRateLimitedRunFinished(ctx context.Context) (string, err
 	return finished_ts, err
 }
 
+const latestVideoReadStarted = `-- name: LatestVideoReadStarted :one
+SELECT CAST(coalesce(max(started_ts), '') AS TEXT) AS started_ts FROM latest_video_read
+`
+
+// When enrichment last began a read of a video, and empty when it never has.
+func (q *Queries) LatestVideoReadStarted(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, latestVideoReadStarted)
+	var started_ts string
+	err := row.Scan(&started_ts)
+	return started_ts, err
+}
+
 const listBaseItems = `-- name: ListBaseItems :many
 SELECT
     item_id,
@@ -2697,6 +2709,25 @@ func (q *Queries) ListVideosWithoutLength(ctx context.Context, maxRows int64) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordVideoReadStarted = `-- name: RecordVideoReadStarted :exec
+INSERT INTO latest_video_read (latest_id, video_id, started_ts)
+VALUES (1, ?1, ?2)
+ON CONFLICT (latest_id) DO UPDATE SET
+    video_id = excluded.video_id,
+    started_ts = excluded.started_ts
+`
+
+type RecordVideoReadStartedParams struct {
+	VideoID   string
+	StartedTs string
+}
+
+// Records that enrichment is about to send a read of the video.
+func (q *Queries) RecordVideoReadStarted(ctx context.Context, arg RecordVideoReadStartedParams) error {
+	_, err := q.db.ExecContext(ctx, recordVideoReadStarted, arg.VideoID, arg.StartedTs)
+	return err
 }
 
 const recordYouTubeSessionOK = `-- name: RecordYouTubeSessionOK :exec

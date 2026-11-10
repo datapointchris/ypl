@@ -81,7 +81,8 @@ newest in a playlist first, which `api/enrich` queues and paces. The Data API re
 chapters nor comments, so these reads go through `yt-dlp`, signed in as nobody, at `YTDLP_PATH` or
 on `PATH`; `api/ytdlp` runs it, one process a read. Reads come one at a time, at least
 `ENRICH_PACE` apart, 90 seconds when unset, and up to twice that at random, so they never arrive in
-a burst. Each pass records what the reads did since the pass before. `ENRICH_PACE=off` reads no
+a burst. The store keeps when the latest read began, so a server that restarts waits out the pace
+from it before its first read. Each pass records what the reads did since the pass before. `ENRICH_PACE=off` reads no
 video, and a server configured that way needs no `yt-dlp` and starts without one.
 
 `api/tracklist` is what reads a tracklist out of a video. It is the video's chapters, or failing

@@ -4,7 +4,8 @@
 //
 // A read goes through yt-dlp, signed in as nobody, and YouTube throttles an
 // address that reads too much too fast. So reads come one at a time, at least
-// Pace apart and up to twice that at random, and never in a burst. YouTube's
+// Pace apart and up to twice that at random, and never in a burst. The store
+// records when each read began, so the pace holds across a restart. YouTube's
 // rate limit stops reading for RateLimitPause. MaxConsecutiveFailures reads
 // failing in a row stop it for FailingPause, whatever they failed with, since
 // a refusal worded in a way this package does not recognize would otherwise be
@@ -205,12 +206,43 @@ func (t *Tally) setPaused(paused bool) {
 // Run reads tracklists until ctx ends, one video at a time, and returns ctx's
 // error. A failure of the store is recorded like a failed read and pauses the
 // reading, rather than ending it.
+//
+// The first read waits out the pace from the latest read the store records,
+// whichever process made it, so a server restarted moments after a read does
+// not read again at once.
 func (e *Enricher) Run(ctx context.Context) error {
+	wait, err := e.sinceLatestRead(ctx)
+	if err != nil {
+		wait = e.failed(err)
+	}
 	for {
-		if err := e.wait(ctx, e.step(ctx)); err != nil {
+		if err := e.wait(ctx, wait); err != nil {
 			return err
 		}
+		wait = e.step(ctx)
 	}
+}
+
+// sinceLatestRead is how long to wait before the first read: a pace past the
+// start of the latest read the store records, or none when it records none.
+func (e *Enricher) sinceLatestRead(ctx context.Context) (time.Duration, error) {
+	started, err := e.store.Queries.LatestVideoReadStarted(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read when the latest read of a video began: %w", err)
+	}
+	if started == "" {
+		return 0, nil
+	}
+	at, err := time.Parse(time.RFC3339, started)
+	if err != nil {
+		return 0, fmt.Errorf("read when the latest read of a video began, %q: %w", started, err)
+	}
+	return max(0, at.Add(e.pace()).Sub(e.now())), nil
+}
+
+// pace is the wait between two reads: Pace, and up to Pace again at random.
+func (e *Enricher) pace() time.Duration {
+	return e.limits.Pace + time.Duration(rand.Int64N(int64(e.limits.Pace)+1))
 }
 
 // step makes at most one read, adds what it did to the tally, and returns how
@@ -256,7 +288,7 @@ func (e *Enricher) step(ctx context.Context) time.Duration {
 		e.failedInARow = 0
 		return FailingPause
 	}
-	return e.limits.Pace + time.Duration(rand.Int64N(int64(e.limits.Pace)+1))
+	return e.pace()
 }
 
 // failed records a failure of the reading itself and pauses it.
@@ -283,8 +315,15 @@ func (e *Enricher) pausedUntil(ctx context.Context, now time.Time) (time.Time, e
 }
 
 // read reads the video id and stores what it finds. The error is a failure of
-// the store, or ctx's once it ends.
+// the store, or ctx's once it ends. The read's start is recorded before it is
+// sent, so a read cut short still paces the next.
 func (e *Enricher) read(ctx context.Context, id string) (Report, error) {
+	err := e.store.InTx(ctx, func(tx *store.Tx) error {
+		return tx.RecordVideoReadStarted(ctx, generated.RecordVideoReadStartedParams{VideoID: id, StartedTs: store.Timestamp(e.now())})
+	})
+	if err != nil {
+		return Report{}, fmt.Errorf("record the start of the read of %s: %w", id, err)
+	}
 	report := Report{Reads: 1}
 	readCtx, cancel := context.WithTimeout(ctx, readTimeout)
 	video, err := e.reader.Video(readCtx, id)

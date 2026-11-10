@@ -418,6 +418,18 @@ RETURNING run_id;
 INSERT INTO sync_failures (run_id, playlist_id, video_id, error, stage)
 VALUES (?, ?, ?, ?, ?);
 
+-- name: RecordVideoReadStarted :exec
+-- Records that enrichment is about to send a read of the video.
+INSERT INTO latest_video_read (latest_id, video_id, started_ts)
+VALUES (1, sqlc.arg(video_id), sqlc.arg(started_ts))
+ON CONFLICT (latest_id) DO UPDATE SET
+    video_id = excluded.video_id,
+    started_ts = excluded.started_ts;
+
+-- name: LatestVideoReadStarted :one
+-- When enrichment last began a read of a video, and empty when it never has.
+SELECT CAST(coalesce(max(started_ts), '') AS TEXT) AS started_ts FROM latest_video_read;
+
 -- name: LatestRateLimitedRunFinished :one
 -- When the latest run that had YouTube refuse its reads of videos for now
 -- finished, and empty when none has.
