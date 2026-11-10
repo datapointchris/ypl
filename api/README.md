@@ -276,8 +276,10 @@ read from YouTube. An order adding a video YouTube returns no public or unlisted
 slot for a video the server knows is private or deleted, answers 422 `video_unavailable` naming each
 such video in `video_ids`, as 422 `invalid_video_id` names each malformed id.
 
-On SIGTERM the server begins no new playlist write, answering 503 `shutting_down`, and gives
-requests in flight up to 30 seconds to finish. A container's stop timeout has to be longer.
+On SIGTERM the server begins no new playlist write and no new read of the watch history, answering
+503 `shutting_down`, and gives requests in flight up to 70 seconds to finish. A history read begun
+before the signal is one of those, because cutting it short loses the cookies YouTube rotated during
+it. A container's stop timeout has to be longer.
 
 A paged list answers `{"data": [...], "has_more": true}`. The next page is the same request with
 `starting_after` set to the last id on this one. `limit` sets the page size, at most 100. When it is

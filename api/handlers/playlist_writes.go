@@ -325,10 +325,20 @@ func (h *Handlers) deletePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Drain stops the API beginning a playlist write. A write already begun runs
-// to its end, which WriteDuration bounds.
+// Drain stops the API beginning a playlist write or a read of the watch
+// history. One already begun runs to its end, which WriteDuration and
+// HistoryDuration bound.
 func (h *Handlers) Drain() {
 	h.drainOnce.Do(func() { close(h.draining) })
+}
+
+func (h *Handlers) isDraining() bool {
+	select {
+	case <-h.draining:
+		return true
+	default:
+		return false
+	}
 }
 
 // takeWriteTurn waits for the API's turn to write playlists, one request at a

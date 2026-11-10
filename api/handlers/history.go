@@ -49,6 +49,16 @@ const historyDepth = 25
 // historyDuration bounds one read of the watch history.
 const historyDuration = 60 * time.Second
 
+// HistoryDuration is the longest a read of the watch history runs once it has
+// begun: the read, and the store of the jar yt-dlp wrote back, which waits at
+// most recordTimeout for the write lock. No read begins once Drain has been
+// called.
+const HistoryDuration = historyDuration + recordTimeout
+
+// errHistoryDraining is the cause of a history read refused because the server
+// is draining.
+var errHistoryDraining = errors.New("the server is shutting down, so it begins no read of the watch history")
+
 // maxCookieBody bounds the body of PUT /api/v1/youtube/session, many times the
 // size of a jar of YouTube's cookies.
 const maxCookieBody = 256 << 10
@@ -193,6 +203,9 @@ func (h *Handlers) readHistory(ctx context.Context) ([]ytdlp.HistoryEntry, error
 	if h.now().Before(h.history.refusedUntil) {
 		return nil, fmt.Errorf("%w until %s", ytdlp.ErrRateLimited, store.Timestamp(h.history.refusedUntil))
 	}
+	if h.isDraining() {
+		return nil, errHistoryDraining
+	}
 	opened, err := h.history.sealer.Open(session.CookieJar)
 	if err != nil {
 		return nil, err
@@ -244,6 +257,9 @@ func (h *Handlers) refuseHistory(w http.ResponseWriter, r *http.Request, err err
 	switch {
 	case err == nil:
 		return false
+	case errors.Is(err, errHistoryDraining):
+		h.refuseAndLog(w, r, slog.LevelInfo, http.StatusServiceUnavailable, wire.CodeShuttingDown, err,
+			"the server is shutting down, so it made no read; send the request again")
 	case errors.Is(err, errNoSession):
 		wire.Refuse(w, http.StatusConflict, wire.CodeYouTubeSessionMissing, "the server holds no YouTube session; export a cookie jar and send it with `ypl server cookies set`")
 	case errors.Is(err, jarseal.ErrUnopenable):
@@ -277,6 +293,10 @@ func (h *Handlers) setSession(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithoutCancel(ctx)
 	h.history.mu.Lock()
 	defer h.history.mu.Unlock()
+	if h.isDraining() {
+		h.refuseHistory(w, r, errHistoryDraining)
+		return
+	}
 	entries, jar, err := h.history.read(ctx, body.CookieJar)
 	if errors.Is(err, ytdlp.ErrSignedOut) {
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeCookieJarSignedOut, "YouTube reads the watch history signed out with this jar, so the session held is kept; export it again from a private window")

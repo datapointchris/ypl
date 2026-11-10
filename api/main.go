@@ -51,12 +51,14 @@ import (
 )
 
 // shutdownGrace bounds how long in-flight requests get to finish after the
-// first SIGINT or SIGTERM. No playlist write begins once the drain starts and no
-// push write once the sync is canceled, which happen together, and a write begun
-// before then ends within handlers.WriteDuration or reconcile.WriteDuration. So
-// the grace outlasts every write with 5 seconds to answer. A container's stop
-// timeout has to be longer still.
-const shutdownGrace = max(handlers.WriteDuration, reconcile.WriteDuration) + 5*time.Second
+// first SIGINT or SIGTERM. No playlist write or watch-history read begins once
+// the drain starts and no push write once the sync is canceled, which happen
+// together. One begun before then ends within handlers.WriteDuration,
+// handlers.HistoryDuration or reconcile.WriteDuration. So the grace outlasts
+// every one with 5 seconds to answer. A history read cut short loses the jar
+// YouTube rotated during it, which is why it counts. A container's stop timeout
+// has to be longer still.
+const shutdownGrace = max(handlers.WriteDuration, handlers.HistoryDuration, reconcile.WriteDuration) + 5*time.Second
 
 // defaultSyncInterval is the mean wait between ticks when SYNC_INTERVAL is
 // unset. A tick reads the listing and one average playlist, which reconcile's
