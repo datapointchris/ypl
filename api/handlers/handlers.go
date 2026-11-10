@@ -172,13 +172,18 @@ func pageOf[T any](rows []T, limit int64) page[T] {
 }
 
 // decodeJSON reads the request body, of at most maxBytes, as exactly one JSON
-// value of T with no field T does not name. what names T in a refusal. ok is
-// false once it has answered a 400.
+// value of T. A field T does not name is refused with a 422 naming it, before
+// anything is written, and any other body that is not such a value with a 400.
+// what names T in a refusal. ok is false once it has answered a refusal.
 func decodeJSON[T any](w http.ResponseWriter, r *http.Request, maxBytes int64, what string) (T, bool) {
 	var body T
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
+		if field, ok := unknownField(err); ok {
+			wire.RefuseField(w, http.StatusUnprocessableEntity, wire.CodeUnknownField, field, "%s takes no field %q", what, field)
+			return body, false
+		}
 		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidBody, "the body is not %s: %v", what, err)
 		return body, false
 	}
@@ -187,6 +192,19 @@ func decodeJSON[T any](w http.ResponseWriter, r *http.Request, maxBytes int64, w
 		return body, false
 	}
 	return body, true
+}
+
+// unknownField is the field a decoder with DisallowUnknownFields refused err
+// for, and false where err refused anything else. encoding/json returns no type
+// for that refusal, only the text `json: unknown field "<name>"`, which its own
+// tests pin under both of its implementations.
+func unknownField(err error) (string, bool) {
+	quoted, ok := strings.CutPrefix(err.Error(), "json: unknown field ")
+	if !ok {
+		return "", false
+	}
+	field, err := strconv.Unquote(quoted)
+	return field, err == nil
 }
 
 // newCollator orders names the way a reader expects them sorted: by the Unicode

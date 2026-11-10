@@ -99,6 +99,7 @@ type wireRefusal struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
 	Code    string `json:"code"`
+	Field   string `json:"field"`
 }
 
 // withLibrary stores three playlists and six videos. Alpha (PLA) holds a, b and

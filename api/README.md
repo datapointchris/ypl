@@ -300,3 +300,7 @@ before.
 A refused request answers `{"error": "<status text>", "message": "<sentence>", "code": "<code>"}`.
 The sentence is for a person and can change. The code is for a client to branch on, and `api/wire`
 lists every one.
+
+A body holding a field its route does not take is refused before anything is written, with 422
+`unknown_field` and the field's name in `field`. Any other body that is not one JSON value of the
+route's shape answers 400 `invalid_body`.

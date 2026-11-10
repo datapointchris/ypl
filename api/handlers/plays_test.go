@@ -156,7 +156,7 @@ func TestAPlayTheServerCannotRecordIsRefused(t *testing.T) {
 		code   wire.Code
 	}{
 		"not JSON":                           {`{"id":`, http.StatusBadRequest, wire.CodeInvalidBody},
-		"an unknown field":                   {fmt.Sprintf(`{"id": %q, "video_id": "a", "rating": 5}`, play1), http.StatusBadRequest, wire.CodeInvalidBody},
+		"an unknown field":                   {fmt.Sprintf(`{"id": %q, "video_id": "a", "rating": 5}`, play1), http.StatusUnprocessableEntity, wire.CodeUnknownField},
 		"two values":                         {fmt.Sprintf(`{"id": %q, "video_id": "a"} {}`, play1), http.StatusBadRequest, wire.CodeInvalidBody},
 		"no id":                              {`{"video_id": "a"}`, http.StatusUnprocessableEntity, wire.CodeInvalidPlayID},
 		"an id that is no UUID":              {`{"id": "play-1", "video_id": "a"}`, http.StatusUnprocessableEntity, wire.CodeInvalidPlayID},

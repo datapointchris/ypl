@@ -298,7 +298,7 @@ func TestAPlaylistWriteTheAPICannotMakeIsRefusedBeforeYouTube(t *testing.T) {
 		{http.MethodPost, "/api/v1/playlists", `{"title": "  "}`, http.StatusUnprocessableEntity, wire.CodeTitleRequired},
 		{http.MethodPost, "/api/v1/playlists", `{"title": "` + long + `"}`, http.StatusUnprocessableEntity, wire.CodeTitleTooLong},
 		{http.MethodPost, "/api/v1/playlists", `{"title": "x", "description": "` + tooLongDescription + `"}`, http.StatusUnprocessableEntity, wire.CodeDescriptionTooLong},
-		{http.MethodPost, "/api/v1/playlists", `{"title": "x", "privacy": "public"}`, http.StatusBadRequest, wire.CodeInvalidBody},
+		{http.MethodPost, "/api/v1/playlists", `{"title": "x", "privacy": "public"}`, http.StatusUnprocessableEntity, wire.CodeUnknownField},
 		{http.MethodPost, "/api/v1/playlists", `{"title":`, http.StatusBadRequest, wire.CodeInvalidBody},
 		{http.MethodPatch, "/api/v1/playlists/PLA", `{}`, http.StatusUnprocessableEntity, wire.CodeNoChanges},
 		{http.MethodPatch, "/api/v1/playlists/PLA", `{"title": ""}`, http.StatusUnprocessableEntity, wire.CodeTitleRequired},

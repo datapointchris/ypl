@@ -4,7 +4,7 @@
 // A refusal is {"error": "<status text>", "message": "<sentence>", "code":
 // "<code>"}. The sentence is for a person and may change. The code is for a
 // client to branch on and does not. A refusal about particular videos names
-// them in "video_ids" too.
+// them in "video_ids" too, and a refusal of one body field names it in "field".
 package wire
 
 import (
@@ -53,6 +53,7 @@ const (
 	CodePreconditionFailed Code = "precondition_failed"
 
 	// 422
+	CodeUnknownField        Code = "unknown_field"
 	CodeTitleRequired       Code = "title_required"
 	CodeTitleTooLong        Code = "title_too_long"
 	CodeDescriptionTooLong  Code = "description_too_long"
@@ -132,4 +133,17 @@ type VideoRefusal struct {
 // format and args make, and videoIDs.
 func RefuseVideos(w http.ResponseWriter, status int, code Code, videoIDs []string, format string, args ...any) {
 	JSON(w, status, VideoRefusal{Refusal: refusal(status, code, format, args...), VideoIDs: videoIDs})
+}
+
+// FieldRefusal is the body of a refusal of one field of a request body,
+// naming it.
+type FieldRefusal struct {
+	Refusal
+	Field string `json:"field"`
+}
+
+// RefuseField answers status with a FieldRefusal carrying code, the sentence
+// format and args make, and field.
+func RefuseField(w http.ResponseWriter, status int, code Code, field string, format string, args ...any) {
+	JSON(w, status, FieldRefusal{Refusal: refusal(status, code, format, args...), Field: field})
 }
