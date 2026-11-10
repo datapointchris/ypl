@@ -19,6 +19,14 @@ server. The server listens on `PORT`, 8080 when unset. It keeps its store at `DA
 mount, since a store inside the container goes with the container. It also sets `TZ` to UTC, the
 zone the log lines are written in.
 
+One server syncs a store at a time. The server takes an exclusive lock on `DATABASE_PATH` followed
+by `.server.lock` before it opens the database, and holds it until it exits. A second server
+started on the same store binds its port and answers `/health`, and `/ready` answers 503 naming the
+server holding the lock. It holds every other request until the lock frees, then opens the store and
+answers them. A SIGTERM while it waits answers each held request 503 `shutting_down`. It waits a
+minute past the shutdown grace, then exits naming the holder. The lock is a `flock`, which keeps two
+servers apart only on one machine, so the store's disk is mounted by one machine at a time.
+
 The server edits playlists through the Data API as well. Creating, renaming or deleting a playlist,
 and inserting, moving or deleting an item, costs 50 units a request. A rename reads the playlist
 first, for 1 unit more.
@@ -112,7 +120,8 @@ return, because it is private, removed, members-only or age-restricted, is not r
 The server answers `/api/v1` only to a request carrying an access token, which
 [goapiauth](https://github.com/datapointchris/goapiauth) verifies. The token is an RFC 9068 JWT
 that the identity provider `OIDC_ISSUER` signed. The server reads the provider beside the sync,
-retrying while it is down, and `/ready` answers 200 once it has.
+retrying while it is down. `/ready` answers 200 once it has and the store is open, and 503 with
+what it waits on before then.
 `/health` and `/ready` answer without a token.
 
 So does `/.well-known/oauth-protected-resource`, the RFC 9728 metadata `ypl auth login <url>` reads

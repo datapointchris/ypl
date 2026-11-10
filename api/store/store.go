@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -498,6 +499,65 @@ func lockMigrations(path string) (func(), error) {
 		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 		_ = file.Close()
 	}, nil
+}
+
+// serverLockPoll is how often a waiting server tries the lock. A flock that
+// blocks cannot hear a canceled context.
+const serverLockPoll = 100 * time.Millisecond
+
+// TakeServerLock waits until no other server holds the store at path, then
+// holds it until release or until this process exits, however it exits. holder
+// is written into the lock file for a waiting server to name. waiting hears
+// once what the holder wrote, when the first try finds it held. The error wraps
+// ctx's once ctx ends first.
+//
+// Only the server takes this lock, so two servers never sync one store and
+// push the same planned writes to YouTube twice. The commands under `api/cmd/`
+// take only the migration lock, and run beside a server. A flock reaches one
+// kernel, so the database has to sit on a disk only one machine mounts. The
+// file is never removed, because a server that removed it would lock a new
+// file while another still held the old one.
+func TakeServerLock(ctx context.Context, path, holder string, waiting func(heldBy string)) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create the database directory: %w", err)
+	}
+	lock := serverLockPath(path)
+	file, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open the server lock: %w", err)
+	}
+	heldBy := ""
+	for announced := false; ; announced = true {
+		err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			_ = file.Close()
+			return nil, fmt.Errorf("take the server lock %s: %w", lock, err)
+		}
+		if !announced {
+			held, _ := os.ReadFile(lock)
+			heldBy = strings.TrimSpace(string(held))
+			waiting(heldBy)
+		}
+		select {
+		case <-ctx.Done():
+			_ = file.Close()
+			return nil, fmt.Errorf("the server lock %s is held by %s: %w", lock, heldBy, ctx.Err())
+		case <-time.After(serverLockPoll):
+		}
+	}
+	// A failed write leaves the lock held and only its holder unnamed.
+	if file.Truncate(0) == nil {
+		_, _ = file.WriteAt([]byte(holder+"\n"), 0)
+	}
+	return func() { _ = file.Close() }, nil
+}
+
+// serverLockPath is the file TakeServerLock locks for the store at path.
+func serverLockPath(path string) string {
+	return path + ".server.lock"
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

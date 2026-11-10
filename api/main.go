@@ -1,4 +1,6 @@
-// Command api is the ypl HTTP service. It applies its database migrations at
+// Command api is the ypl HTTP service. It holds a lock beside its database for
+// as long as it runs, so a second server on the same store waits for the first
+// to exit rather than syncing beside it. It applies its database migrations at
 // startup, syncs the channel's playlists as the channel YOUTUBE_CLIENT_ID,
 // YOUTUBE_CLIENT_SECRET and YOUTUBE_REFRESH_TOKEN name, answers liveness and
 // readiness probes, logs JSON to stdout, and drains in-flight requests and the
@@ -77,10 +79,19 @@ func main() {
 	}
 }
 
-// start reads the configuration and opens the database, applying its
-// migrations, before the port is bound. It then serves while the sync runs and
-// the identity provider's discovery document and keys are read. /ready answers
-// 200 once they are, which is when a token can be verified.
+// holdLimit bounds the wait for another server holding the store to exit. A
+// healthy one has drained within shutdownGrace of its SIGTERM, and a container
+// runtime kills it soon after, so a longer wait is on a process nothing will
+// stop.
+const holdLimit = shutdownGrace + time.Minute
+
+// start reads the configuration before the port is bound, so a configuration
+// that refuses to start never answers a probe. It then binds the port and
+// holds requests while it takes the store's lock, waiting up to holdLimit for
+// another server to let it go, and opens the database, applying its
+// migrations. It then serves while the sync runs and the identity provider's
+// discovery document and keys are read. /ready answers 200 once the store is
+// open and they are read, which is when a token can be verified.
 func start(ctx context.Context) error {
 	path, err := store.Path()
 	if err != nil {
@@ -111,13 +122,10 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	st, err := store.Open(ctx, path)
+	history, err := watchHistory()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = st.Close() }()
-	slog.Info("database ready", "path", path)
-
 	// The sync and the API each get a channel, because a run counts its own
 	// requests and units from its channel's totals.
 	syncChannel, err := youtube.NewChannel(ctx, creds)
@@ -128,26 +136,9 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	tally := enrich.NewTally()
-	edits := reconcile.NewEdits()
-	runner := reconcile.NewRunner(st, syncChannel, tally, edits, interval)
-	worker := reconcile.NewWorker(runner, interval, slog.Default())
 	provider, err := goapiauth.NewConnecting(goapiauth.Config{Issuer: issuer, PersonPrefix: clientIDPrefix, ServicePrefix: serviceClientIDPrefix})
 	if err != nil {
 		return err
-	}
-	api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, slog.Default())
-	if err := readHistory(api); err != nil {
-		return err
-	}
-	work := func(ctx context.Context) {
-		var wg sync.WaitGroup
-		wg.Go(func() { worker.Run(ctx) })
-		wg.Go(func() { provider.Run(ctx, slog.Default()) })
-		if reads {
-			wg.Go(func() { _ = enrich.New(st, reader, limits, tally).Run(ctx) })
-		}
-		wg.Wait()
 	}
 	var metadata http.Handler
 	if public := os.Getenv("PUBLIC_URL"); public != "" {
@@ -155,7 +146,75 @@ func start(ctx context.Context) error {
 	} else {
 		slog.Warn("PUBLIC_URL is unset, so no RFC 9728 metadata is served and `ypl auth login <url>` cannot discover the issuer")
 	}
-	return run(ctx, ":"+envOr("PORT", "8080"), handler(api, provider, metadata), work, api.Drain)
+
+	// A failure work meets once the port is bound ends the serving through
+	// ctx, and start returns it.
+	ctx, fail := context.WithCancelCause(ctx)
+	defer fail(nil)
+	hold := newStoreHold()
+	// Both are set by work and read once run has returned, which is after work
+	// has, so the store outlives every request the drain let finish.
+	var st *store.Store
+	var release func()
+	work := func(ctx context.Context) {
+		var wg sync.WaitGroup
+		defer wg.Wait()
+		wg.Go(func() { provider.Run(ctx, slog.Default()) })
+		// A server stopped while it waits or opens is stopping, not failing.
+		var err error
+		if release, err = takeServerLock(ctx, path, hold); err != nil {
+			if ctx.Err() == nil {
+				fail(err)
+			}
+			return
+		}
+		if st, err = store.Open(ctx, path); err != nil {
+			if ctx.Err() == nil {
+				fail(err)
+			}
+			return
+		}
+		slog.Info("database ready", "path", path)
+		tally := enrich.NewTally()
+		edits := reconcile.NewEdits()
+		worker := reconcile.NewWorker(reconcile.NewRunner(st, syncChannel, tally, edits, interval), interval, slog.Default())
+		api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, slog.Default())
+		if history != nil {
+			api.ReadHistoryWith(history.reader, history.sealer)
+		}
+		if !hold.open(handler(api, provider, metadata), api.Drain) {
+			return
+		}
+		wg.Go(func() { worker.Run(ctx) })
+		if reads {
+			wg.Go(func() { _ = enrich.New(st, reader, limits, tally).Run(ctx) })
+		}
+	}
+	err = run(ctx, ":"+envOr("PORT", "8080"), hold, work, hold.drain)
+	if st != nil {
+		_ = st.Close()
+	}
+	if release != nil {
+		release()
+	}
+	if cause := context.Cause(ctx); err == nil && cause != nil {
+		return cause
+	}
+	return err
+}
+
+// takeServerLock takes the lock of the store at path, telling hold who it
+// waits on, and gives up after holdLimit naming the server that held it.
+func takeServerLock(ctx context.Context, path string, hold *storeHold) (func(), error) {
+	host, _ := os.Hostname()
+	holder := fmt.Sprintf("pid %d on %s since %s", os.Getpid(), host, store.Timestamp(time.Now()))
+	waitCtx, cancel := context.WithTimeout(ctx, holdLimit)
+	defer cancel()
+	release, err := store.TakeServerLock(waitCtx, path, holder, hold.waitingOn)
+	if err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("the server holding the store did not exit within %v: %w", holdLimit, err)
+	}
+	return release, err
 }
 
 // defaultClientIDPrefix starts the id of every person's CLI client whose tokens
@@ -304,16 +363,16 @@ func handler(api *handlers.Handlers, gate tokenGate, metadata http.Handler) http
 }
 
 // routes serves /health, which answers once the listener is bound, and /ready,
-// which answers 200 once ready reports nil and 503 before that. The database
-// is open and migrated before the listener binds.
+// which answers 200 once ready reports nil and 503 with what it reported before
+// that.
 func routes(ready func() error) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		probe(w, http.StatusOK, "ok")
 	})
 	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, _ *http.Request) {
-		if ready() != nil {
-			probe(w, http.StatusServiceUnavailable, "starting")
+		if err := ready(); err != nil {
+			wire.JSON(w, http.StatusServiceUnavailable, map[string]string{"status": "starting", "detail": err.Error()})
 			return
 		}
 		probe(w, http.StatusOK, "ok")
@@ -325,26 +384,32 @@ func probe(w http.ResponseWriter, code int, status string) {
 	wire.JSON(w, code, map[string]string{"status": status})
 }
 
-// readHistory has api read the watch history when yt-dlp is found and
-// YOUTUBE_COOKIE_KEY is set, and logs which is missing otherwise. A key that is
-// set and unusable stops the server.
-func readHistory(api *handlers.Handlers) error {
+// historyReading is what the API reads the watch history through, and the
+// sealer it stores the cookie jar under.
+type historyReading struct {
+	reader *ytdlp.Reader
+	sealer *jarseal.Sealer
+}
+
+// watchHistory is how to read the watch history when yt-dlp is found and
+// YOUTUBE_COOKIE_KEY is set, and nil otherwise, logging which is missing. A key
+// that is set and unusable stops the server.
+func watchHistory() (*historyReading, error) {
 	key := os.Getenv("YOUTUBE_COOKIE_KEY")
 	if key == "" {
 		slog.Warn("no YOUTUBE_COOKIE_KEY, so the watch history is not read")
-		return nil
+		return nil, nil
 	}
 	sealer, err := jarseal.New(key)
 	if err != nil {
-		return fmt.Errorf("YOUTUBE_COOKIE_KEY: %w", err)
+		return nil, fmt.Errorf("YOUTUBE_COOKIE_KEY: %w", err)
 	}
-	history, err := ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp"))
+	reader, err := ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp"))
 	if err != nil {
 		slog.Warn("no yt-dlp, so the watch history is not read", "err", err)
-		return nil
+		return nil, nil
 	}
-	api.ReadHistoryWith(history, sealer)
-	return nil
+	return &historyReading{reader: reader, sealer: sealer}, nil
 }
 
 // envOr reads key, treating an empty value as unset. An exported empty PORT
