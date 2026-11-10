@@ -12,7 +12,10 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ypl-api . && \
+# The release names the image's sha- tag, which GET /api/v1/version answers.
+# A build that names none reports dev.
+ARG YPL_API_VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${YPL_API_VERSION}" -o ypl-api . && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o reset-enrichment ./cmd/reset-enrichment
 
 FROM alpine:3.22

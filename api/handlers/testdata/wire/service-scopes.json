@@ -1,5 +1,8 @@
 {
   "ypl.status.read": [
     "GET /api/v1/status"
+  ],
+  "ypl.version.read": [
+    "GET /api/v1/version"
   ]
 }

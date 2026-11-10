@@ -145,6 +145,7 @@ reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire t
 | Scope | Reaches |
 | --- | --- |
 | `ypl.status.read` | `GET /api/v1/status` |
+| `ypl.version.read` | `GET /api/v1/version` |
 
 | Request | Answers with |
 | --- | --- |
@@ -170,6 +171,7 @@ reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire t
 | `GET /api/v1/suggestions` | What to play next: never-played videos first, then the least recently played |
 | `GET /api/v1/sync/runs` | Sync runs newest first with their failures, a page at a time |
 | `GET /api/v1/status` | What the store holds, the latest run, the latest run that ended ok, the day's quota, and each playlist waiting to be pushed |
+| `GET /api/v1/version` | `{"version"}`: the release the server was built from, its image's `sha-<short>` tag, or `dev` for a build that named none |
 
 A playlist is named by its YouTube id or by its title, wherever one is named — in the path, and in
 the `playlist` parameter of videos and suggestions. Titles are matched as slugs: lowercased, with

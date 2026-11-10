@@ -52,6 +52,10 @@ import (
 	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
+// version is the release this server was built from, its image's sha- tag, set
+// at build time with -ldflags. A build that names none reports dev.
+var version = "dev"
+
 // shutdownGrace bounds how long in-flight requests get to finish after the
 // first SIGINT or SIGTERM. No playlist write or watch-history read begins once
 // the drain starts and no push write once the sync is canceled, which happen
@@ -178,7 +182,7 @@ func start(ctx context.Context) error {
 		tally := enrich.NewTally()
 		edits := reconcile.NewEdits()
 		worker := reconcile.NewWorker(reconcile.NewRunner(st, syncChannel, tally, edits, interval), interval, slog.Default())
-		api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, slog.Default())
+		api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, version, slog.Default())
 		if history != nil {
 			api.ReadHistoryWith(history.reader, history.sealer)
 		}
@@ -312,7 +316,7 @@ func serve(ctx context.Context, ln net.Listener, h http.Handler, work func(conte
 	}()
 
 	served := make(chan error, 1)
-	slog.Info("listening", "addr", ln.Addr().String())
+	slog.Info("listening", "addr", ln.Addr().String(), "version", version)
 	go func() {
 		served <- srv.Serve(ln)
 	}()

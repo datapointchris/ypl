@@ -70,6 +70,7 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		{name: "ratings", target: "/api/v1/ratings"},
 		{name: "tags", target: "/api/v1/tags"},
 		{name: "history", target: "/api/v1/youtube/history"},
+		{name: "version", target: "/api/v1/version"},
 	} {
 		rec := f.get(doc.target)
 		if rec.Code != http.StatusOK {

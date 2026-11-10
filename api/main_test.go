@@ -311,7 +311,7 @@ func apiHandler(t *testing.T, gate tokenGate) http.Handler {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return handler(handlers.New(st, nil, handlers.Sync{}, slog.Default()), gate, goapiauth.ProtectedResourceMetadata{Resource: "https://ypl.test", Issuer: "https://id.test"})
+	return handler(handlers.New(st, nil, handlers.Sync{}, "dev", slog.Default()), gate, goapiauth.ProtectedResourceMetadata{Resource: "https://ypl.test", Issuer: "https://id.test"})
 }
 
 func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
@@ -350,7 +350,7 @@ func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
 // so the scope it was written for reaches nothing and every call answers 403.
 func TestEveryServiceRouteIsARegisteredRoute(t *testing.T) {
 	mux := routes(alwaysReady)
-	handlers.New(nil, nil, handlers.Sync{}, slog.Default()).Register(mux)
+	handlers.New(nil, nil, handlers.Sync{}, "dev", slog.Default()).Register(mux)
 	wildcard := regexp.MustCompile(`\{[^}]*\}`)
 
 	for scope, patterns := range handlers.ServiceRoutes {

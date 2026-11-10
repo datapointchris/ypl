@@ -52,6 +52,8 @@ type Handlers struct {
 	drainOnce sync.Once
 	// history reads the watch history, and is nil on a server with no yt-dlp.
 	history *historyReads
+	// version is the release this server was built from.
+	version string
 }
 
 // Sync is what the API knows of the server's sync: who to tell that an edit
@@ -69,13 +71,15 @@ type EditNotifier interface {
 }
 
 // New is Handlers over st, reading and writing playlists on YouTube through
-// youtube and telling sync of each edit. Every answer with a 5xx is made by
-// refuseAndLog, which logs its cause to log.
-func New(st *store.Store, youtube PlaylistWriter, sync Sync, log *slog.Logger) *Handlers {
+// youtube, telling sync of each edit, and answering version as the release it
+// was built from. Every answer with a 5xx is made by refuseAndLog, which logs
+// its cause to log.
+func New(st *store.Store, youtube PlaylistWriter, sync Sync, version string, log *slog.Logger) *Handlers {
 	return &Handlers{
 		store:    st,
 		youtube:  youtube,
 		sync:     sync,
+		version:  version,
 		log:      log,
 		now:      time.Now,
 		writing:  make(chan struct{}, 1),
@@ -114,6 +118,7 @@ func (h *Handlers) routes() []route {
 		{http.MethodGet, "/api/v1/suggestions", h.listSuggestions},
 		{http.MethodGet, "/api/v1/sync/runs", h.listSyncRuns},
 		{http.MethodGet, "/api/v1/status", h.showStatus},
+		{http.MethodGet, "/api/v1/version", h.showVersion},
 	}
 }
 
@@ -124,6 +129,8 @@ func (h *Handlers) routes() []route {
 var ServiceRoutes = map[string][]string{
 	// What `ypl server status` calls.
 	"ypl.status.read": {"GET /api/v1/status"},
+	// The release the server was built from.
+	"ypl.version.read": {"GET /api/v1/version"},
 }
 
 // Register adds every route to mux. A path under /api/v1/ that no route

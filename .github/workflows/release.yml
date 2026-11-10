@@ -121,6 +121,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `:sha-<short>` is also the version the server reports, so it is
+      # resolved once and handed both to the tags and to the build.
+      - name: Resolve the version
+        id: version
+        run: echo "tag=sha-${GITHUB_SHA::7}" >>"$GITHUB_OUTPUT"
+
       # Two tags a build. `:latest` is what the compose file on the host names.
       # `:sha-<short>` never moves, so a k3s manifest can name a version rather
       # than a moment, and a rollback is a manifest edit.
@@ -130,7 +136,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/ypl-api
           tags: |
-            type=sha,prefix=sha-,format=short
+            type=raw,value=${{ steps.version.outputs.tag }}
             type=raw,value=latest
 
       # The context is api/ rather than the repo root: the server is a module
@@ -144,6 +150,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: YPL_API_VERSION=${{ steps.version.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
