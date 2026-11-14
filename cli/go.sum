@@ -53,8 +53,8 @@ github.com/datapointchris/goclilogin v0.7.0 h1:NurqA7FzxWU3zchui8JB+rkigGInufIOQ
 github.com/datapointchris/goclilogin v0.7.0/go.mod h1:BKusVBeatnZ7i7rx6xM7B9lADkTlfer9efrvuYjRIOI=
 github.com/datapointchris/goselfupdate v0.11.0 h1:aUJ27Cm9ZNGMfC7+kKChBsnm8offBE99wwUa10lFo2w=
 github.com/datapointchris/goselfupdate v0.11.0/go.mod h1:YcgyvM+wH6nh9zo9xioUqTHeH5HTYeCHevv4U+G7INc=
-github.com/datapointchris/gotermstyle v0.2.0 h1:WLGBSf+LNnRv+wEmuA6eWK3ne1k9xsH66bLgFMowIkM=
-github.com/datapointchris/gotermstyle v0.2.0/go.mod h1:cxp1JkdKMsmmsGX314qCqka4alpM84QHyn8Yu9nIOXQ=
+github.com/datapointchris/gotermstyle v0.6.0 h1:udz3/YAib//g5TUVacfHJaYlbuisyk005JyL5ed4B4c=
+github.com/datapointchris/gotermstyle v0.6.0/go.mod h1:pKINTy5wt7+1No+qXub+BoyOeZiLC/MYunXL/l9i1j4=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=

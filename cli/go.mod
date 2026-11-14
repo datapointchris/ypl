@@ -9,7 +9,7 @@ require (
 	github.com/datapointchris/goclikit v0.5.3
 	github.com/datapointchris/goclilogin v0.7.0
 	github.com/datapointchris/goselfupdate v0.11.0
-	github.com/datapointchris/gotermstyle v0.2.0
+	github.com/datapointchris/gotermstyle v0.6.0
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-runewidth v0.0.30
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
