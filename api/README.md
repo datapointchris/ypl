@@ -15,17 +15,17 @@ is the channel's refresh token. All three are required. `YOUTUBE_COOKIE_KEY`, th
 random bytes (`openssl rand -base64 32`), is what the watch-history cookie jar is sealed under in
 the store. Without it the history routes answer 503, and a value that is not such a key stops the
 server. The server listens on `PORT`, 8080 when unset. It keeps its store at `DATABASE_PATH`, or at
-`ypl/api.db` under `$XDG_DATA_HOME` when that is unset. The image sets `DATABASE_PATH` to `/var/db/ypl/ypl.db`, in a directory for the host to
-mount, since a store inside the container goes with the container. It also sets `TZ` to UTC, the
-zone the log lines are written in.
+`ypl/api.db` under `$XDG_DATA_HOME` when that is unset. The image sets `DATABASE_PATH` to
+`/var/db/ypl/ypl.db`, in a directory for the host to mount, since a store inside the container goes
+with the container. It also sets `TZ` to UTC, the zone the log lines are written in.
 
-One server syncs a store at a time. The server takes an exclusive lock on `DATABASE_PATH` followed
-by `.server.lock` before it opens the database, and holds it until it exits. A second server
-started on the same store binds its port and answers `/health`, and `/ready` answers 503 naming the
-server holding the lock. It holds every other request until the lock frees, then opens the store and
-answers them. A SIGTERM while it waits answers each held request 503 `shutting_down`. It waits a
-minute past the shutdown grace, then exits naming the holder. The lock is a `flock`, which keeps two
-servers apart only on one machine, so the store's disk is mounted by one machine at a time.
+One server syncs a store at a time. Before it opens the database, the server takes an exclusive
+lock on `<DATABASE_PATH>.server.lock`, and holds it until it exits. A second server started on the
+same store binds its port and answers `/health`, and `/ready` answers 503 naming the server holding
+the lock. It holds every other request until the lock frees, then opens the store and answers them.
+A SIGTERM while it waits answers each held request 503 `shutting_down`. It waits a minute past the
+shutdown grace, then exits naming the holder. The lock is a `flock`, which keeps two servers apart
+only on one machine, so the store's disk is mounted by one machine at a time.
 
 The server edits playlists through the Data API as well. Creating, renaming or deleting a playlist,
 and inserting, moving or deleting an item, costs 50 units a request. A rename reads the playlist
@@ -92,8 +92,9 @@ chapters nor comments, so these reads go through `yt-dlp`, signed in as nobody, 
 on `PATH`; `api/ytdlp` runs it, one process a read. Reads come one at a time, at least
 `ENRICH_PACE` apart, 90 seconds when unset, and up to twice that at random, so they never arrive in
 a burst. The store keeps when the latest read began, so a server that restarts waits out the pace
-from it before its first read. Each pass records what the reads did since the pass before. `ENRICH_PACE=off` reads no
-video, and a server configured that way needs no `yt-dlp` and starts without one.
+from it before its first read. Each pass records what the reads did since the pass before.
+`ENRICH_PACE=off` reads no video, and a server configured that way needs no `yt-dlp` and starts
+without one.
 
 `api/tracklist` is what reads a tracklist out of a video. It is the video's chapters, or failing
 those the timestamped lines of its description, or failing that the first of its top 20 comments
@@ -236,23 +237,23 @@ Each entry carries `resume_seconds`, where YouTube's resume point sits in the vi
 the page drew none, the video was watched to the end, or its length is unknown. YouTube draws it
 as a whole percentage of the length, so it is approximate by up to a hundredth of the video, which
 is nearly two minutes on a three-hour mix. As of 2026-10-24, YouTube saves it while the video
-plays, so for the newest entry it is usually near where the player is. `ypl rate` offers it in its form
-as the rating's position, marked approximate. It is read from the history page `yt-dlp` saves with
-`--write-pages` during the same read, so it costs no second request.
+plays, so for the newest entry it is usually near where the player is. `ypl rate` offers it in its
+form as the rating's position, marked approximate. It is read from the history page `yt-dlp` saves
+with `--write-pages` during the same read, so it costs no second request.
 
 The session is a Netscape cookie jar, kept in the store sealed with AES-256-GCM under
 `YOUTUBE_COOKIE_KEY`, so a copy of the store carries no usable session. A jar sealed under another
 key answers 409 `youtube_session_missing`, and is replaced by sending one again. YouTube rotates
-the cookies of a session open in a browser, which invalidates an exported copy. So the jar is exported from a private window
-that is then closed, and no browser opens the session again. `ypl server cookies set --help` gives
-the steps.
+the cookies of a session open in a browser, which invalidates an exported copy. So the jar is
+exported from a private window that is then closed, and no browser opens the session again.
+`ypl server cookies set --help` gives the steps.
 
 `yt-dlp` writes the jar back after each read with whatever YouTube rotated, and the server keeps
 that version, so the session lasts until YouTube ends it. A jar that reads the history signed out
 is refused with 422 `cookie_jar_signed_out`, and the session already held is kept. A read refused
-signed out later answers 502 `youtube_signed_out` and is recorded, and `GET /api/v1/status` answers the session's
-`last_ok_ts` and `last_refused_ts` under `youtube_session`, so a refusal later than the last ok
-read is the jar to export again. With no session, the history answers 409
+signed out later answers 502 `youtube_signed_out` and is recorded, and `GET /api/v1/status`
+answers the session's `last_ok_ts` and `last_refused_ts` under `youtube_session`, so a refusal
+later than the last ok read is the jar to export again. With no session, the history answers 409
 `youtube_session_missing`, and a server with no `yt-dlp` answers 503 `youtube_history_unavailable`.
 While YouTube refuses the server's address, as enrichment's pause records, the history answers 503
 `youtube_rate_limited` without reading, because a read sent into a refusal can turn it into a

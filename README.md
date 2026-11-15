@@ -309,9 +309,9 @@ rather than a login. A file setting `token_command` while `YPL_CLIENT_SECRET` is
 
 `ypl auth status --json` names the credential it checked in `type`: `authorized_user` for a person's
 login, `service_account` for a service, or `external_account` for a handed token, as Google's
-credential files do. A service's status exits
-1 unless the provider grants a token. Its `session` then says why: `rejected` for a secret the
-provider refused, `unverified` for a provider it could not reach.
+credential files do. A service's status exits 1 unless the provider grants a token. Its `session`
+then says why: `rejected` for a secret the provider refused, `unverified` for a provider it could
+not reach.
 
 ## `api/` — the one part that talks to YouTube
 

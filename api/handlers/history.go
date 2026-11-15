@@ -55,8 +55,6 @@ const historyDuration = 60 * time.Second
 // called.
 const HistoryDuration = historyDuration + recordTimeout
 
-// errHistoryDraining is the cause of a history read refused because the server
-// is draining.
 var errHistoryDraining = errors.New("the server is shutting down, so it begins no read of the watch history")
 
 // maxCookieBody bounds the body of PUT /api/v1/youtube/session, many times the
