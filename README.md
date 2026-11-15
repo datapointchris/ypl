@@ -114,11 +114,9 @@ nothing in it is `[]` rather than `null`, so one filter works on every answer. A
 one string, like `config path` or `auth token`, takes no `--json`.
 
 Exit codes are 0 for success, 2 for an invocation the CLI would not accept, and 1 for a command that
-ran and failed. Three commands also spend 1 on a real state, after writing their answer: `ypl now`
-when nothing is playing, `ypl next` when there is nothing to suggest, and `ypl auth status` when
-this machine is not logged in. A status bar can run any of them unguarded. `ypl server status`
-spends 3 on a sync that has stopped keeping up, and on a YouTube session that last read the watch
-history signed out.
+ran and failed. A few reads also spend a code on a real state rather than a failure, after writing
+their answer, so a status bar or a timer can run them unguarded. Each one's `--help` names the
+state and its code.
 
 `--no-input` forbids every prompt, so a script can take the non-interactive path from a terminal. A
 delete then needs `--yes`. An edit then needs its buffer piped in.
@@ -148,19 +146,19 @@ ypl now                           # the track playing inside the mix, and how fa
 ypl next                          # the same draw as a bare play, printed rather than played
 ```
 
-`ypl play` runs mpv in the foreground, holding the terminal until mpv exits. `--mpv` passes an
-argument straight through to it. `ypl play` opens mpv's IPC socket, which is what lets `ypl now`
-report the track inside a two-hour mix rather than the name of the mix. `ypl now` sees only an mpv
-that `ypl play` started, because the socket sits at a path `ypl play` chose.
+`ypl play` runs mpv in the foreground, holding the terminal until mpv exits. It opens mpv's IPC
+socket, which is what lets `ypl now` report the track inside a two-hour mix rather than the name of
+the mix. `ypl now` sees only an mpv that `ypl play` started, because the socket sits at a path
+`ypl play` chose.
 
 A player that failed is exit 1. mpv's own status is written to stderr instead. mpv spends 2 on a
 file it cannot open. This tool spends 2 on an invocation it would not accept, so mpv's code passed
 through would say the wrong thing.
 
 `ypl play` records what it plays. It reads mpv's socket while the player runs. Once a mix has played
-for 20 minutes, or for half its length when that is shorter, it tells the server while mpv is still
-playing. Only ground covered at playing speed counts: a seek forward, a rewind and a pause are not
-listening. Each play is posted under an id made once, so a retry is stored once. A play the server
+long enough, which `ypl play --help` gives, it tells the server while mpv is still playing. Only
+ground covered at playing speed counts: a seek forward, a rewind and a pause are not listening.
+Each play is posted under an id made once, so a retry is stored once. A play the server
 could not be told about is named afterwards with the `ypl plays add` line that records it. The plays
 are what `ypl next` reads to stop suggesting the same mix.
 
@@ -173,11 +171,10 @@ ypl plays delete 41                                # asks first; the video then 
 ```
 
 A play `ypl play` inferred is a verdict from one bounded observation. It sinks the mix in the draw,
-so every play has a way back. `ypl plays add` takes a video by its id, by a link it was copied from,
-or by part of its title. `ypl plays delete` asks first. `--yes` answers for it. A deleted play's
-number is never given to another play, so a number typed from an old listing finds nothing rather
-than a different listen. Its id is never stored again either, so a retry arriving after the delete
-cannot record the play a second time.
+so every play has a way back: `plays add` records one, and `plays delete` takes one back. A
+deleted play's number is never given to another play, so a number typed from an old listing finds
+nothing rather than a different listen. Its id is never stored again either, so a retry arriving
+after the delete cannot record the play a second time.
 
 ## `rate` — every like, dislike and note on a mix is kept, picked from the watch history
 
@@ -230,10 +227,8 @@ nothing was found.
 `ypl playlists create`, `rename` and `delete` make their change on YouTube in the request that asks
 for it. `delete` asks first, and needs `--yes` where there is nobody to ask.
 
-`ypl playlists edit` is the one changing verb that does not reach YouTube itself. It opens the order
-in `$VISUAL` or `$EDITOR`, one line per video, and sets the order the server holds. The server
-pushes that order to YouTube as soon as it is saved, ahead of anything else it has waiting. Each
-video the push moves, adds or removes is a 50-unit write, so a large reorder can take more than a
+`ypl playlists edit` is the one changing verb that does not reach YouTube itself. It sets the order
+the server holds, and the server pushes it to YouTube on its own. Each video the push moves, adds or removes is a 50-unit write, so a large reorder can take more than a
 day's quota. `ypl server status` lists what is left to push.
 
 Where an edit is refused, the buffer is kept in a file. The refusal names the file, with the command

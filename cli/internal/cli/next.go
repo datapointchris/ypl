@@ -20,7 +20,8 @@ func (a *app) nextCommand() *cobra.Command {
 		Short:   "Suggest what to play next, without playing it",
 		GroupID: groupPlaying,
 		Long: "Never-played videos first, then the least recently heard, in a new order each\n" +
-			"time. `ypl play` with no playlist plays videos picked the same way.",
+			"time. `ypl play` with no playlist plays videos picked the same way.\n\n" +
+			"Exits 1 when there is nothing to suggest, after writing the empty answer.",
 		Example: "  ypl next                                      one thing to put on now\n" +
 			"  ypl next --playlist sunday-morning --limit 5  five, from one playlist\n" +
 			"  ypl next --json                               for a status bar or a picker",
