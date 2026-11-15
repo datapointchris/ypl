@@ -62,15 +62,24 @@ tasks:
 
   # gofumpt is the formatter the commit hooks hold the code to, and -l exits 0
   # whatever it lists, so the listing itself is the verdict.
-  api:lint:
-    desc: Check the API's formatting, then vet and lint it
-    dir: api
+  gofumpt:check:
+    internal: true
+    dir: '{{.MODULE}}'
+    requires:
+      vars: [MODULE]
     cmds:
       - |
         unformatted=$(gofumpt -l .)
         if [ -n "$unformatted" ]; then
           echo "gofumpt needed on:"; echo "$unformatted"; exit 1
         fi
+
+  api:lint:
+    desc: Check the API's formatting, then vet and lint it
+    dir: api
+    cmds:
+      - task: gofumpt:check
+        vars: {MODULE: api}
       - go vet ./...
       - golangci-lint run
 
@@ -108,11 +117,8 @@ tasks:
     desc: Check the CLI's formatting, then vet and lint it
     dir: cli
     cmds:
-      - |
-        unformatted=$(gofumpt -l .)
-        if [ -n "$unformatted" ]; then
-          echo "gofumpt needed on:"; echo "$unformatted"; exit 1
-        fi
+      - task: gofumpt:check
+        vars: {MODULE: cli}
       - go vet ./...
       - golangci-lint run
 
