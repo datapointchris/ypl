@@ -66,8 +66,9 @@ read is read by id before it counts as removed, since a read spanning pages can 
 The push deletes what the server removed, keeps in place the longest run of items already in order,
 and inserts or moves the rest. Before each write it asks whether the day's quota has room: what the
 day has spent, the write, and the reads of every tick left before midnight Pacific at the listing
-and one average playlist each. Anything but an edit's push also leaves 1,000 units untouched, so a
-long push in the background leaves room for the next edit. As the reset nears the ticks left fall,
+and one average playlist each. Anything but an edit's push also leaves a reserve of units
+untouched, `EditReserve` in `api/reconcile`, so a long push in the background leaves room for the
+next edit. As the reset nears the ticks left fall,
 so a push that stopped for the day comes back, and an unfinished push is not even read until the
 quota has room for one of its writes. A push stops at a write that YouTube refuses or does not
 answer, which a later pass accounts for. A video YouTube refuses to add leaves the server's order.
@@ -79,7 +80,8 @@ than a minute before a pass read them is left for a later pass, and an edit's pu
 is woken again once the minute is up.
 
 The lengths job reads, through the Data API, the length of each video a playlist holds that it
-holds no length for, the newest first, up to 1,000 a pass at a unit per 50. So a filter or an order
+holds no length for, the newest first, at a unit per 50. `lengthsPerPass` in `api/reconcile` caps
+how many a pass reads. So a filter or an order
 by length reaches a video before its tracklist is read. Once the library is measured, it reads the
 videos new since the last and any YouTube reports no length for, which are live and upcoming
 streams, and that is why it is hourly rather than every tick.
