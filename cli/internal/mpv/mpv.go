@@ -86,9 +86,23 @@ func Addressable(path string) bool { return len([]byte(path)) < pathLimit }
 // before it does any work of its own.
 func Available() error {
 	if _, err := exec.LookPath(binary); err != nil {
-		return fmt.Errorf("%w — install it to play a playlist: %w", ErrUnavailable, err)
+		return unavailable(err)
 	}
 	return nil
+}
+
+// unavailable is the refusal for a failed lookup of mpv, naming what to
+// install. ErrUnavailable is wrapped alone: an error wrapping two splits into
+// its parts when it is reported, and the sentence between them is lost. Not
+// being found on PATH is what ErrUnavailable already says, so only another
+// reason is carried along. yt-dlp is named beside mpv because mpv opens a
+// YouTube link through it.
+func unavailable(err error) error {
+	const remedy = "install mpv and yt-dlp to play a playlist"
+	if errors.Is(err, exec.ErrNotFound) {
+		return fmt.Errorf("%w — %s", ErrUnavailable, remedy)
+	}
+	return fmt.Errorf("%w (%v) — %s", ErrUnavailable, err, remedy)
 }
 
 // Outcome is how a playback ended, in this tool's words.
@@ -138,7 +152,7 @@ type State struct {
 func Play(ctx context.Context, socketPath string, extra Arguments, urls WatchURLs, started func(pid int)) (Outcome, error) {
 	found, err := exec.LookPath(binary)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("%w — install it to play a playlist: %w", ErrUnavailable, err)
+		return Outcome{}, unavailable(err)
 	}
 	arguments := []string{}
 	if socketPath != "" {
