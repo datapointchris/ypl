@@ -76,7 +76,7 @@ func (h *Handlers) listPlaylists(w http.ResponseWriter, r *http.Request) {
 	}
 	c := newCollator()
 	slices.SortFunc(playlists, func(a, b playlistSummary) int {
-		return cmp.Or(c.CompareString(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
+		return cmp.Or(c.compare(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
 	})
 	answer, ok := pageAfter(w, playlists, func(p playlistSummary) string { return p.ID }, r.URL.Query().Get("starting_after"), limit)
 	if ok {

@@ -16,6 +16,7 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -214,12 +215,39 @@ func unknownField(err error) (string, bool) {
 	return field, err == nil
 }
 
-// newCollator orders names the way a reader expects them sorted: by the Unicode
+// collation orders names the way a reader expects them sorted: by the Unicode
 // Collation Algorithm, where case and accents decide only between names
-// otherwise equal. A Collator is not safe for concurrent use, so each request
-// makes its own.
-func newCollator() *collate.Collator {
-	return collate.New(language.Und)
+// otherwise equal.
+//
+// Each name is collated once, into a sort key kept for the rest of the
+// request, and a comparison compares two keys byte by byte. A sort compares
+// each name many times, and collating both names on every comparison derives
+// the same collation elements again each time. A Collator is not safe for
+// concurrent use, so each request makes its own.
+type collation struct {
+	collator *collate.Collator
+	buffer   collate.Buffer
+	keys     map[string][]byte
+}
+
+func newCollator() *collation {
+	return &collation{collator: collate.New(language.Und), keys: make(map[string][]byte)}
+}
+
+// compare orders a and b by the collation, as strings.Compare orders bytes.
+func (c *collation) compare(a, b string) int {
+	return bytes.Compare(c.key(a), c.key(b))
+}
+
+// key is name's sort key. A key points into the buffer, which is never reset,
+// so every key handed out stays valid.
+func (c *collation) key(name string) []byte {
+	if key, ok := c.keys[name]; ok {
+		return key
+	}
+	key := c.collator.KeyFromString(&c.buffer, name)
+	c.keys[name] = key
+	return key
 }
 
 // referenceError is a query parameter or path segment naming no row the store

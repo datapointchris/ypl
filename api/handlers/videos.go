@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
 	"golang.org/x/text/search"
 
@@ -237,7 +236,7 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slices.SortFunc(videos, func(a, b libraryVideo) int {
-		return cmp.Or(order.compare(&a, &b), c.CompareString(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
+		return cmp.Or(order.compare(&a, &b), c.compare(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
 	})
 	answer, ok := pageAfter(w, videos, func(v libraryVideo) string { return v.ID }, after, limit)
 	if ok {
@@ -354,7 +353,7 @@ func contains(matcher *search.Matcher, s, pattern string) bool {
 
 // groupArtists is each video's artists, the one most of its tracks name first,
 // and artists named as often in c's order.
-func groupArtists(rows []generated.ListVideoArtistsRow, c *collate.Collator) map[string][]string {
+func groupArtists(rows []generated.ListVideoArtistsRow, c *collation) map[string][]string {
 	byVideo := make(map[string][]generated.ListVideoArtistsRow)
 	for _, row := range rows {
 		byVideo[row.VideoID] = append(byVideo[row.VideoID], row)
@@ -362,7 +361,7 @@ func groupArtists(rows []generated.ListVideoArtistsRow, c *collate.Collator) map
 	grouped := make(map[string][]string, len(byVideo))
 	for id, named := range byVideo {
 		slices.SortFunc(named, func(a, b generated.ListVideoArtistsRow) int {
-			return cmp.Or(cmp.Compare(b.Appearances, a.Appearances), c.CompareString(a.Artist.String, b.Artist.String), strings.Compare(a.Artist.String, b.Artist.String))
+			return cmp.Or(cmp.Compare(b.Appearances, a.Appearances), c.compare(a.Artist.String, b.Artist.String), strings.Compare(a.Artist.String, b.Artist.String))
 		})
 		names := make([]string, len(named))
 		for i, row := range named {
@@ -374,14 +373,14 @@ func groupArtists(rows []generated.ListVideoArtistsRow, c *collate.Collator) map
 }
 
 // groupPlaylists is the playlists holding each video, by title in c's order.
-func groupPlaylists(rows []generated.ListVideoPlaylistsRow, c *collate.Collator) map[string][]playlistRef {
+func groupPlaylists(rows []generated.ListVideoPlaylistsRow, c *collation) map[string][]playlistRef {
 	grouped := make(map[string][]playlistRef)
 	for _, row := range rows {
 		grouped[row.VideoID] = append(grouped[row.VideoID], playlistRef{ID: row.PlaylistID, Title: row.Title})
 	}
 	for _, refs := range grouped {
 		slices.SortFunc(refs, func(a, b playlistRef) int {
-			return cmp.Or(c.CompareString(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
+			return cmp.Or(c.compare(a.Title, b.Title), cmp.Compare(a.ID, b.ID))
 		})
 	}
 	return grouped
