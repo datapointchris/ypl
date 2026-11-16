@@ -568,28 +568,47 @@ WHERE
 ORDER BY v.video_id;
 
 -- name: ListVideoArtists :many
--- Every video's artists, or only the video video_id's when it is not NULL, with
--- how many of its tracks name each, in no order.
+-- Every video's artists, with how many of its tracks name each, in no order.
+-- One video's are ListArtistsOfVideo, a separate query because a filter that
+-- may be NULL cannot be answered from the index.
+SELECT
+    video_id,
+    artist,
+    CAST(count(*) AS INTEGER) AS appearances
+FROM tracks
+WHERE artist IS NOT NULL AND artist != ''
+GROUP BY video_id, artist;
+
+-- name: ListArtistsOfVideo :many
+-- The artists of the video video_id, as ListVideoArtists lists them.
 SELECT
     video_id,
     artist,
     CAST(count(*) AS INTEGER) AS appearances
 FROM tracks
 WHERE
-    artist IS NOT NULL AND artist != ''
-    AND (CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR video_id = sqlc.narg(video_id))
+    video_id = ?
+    AND artist IS NOT NULL AND artist != ''
 GROUP BY video_id, artist;
 
 -- name: ListVideoPlaylists :many
--- Every playlist holding each video, or only the video video_id when it is not
--- NULL, in no order.
+-- Every playlist holding each video, in no order.
+SELECT DISTINCT
+    pe.video_id,
+    p.playlist_id,
+    p.title
+FROM playlist_entries AS pe
+INNER JOIN playlists AS p ON pe.playlist_id = p.playlist_id;
+
+-- name: ListPlaylistsOfVideo :many
+-- Every playlist holding the video video_id, as ListVideoPlaylists lists them.
 SELECT DISTINCT
     pe.video_id,
     p.playlist_id,
     p.title
 FROM playlist_entries AS pe
 INNER JOIN playlists AS p ON pe.playlist_id = p.playlist_id
-WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR pe.video_id = sqlc.narg(video_id);
+WHERE pe.video_id = ?;
 
 -- name: InsertPlay :execrows
 -- Records a play under the next handle, past every handle a deleted play
@@ -1017,16 +1036,43 @@ WHERE
 ORDER BY r.rated_ts DESC, r.rating_id DESC
 LIMIT sqlc.arg(max_rows);
 
+-- name: ListRatingsOfVideo :many
+-- Every rating of the video video_id newest first, each with its video.
+SELECT
+    r.rating_id,
+    r.kind,
+    r.message,
+    r.position_seconds,
+    r.is_position_estimated,
+    r.rated_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM ratings AS r
+INNER JOIN videos AS v ON r.video_id = v.video_id
+WHERE r.video_id = ?
+ORDER BY r.rated_ts DESC, r.rating_id DESC;
+
 -- name: ListRatingTags :many
--- The tags of every rating, or of the ratings of the video video_id only when it
--- is not NULL, in no order.
+-- The tags of every rating, in no order. One video's are ListRatingTagsOfVideo,
+-- a separate query because a filter that may be NULL cannot be answered from
+-- the index.
+SELECT
+    rt.rating_id,
+    r.video_id,
+    rt.tag
+FROM rating_tags AS rt
+INNER JOIN ratings AS r ON rt.rating_id = r.rating_id;
+
+-- name: ListRatingTagsOfVideo :many
+-- The tags of the ratings of the video video_id, in no order.
 SELECT
     rt.rating_id,
     r.video_id,
     rt.tag
 FROM rating_tags AS rt
 INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
-WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR r.video_id = sqlc.narg(video_id);
+WHERE r.video_id = ?;
 
 -- name: ListRatingIDsEndingWith :many
 -- The ids of the ratings whose id ends with tail, a rating's whole id included.
@@ -1039,9 +1085,10 @@ ORDER BY rating_id;
 DELETE FROM ratings WHERE rating_id = ?;
 
 -- name: ListVideoOpinions :many
--- Every rated video's likes, dislikes and notes counted, or the video video_id
--- only when it is not NULL, and the messages of its ratings joined by newlines,
--- oldest first.
+-- Every rated video's likes, dislikes and notes counted, and the messages of
+-- its ratings joined by newlines, oldest first. One video's are
+-- ListOpinionsOfVideo, a separate query because a filter that may be NULL
+-- cannot be answered from the index.
 SELECT
     r.video_id,
     CAST(sum(r.kind = 'like') AS INTEGER) AS likes,
@@ -1050,7 +1097,22 @@ SELECT
     CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
 FROM (
     SELECT * FROM ratings
-    WHERE CAST(sqlc.narg(video_id) AS TEXT) IS NULL OR video_id = sqlc.narg(video_id)
+    ORDER BY rated_ts, rating_id
+) AS r
+GROUP BY r.video_id;
+
+-- name: ListOpinionsOfVideo :many
+-- The opinions of the video video_id, as ListVideoOpinions counts them: no row
+-- when it holds no rating.
+SELECT
+    r.video_id,
+    CAST(sum(r.kind = 'like') AS INTEGER) AS likes,
+    CAST(sum(r.kind = 'dislike') AS INTEGER) AS dislikes,
+    CAST(sum(r.kind = 'note') AS INTEGER) AS notes,
+    CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
+FROM (
+    SELECT * FROM ratings
+    WHERE video_id = ?
     ORDER BY rated_ts, rating_id
 ) AS r
 GROUP BY r.video_id;

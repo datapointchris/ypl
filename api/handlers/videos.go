@@ -181,13 +181,13 @@ func (h *Handlers) listVideos(w http.ResponseWriter, r *http.Request) {
 		if rows, err = q.ListLibraryVideos(ctx, filter); err != nil {
 			return err
 		}
-		if artists, err = q.ListVideoArtists(ctx, sql.NullString{}); err != nil {
+		if artists, err = q.ListVideoArtists(ctx); err != nil {
 			return err
 		}
 		if opinions, err = readOpinions(ctx, q, sql.NullString{}); err != nil {
 			return err
 		}
-		playlists, err = q.ListVideoPlaylists(ctx, sql.NullString{})
+		playlists, err = q.ListVideoPlaylists(ctx)
 		return err
 	})
 	if err != nil {
@@ -285,25 +285,34 @@ func (h *Handlers) showVideo(w http.ResponseWriter, r *http.Request) {
 		if tracks, err = q.ListTracks(ctx, id); err != nil {
 			return err
 		}
-		if artists, err = q.ListVideoArtists(ctx, only); err != nil {
+		// Each read is the one-video form of what the library lists, keyed so
+		// the index answers it, and its rows are taken as the library's.
+		artistRows, err := q.ListArtistsOfVideo(ctx, id)
+		if err != nil {
 			return err
+		}
+		for _, row := range artistRows {
+			artists = append(artists, generated.ListVideoArtistsRow(row))
 		}
 		if opinions, err = readOpinions(ctx, q, only); err != nil {
 			return err
 		}
-		rows, err := q.ListRatings(ctx, generated.ListRatingsParams{VideoID: only, MaxRows: everyRow})
+		rows, err := q.ListRatingsOfVideo(ctx, id)
 		if err != nil {
 			return err
 		}
-		tagRows, err := q.ListRatingTags(ctx, only)
+		tagRows, err := readRatingTags(ctx, q, only)
 		if err != nil {
 			return err
 		}
 		tags := tagsByRating(tagRows)
 		for _, row := range rows {
-			ratings = append(ratings, ratingFrom(row, tags))
+			ratings = append(ratings, ratingFrom(generated.ListRatingsRow(row), tags))
 		}
-		playlists, err = q.ListVideoPlaylists(ctx, only)
+		playlistRows, err := q.ListPlaylistsOfVideo(ctx, id)
+		for _, row := range playlistRows {
+			playlists = append(playlists, generated.ListVideoPlaylistsRow(row))
+		}
 		return err
 	})
 	if err != nil {
@@ -409,15 +418,26 @@ type videoOpinions struct {
 // when it is valid.
 func readOpinions(ctx context.Context, q *generated.Queries, only sql.NullString) (videoOpinions, error) {
 	opinions := videoOpinions{counts: map[string]generated.ListVideoOpinionsRow{}, messages: map[string]string{}, tags: map[string][]string{}}
-	rows, err := q.ListVideoOpinions(ctx, only)
-	if err != nil {
-		return opinions, err
+	var rows []generated.ListVideoOpinionsRow
+	if only.Valid {
+		keyed, err := q.ListOpinionsOfVideo(ctx, only.String)
+		if err != nil {
+			return opinions, err
+		}
+		for _, row := range keyed {
+			rows = append(rows, generated.ListVideoOpinionsRow(row))
+		}
+	} else {
+		var err error
+		if rows, err = q.ListVideoOpinions(ctx); err != nil {
+			return opinions, err
+		}
 	}
 	for _, row := range rows {
 		opinions.counts[row.VideoID] = row
 		opinions.messages[row.VideoID] = row.Messages
 	}
-	tagRows, err := q.ListRatingTags(ctx, only)
+	tagRows, err := readRatingTags(ctx, q, only)
 	if err != nil {
 		return opinions, err
 	}

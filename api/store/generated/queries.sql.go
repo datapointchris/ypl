@@ -1176,6 +1176,48 @@ func (q *Queries) LatestVideoReadStarted(ctx context.Context) (string, error) {
 	return started_ts, err
 }
 
+const listArtistsOfVideo = `-- name: ListArtistsOfVideo :many
+SELECT
+    video_id,
+    artist,
+    CAST(count(*) AS INTEGER) AS appearances
+FROM tracks
+WHERE
+    video_id = ?
+    AND artist IS NOT NULL AND artist != ''
+GROUP BY video_id, artist
+`
+
+type ListArtistsOfVideoRow struct {
+	VideoID     string
+	Artist      sql.NullString
+	Appearances int64
+}
+
+// The artists of the video video_id, as ListVideoArtists lists them.
+func (q *Queries) ListArtistsOfVideo(ctx context.Context, videoID string) ([]ListArtistsOfVideoRow, error) {
+	rows, err := q.db.QueryContext(ctx, listArtistsOfVideo, videoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListArtistsOfVideoRow
+	for rows.Next() {
+		var i ListArtistsOfVideoRow
+		if err := rows.Scan(&i.VideoID, &i.Artist, &i.Appearances); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBaseItems = `-- name: ListBaseItems :many
 SELECT
     item_id,
@@ -1505,6 +1547,60 @@ func (q *Queries) ListNewestSyncRuns(ctx context.Context, maxRows int64) ([]Sync
 	return items, nil
 }
 
+const listOpinionsOfVideo = `-- name: ListOpinionsOfVideo :many
+SELECT
+    r.video_id,
+    CAST(sum(r.kind = 'like') AS INTEGER) AS likes,
+    CAST(sum(r.kind = 'dislike') AS INTEGER) AS dislikes,
+    CAST(sum(r.kind = 'note') AS INTEGER) AS notes,
+    CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
+FROM (
+    SELECT rating_id, video_id, kind, message, rated_ts, position_seconds, is_position_estimated FROM ratings
+    WHERE video_id = ?
+    ORDER BY rated_ts, rating_id
+) AS r
+GROUP BY r.video_id
+`
+
+type ListOpinionsOfVideoRow struct {
+	VideoID  string
+	Likes    int64
+	Dislikes int64
+	Notes    int64
+	Messages string
+}
+
+// The opinions of the video video_id, as ListVideoOpinions counts them: no row
+// when it holds no rating.
+func (q *Queries) ListOpinionsOfVideo(ctx context.Context, videoID string) ([]ListOpinionsOfVideoRow, error) {
+	rows, err := q.db.QueryContext(ctx, listOpinionsOfVideo, videoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOpinionsOfVideoRow
+	for rows.Next() {
+		var i ListOpinionsOfVideoRow
+		if err := rows.Scan(
+			&i.VideoID,
+			&i.Likes,
+			&i.Dislikes,
+			&i.Notes,
+			&i.Messages,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPlaylistEntries = `-- name: ListPlaylistEntries :many
 SELECT
     pe.entry_id,
@@ -1739,6 +1835,46 @@ func (q *Queries) ListPlaylistSummaries(ctx context.Context) ([]ListPlaylistSumm
 	return items, nil
 }
 
+const listPlaylistsOfVideo = `-- name: ListPlaylistsOfVideo :many
+SELECT DISTINCT
+    pe.video_id,
+    p.playlist_id,
+    p.title
+FROM playlist_entries AS pe
+INNER JOIN playlists AS p ON pe.playlist_id = p.playlist_id
+WHERE pe.video_id = ?
+`
+
+type ListPlaylistsOfVideoRow struct {
+	VideoID    string
+	PlaylistID string
+	Title      string
+}
+
+// Every playlist holding the video video_id, as ListVideoPlaylists lists them.
+func (q *Queries) ListPlaylistsOfVideo(ctx context.Context, videoID string) ([]ListPlaylistsOfVideoRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPlaylistsOfVideo, videoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlaylistsOfVideoRow
+	for rows.Next() {
+		var i ListPlaylistsOfVideoRow
+		if err := rows.Scan(&i.VideoID, &i.PlaylistID, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPlaysBefore = `-- name: ListPlaysBefore :many
 SELECT
     pl.play_id,
@@ -1893,7 +2029,6 @@ SELECT
     rt.tag
 FROM rating_tags AS rt
 INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
-WHERE CAST(?1 AS TEXT) IS NULL OR r.video_id = ?1
 `
 
 type ListRatingTagsRow struct {
@@ -1902,10 +2037,11 @@ type ListRatingTagsRow struct {
 	Tag      string
 }
 
-// The tags of every rating, or of the ratings of the video video_id only when it
-// is not NULL, in no order.
-func (q *Queries) ListRatingTags(ctx context.Context, videoID sql.NullString) ([]ListRatingTagsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listRatingTags, videoID)
+// The tags of every rating, in no order. One video's are ListRatingTagsOfVideo,
+// a separate query because a filter that may be NULL cannot be answered from
+// the index.
+func (q *Queries) ListRatingTags(ctx context.Context) ([]ListRatingTagsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRatingTags)
 	if err != nil {
 		return nil, err
 	}
@@ -1913,6 +2049,46 @@ func (q *Queries) ListRatingTags(ctx context.Context, videoID sql.NullString) ([
 	var items []ListRatingTagsRow
 	for rows.Next() {
 		var i ListRatingTagsRow
+		if err := rows.Scan(&i.RatingID, &i.VideoID, &i.Tag); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRatingTagsOfVideo = `-- name: ListRatingTagsOfVideo :many
+SELECT
+    rt.rating_id,
+    r.video_id,
+    rt.tag
+FROM rating_tags AS rt
+INNER JOIN ratings AS r ON rt.rating_id = r.rating_id
+WHERE r.video_id = ?
+`
+
+type ListRatingTagsOfVideoRow struct {
+	RatingID string
+	VideoID  string
+	Tag      string
+}
+
+// The tags of the ratings of the video video_id, in no order.
+func (q *Queries) ListRatingTagsOfVideo(ctx context.Context, videoID string) ([]ListRatingTagsOfVideoRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRatingTagsOfVideo, videoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRatingTagsOfVideoRow
+	for rows.Next() {
+		var i ListRatingTagsOfVideoRow
 		if err := rows.Scan(&i.RatingID, &i.VideoID, &i.Tag); err != nil {
 			return nil, err
 		}
@@ -1986,6 +2162,69 @@ func (q *Queries) ListRatings(ctx context.Context, arg ListRatingsParams) ([]Lis
 	var items []ListRatingsRow
 	for rows.Next() {
 		var i ListRatingsRow
+		if err := rows.Scan(
+			&i.RatingID,
+			&i.Kind,
+			&i.Message,
+			&i.PositionSeconds,
+			&i.IsPositionEstimated,
+			&i.RatedTs,
+			&i.VideoID,
+			&i.Title,
+			&i.ChannelTitle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRatingsOfVideo = `-- name: ListRatingsOfVideo :many
+SELECT
+    r.rating_id,
+    r.kind,
+    r.message,
+    r.position_seconds,
+    r.is_position_estimated,
+    r.rated_ts,
+    v.video_id,
+    v.title,
+    v.channel_title
+FROM ratings AS r
+INNER JOIN videos AS v ON r.video_id = v.video_id
+WHERE r.video_id = ?
+ORDER BY r.rated_ts DESC, r.rating_id DESC
+`
+
+type ListRatingsOfVideoRow struct {
+	RatingID            string
+	Kind                string
+	Message             sql.NullString
+	PositionSeconds     sql.NullInt64
+	IsPositionEstimated bool
+	RatedTs             string
+	VideoID             string
+	Title               string
+	ChannelTitle        string
+}
+
+// Every rating of the video video_id newest first, each with its video.
+func (q *Queries) ListRatingsOfVideo(ctx context.Context, videoID string) ([]ListRatingsOfVideoRow, error) {
+	rows, err := q.db.QueryContext(ctx, listRatingsOfVideo, videoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRatingsOfVideoRow
+	for rows.Next() {
+		var i ListRatingsOfVideoRow
 		if err := rows.Scan(
 			&i.RatingID,
 			&i.Kind,
@@ -2401,9 +2640,7 @@ SELECT
     artist,
     CAST(count(*) AS INTEGER) AS appearances
 FROM tracks
-WHERE
-    artist IS NOT NULL AND artist != ''
-    AND (CAST(?1 AS TEXT) IS NULL OR video_id = ?1)
+WHERE artist IS NOT NULL AND artist != ''
 GROUP BY video_id, artist
 `
 
@@ -2413,10 +2650,11 @@ type ListVideoArtistsRow struct {
 	Appearances int64
 }
 
-// Every video's artists, or only the video video_id's when it is not NULL, with
-// how many of its tracks name each, in no order.
-func (q *Queries) ListVideoArtists(ctx context.Context, videoID sql.NullString) ([]ListVideoArtistsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listVideoArtists, videoID)
+// Every video's artists, with how many of its tracks name each, in no order.
+// One video's are ListArtistsOfVideo, a separate query because a filter that
+// may be NULL cannot be answered from the index.
+func (q *Queries) ListVideoArtists(ctx context.Context) ([]ListVideoArtistsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listVideoArtists)
 	if err != nil {
 		return nil, err
 	}
@@ -2494,7 +2732,6 @@ SELECT
     CAST(coalesce(group_concat(r.message, char(10)), '') AS TEXT) AS messages
 FROM (
     SELECT rating_id, video_id, kind, message, rated_ts, position_seconds, is_position_estimated FROM ratings
-    WHERE CAST(?1 AS TEXT) IS NULL OR video_id = ?1
     ORDER BY rated_ts, rating_id
 ) AS r
 GROUP BY r.video_id
@@ -2508,11 +2745,12 @@ type ListVideoOpinionsRow struct {
 	Messages string
 }
 
-// Every rated video's likes, dislikes and notes counted, or the video video_id
-// only when it is not NULL, and the messages of its ratings joined by newlines,
-// oldest first.
-func (q *Queries) ListVideoOpinions(ctx context.Context, videoID sql.NullString) ([]ListVideoOpinionsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listVideoOpinions, videoID)
+// Every rated video's likes, dislikes and notes counted, and the messages of
+// its ratings joined by newlines, oldest first. One video's are
+// ListOpinionsOfVideo, a separate query because a filter that may be NULL
+// cannot be answered from the index.
+func (q *Queries) ListVideoOpinions(ctx context.Context) ([]ListVideoOpinionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listVideoOpinions)
 	if err != nil {
 		return nil, err
 	}
@@ -2547,7 +2785,6 @@ SELECT DISTINCT
     p.title
 FROM playlist_entries AS pe
 INNER JOIN playlists AS p ON pe.playlist_id = p.playlist_id
-WHERE CAST(?1 AS TEXT) IS NULL OR pe.video_id = ?1
 `
 
 type ListVideoPlaylistsRow struct {
@@ -2556,10 +2793,9 @@ type ListVideoPlaylistsRow struct {
 	Title      string
 }
 
-// Every playlist holding each video, or only the video video_id when it is not
-// NULL, in no order.
-func (q *Queries) ListVideoPlaylists(ctx context.Context, videoID sql.NullString) ([]ListVideoPlaylistsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listVideoPlaylists, videoID)
+// Every playlist holding each video, in no order.
+func (q *Queries) ListVideoPlaylists(ctx context.Context) ([]ListVideoPlaylistsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listVideoPlaylists)
 	if err != nil {
 		return nil, err
 	}

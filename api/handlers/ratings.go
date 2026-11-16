@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -154,7 +155,7 @@ func (h *Handlers) createRating(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		tagRows, err := tx.ListRatingTags(ctx, sql.NullString{String: row.VideoID, Valid: true})
+		tagRows, err := readRatingTags(ctx, tx.Queries, sql.NullString{String: row.VideoID, Valid: true})
 		if err != nil {
 			return err
 		}
@@ -266,7 +267,7 @@ func (h *Handlers) listRatings(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		tagRows, err := q.ListRatingTags(ctx, params.VideoID)
+		tagRows, err := readRatingTags(ctx, q, params.VideoID)
 		if err != nil {
 			return err
 		}
@@ -305,6 +306,21 @@ func (h *Handlers) listTags(w http.ResponseWriter, r *http.Request) {
 		tags[i] = tagCount{Tag: row.Tag, Videos: row.Videos}
 	}
 	wire.JSON(w, http.StatusOK, tags)
+}
+
+// readRatingTags is the tags of every rating, or of the ratings of the video
+// only names when it is valid. One video's are a query of their own, keyed so
+// the index answers it, and its rows are taken as the whole table's.
+func readRatingTags(ctx context.Context, q *generated.Queries, only sql.NullString) ([]generated.ListRatingTagsRow, error) {
+	if !only.Valid {
+		return q.ListRatingTags(ctx)
+	}
+	keyed, err := q.ListRatingTagsOfVideo(ctx, only.String)
+	rows := make([]generated.ListRatingTagsRow, len(keyed))
+	for i, row := range keyed {
+		rows[i] = generated.ListRatingTagsRow(row)
+	}
+	return rows, err
 }
 
 func tagsByRating(rows []generated.ListRatingTagsRow) map[string][]string {
