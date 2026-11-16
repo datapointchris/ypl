@@ -143,8 +143,45 @@ func newRootCommand(a *app) *cobra.Command {
 		moved("status", "ypl server status"),
 		moved("sync", "ypl server syncs list"),
 	)
+	refuseWordsNamingNothing(root)
 	noFiles(root)
 	return root
+}
+
+// refuseWordsNamingNothing makes cobra's own `help` and `completion` commands
+// while the tree is built, so each answers a word naming nothing the way every
+// other namespace does: refused with the commands near it, and exit 2. Left to
+// cobra, `ypl completion tcsh` prints the completion help and `ypl help foo`
+// the root's, and both exit 0, which a script reads as success. Cobra makes
+// each only on a root that has subcommands, so this runs after AddCommand.
+func refuseWordsNamingNothing(root *cobra.Command) {
+	root.InitDefaultHelpCmd()
+	root.InitDefaultCompletionCmd()
+	for _, cmd := range root.Commands() {
+		switch cmd.Name() {
+		case "completion":
+			goclikit.AsNamespace(cmd)
+		case "help":
+			cmd.RunE = helpOnTheNamedCommand
+		}
+	}
+}
+
+// helpOnTheNamedCommand prints the help of the command its words name. A word
+// left over under a namespace names no command, so it is refused rather than
+// answered with the namespace's help. A word left over under a command that
+// runs is that command's argument, so its help is printed.
+func helpOnTheNamedCommand(cmd *cobra.Command, args []string) error {
+	target, rest, err := cmd.Root().Find(args)
+	if err != nil {
+		return goclikit.UsageError(err)
+	}
+	if _, namespace := target.Annotations[goclikit.NamespaceAnnotation]; namespace && len(rest) > 0 {
+		return goclikit.UnknownCommand(target, rest[0])
+	}
+	target.InitDefaultHelpFlag()
+	target.InitDefaultVersionFlag()
+	return target.Help()
 }
 
 // dashedVideoID is the video id a flag parser refused as a flag, and false when

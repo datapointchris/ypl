@@ -23,6 +23,9 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 	for _, args := range [][]string{
 		{"nope"},
 		{"playlists", "nope"},
+		{"completion", "tcsh"},
+		{"help", "nope"},
+		{"help", "playlists", "nope"},
 		{"playlists", "show"},
 		{"playlists", "show", "one", "two"},
 		{"playlists", "list", "--nope"},
@@ -414,13 +417,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 
 	said := map[string]bool{}
 	exercised := map[string]bool{}
-	// Cobra adds `help` as the binary executes, so the tree read here adds it
-	// too.
-	root := func() *cobra.Command {
-		tree := newRootCommand(&app{})
-		tree.InitDefaultHelpCmd()
-		return tree
-	}
+	root := func() *cobra.Command { return newRootCommand(&app{}) }
 	// Each invocation is required to produce a hint of its own. A floor across
 	// the whole set is satisfied by any one survivor, so dropping the backticks
 	// from three of four sentences would leave it green.
@@ -516,6 +513,8 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		"ypl auth login": true, "ypl auth logout": true,
 		"ypl config path": true,
 		"ypl config show": true, "ypl help": true, "ypl update": true,
+		"ypl completion bash": true, "ypl completion zsh": true,
+		"ypl completion fish": true, "ypl completion powershell": true,
 		"ypl playlists create": true, "ypl playlists delete": true, "ypl playlists edit": true,
 		"ypl playlists rename": true, "ypl playlists show": true,
 		"ypl plays add": true, "ypl plays delete": true, "ypl plays show": true,
