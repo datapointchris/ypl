@@ -25,7 +25,7 @@ func (a *app) playCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:     "play [playlist]",
-		Short:   "Play a playlist in mpv, or what you have heard least lately",
+		Short:   "Play a playlist in mpv, or what you heard least lately",
 		GroupID: groupPlaying,
 		Long: "A playlist plays in its order, skipping videos YouTube will not serve. With no\n" +
 			fmt.Sprintf("playlist, up to %d videos play: never-played first, then the least recently\n", api.MaxSuggestions) +

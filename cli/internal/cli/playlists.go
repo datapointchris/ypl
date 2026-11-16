@@ -17,8 +17,8 @@ func (a *app) playlistsCommand() *cobra.Command {
 		Short:   "The playlists on the channel",
 		GroupID: groupPlaylists,
 		Long: "Name a playlist by its title, its slug from Tab, or its id.\n" +
-			"`show` also takes part of a title; a change takes the whole of it.\n" +
-			"A change happens on YouTube at once. An edit is pushed there as soon as it is saved.",
+			"`show` also takes part of a title; a change takes the whole of it. A change\n" +
+			"happens on YouTube at once. An edit is pushed there as soon as it is saved.",
 		Example: "  ypl playlists list            every playlist, by the slug Tab offers\n" +
 			"  ypl playlists show 001-audio  its videos, in the order they play",
 	}

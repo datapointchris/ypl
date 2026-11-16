@@ -32,7 +32,7 @@ func (a *app) rateCommand() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:     "rate [video]",
-		Short:   "Like, dislike or leave a note on a mix, with a message and tags",
+		Short:   "Like, dislike or note a mix, with a message and tags",
 		GroupID: groupRatings,
 		Long: "Each rating is kept, so a mix holds every like, dislike and note left on it,\n" +
 			"and `ypl videos show` lists them. A note needs a message; a like or a dislike\n" +
@@ -40,10 +40,10 @@ func (a *app) rateCommand() *cobra.Command {
 			"At a terminal with no video named, it offers the library in fzf, with the newest\n" +
 			"mixes in YouTube's watch history on top. Every player signed into the channel's\n" +
 			"account writes to that history. With no --like, --dislike or --note it then asks\n" +
-			"for the kind, the message, the tags and where in the mix, offering YouTube's resume\n" +
-			"point; with one, it records what the flags gave and nothing else.\n\n" +
+			"for the kind, the message, the tags and where in the mix, offering YouTube's\n" +
+			"resume point; with one, it records what the flags gave and nothing else.\n\n" +
 			"Without a terminal, or under --no-input, name the video and give the kind.",
-		Example: "  ypl rate                                             pick what is playing, then rate it\n" +
+		Example: "  ypl rate                                             pick a mix, then rate it\n" +
 			"  ypl rate --like -m 'great closing hour'              pick it, and like it\n" +
 			"  ypl rate dQw4w9WgXcQ --note -m 'too much talk'       a note on one mix\n" +
 			"  ypl rate 'robot heart link up' --dislike --tag dark  by part of its title\n" +

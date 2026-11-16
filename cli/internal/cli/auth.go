@@ -57,8 +57,8 @@ func (a *app) authLoginCommand() *cobra.Command {
 			"machine's short hostname. Each is printed with where it came from before the\n" +
 			"login starts, and written to the file once it succeeds. A value already in\n" +
 			"the file is never rewritten.",
-		Example: "  ypl auth login                        log this machine in, once per machine\n" +
-			"  ypl auth login https://ypl.example.com  the same, on a machine with no config file",
+		Example: "  ypl auth login                          log this machine in, once per machine\n" +
+			"  ypl auth login https://ypl.example.com  the same, with no config file yet",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if config.IsService() {

@@ -20,7 +20,7 @@ func (a *app) videosCommand() *cobra.Command {
 		Short:   "Every video across all playlists",
 		GroupID: groupVideos,
 		Example: "  ypl videos list --min-minutes 180      the mixes three hours long or more\n" +
-			"  ypl videos show 'robot heart link up'  one mix's tracklist, by part of its title",
+			"  ypl videos show 'robot heart link up'  a mix's tracks, by part of its title",
 	}
 	goclikit.AsNamespace(cmd)
 	cmd.AddCommand(a.videosListCommand(), a.videosShowCommand(), a.videosSortsCommand())
@@ -43,7 +43,7 @@ func (a *app) videosListCommand() *cobra.Command {
 			"  ypl videos list --sort newest --limit 10  the ten latest uploads\n" +
 			"  ypl videos list --rated dislike           the mixes to trim\n" +
 			"  ypl videos list --tag sunrise             the mixes you tagged sunrise\n" +
-			"  ypl videos list --text closing            the mixes a message mentions closing on\n" +
+			"  ypl videos list --text closing            mixes a message mentions closing on\n" +
 			"  ypl videos list --json                    the whole library, for a script",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

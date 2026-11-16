@@ -24,7 +24,7 @@ func (a *app) serverCookiesSetCommand() *cobra.Command {
 	var keep bool
 	cmd := &cobra.Command{
 		Use:   "set <file>",
-		Short: "Send a cookie jar for the server to read the watch history with",
+		Short: "Send a cookie jar for reading the watch history",
 		Long: "The file is a Netscape cookies.txt holding youtube.com's cookies, signed in as\n" +
 			"the account the players use. YouTube rotates the cookies of a session a browser\n" +
 			"has open, which breaks an exported copy, so export them from a private window:\n\n" +
