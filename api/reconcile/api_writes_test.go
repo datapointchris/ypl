@@ -26,7 +26,7 @@ func api(st *store.Store, f *fakeChannel) *http.ServeMux {
 func send(t *testing.T, mux *http.ServeMux, method, target, body string, status int) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(method, target, strings.NewReader(body)))
+	mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, target, strings.NewReader(body)))
 	if rec.Code != status {
 		t.Fatalf("%s %s answered %d %s, want %d", method, target, rec.Code, rec.Body, status)
 	}

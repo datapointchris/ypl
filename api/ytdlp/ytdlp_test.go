@@ -65,7 +65,7 @@ func fake(mode string, args []string) int {
 		return 1
 	case "hang":
 		// A process yt-dlp started holds the output open after yt-dlp is killed.
-		held := exec.Command(os.Args[0])
+		held := exec.CommandContext(context.Background(), os.Args[0])
 		held.Env = append(os.Environ(), fakeMode+"=sleep")
 		held.Stdout = os.Stdout
 		_ = held.Start()

@@ -224,7 +224,7 @@ func (f *fakeYouTube) writes() int {
 func (f *fixture) doCanceled(method, target, body string) *httptest.ResponseRecorder {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	req := httptest.NewRequest(method, target, strings.NewReader(body)).WithContext(ctx)
+	req := httptest.NewRequestWithContext(ctx, method, target, strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	f.mux.ServeHTTP(rec, req)
 	return rec
@@ -579,14 +579,14 @@ func TestPlaylistWritesTakeTurns(t *testing.T) {
 	<-writing
 	secondCtx, cancelSecond := context.WithCancel(context.Background())
 	wg.Go(func() {
-		req := httptest.NewRequest(http.MethodPatch, "/api/v1/playlists/PLA", strings.NewReader(`{"description": "Second"}`)).WithContext(secondCtx)
+		req := httptest.NewRequestWithContext(secondCtx, http.MethodPatch, "/api/v1/playlists/PLA", strings.NewReader(`{"description": "Second"}`))
 		f.mux.ServeHTTP(httptest.NewRecorder(), req)
 	})
 	thirdCtx, cancelThird := context.WithCancel(context.Background())
 	thirdDone := make(chan struct{})
 	go func() {
 		defer close(thirdDone)
-		req := httptest.NewRequest(http.MethodDelete, "/api/v1/playlists/PLB", nil).WithContext(thirdCtx)
+		req := httptest.NewRequestWithContext(thirdCtx, http.MethodDelete, "/api/v1/playlists/PLB", nil)
 		f.mux.ServeHTTP(httptest.NewRecorder(), req)
 	}()
 
@@ -681,7 +681,7 @@ func TestEveryWriteOutcomeHasItsOwnAnswer(t *testing.T) {
 			continue
 		}
 		rec := httptest.NewRecorder()
-		f.h.refuseUnmade(rec, httptest.NewRequest(http.MethodPatch, "/api/v1/playlists/PLA", nil), outcome, errInvalidSnippet)
+		f.h.refuseUnmade(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPatch, "/api/v1/playlists/PLA", nil), outcome, errInvalidSnippet)
 		if rec.Code != status {
 			t.Errorf("a write that ended %q answered %d, want %d: %s", outcome, rec.Code, status, rec.Body)
 		}

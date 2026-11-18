@@ -30,7 +30,7 @@ type wireVideoRefusal struct {
 // field lines given.
 func (f *fixture) editItems(playlist string, videos []string, ifMatch ...string) *httptest.ResponseRecorder {
 	ids, _ := json.Marshal(videos)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/playlists/"+playlist+"/items", strings.NewReader(`{"video_ids": `+string(ids)+`}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, "/api/v1/playlists/"+playlist+"/items", strings.NewReader(`{"video_ids": `+string(ids)+`}`))
 	for _, value := range ifMatch {
 		req.Header.Add("If-Match", value)
 	}

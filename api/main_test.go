@@ -64,14 +64,14 @@ func TestReadyAnswersOnlyOnceItsCheckReportsReady(t *testing.T) {
 	} {
 		ready = c.ready
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", http.NoBody))
+		mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ready", http.NoBody))
 		var body map[string]string
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != c.code || body["status"] != c.status {
 			t.Errorf("/ready while ready is %v = %d %s, want %d with status %s", c.ready, rec.Code, rec.Body, c.code, c.status)
 		}
 	}
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", http.NoBody))
+	mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", http.NoBody))
 	if rec.Code != http.StatusOK {
 		t.Errorf("/health = %d, want 200 whatever ready reports", rec.Code)
 	}
@@ -91,7 +91,7 @@ func TestProbesAnswerGetAndHeadAndRefuseWrites(t *testing.T) {
 	for _, path := range []string{"/health", "/ready"} {
 		for _, tc := range cases {
 			rec := httptest.NewRecorder()
-			routes(alwaysReady).ServeHTTP(rec, httptest.NewRequest(tc.method, path, http.NoBody))
+			routes(alwaysReady).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), tc.method, path, http.NoBody))
 			if rec.Code != tc.want {
 				t.Errorf("%s %s = %d, want %d", tc.method, path, rec.Code, tc.want)
 			}
@@ -101,7 +101,7 @@ func TestProbesAnswerGetAndHeadAndRefuseWrites(t *testing.T) {
 
 func TestProbeBodyIsJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
-	routes(alwaysReady).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", http.NoBody))
+	routes(alwaysReady).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ready", http.NoBody))
 
 	if got, want := rec.Body.String(), "{\"status\":\"ok\"}\n"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
@@ -123,7 +123,7 @@ func TestEmptyEnvironmentValueFallsBack(t *testing.T) {
 }
 
 func TestRunReturnsTheBindError(t *testing.T) {
-	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	taken, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("occupy a port: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestRunReturnsTheBindError(t *testing.T) {
 }
 
 func TestServeAnswersUntilCanceledThenReturnsNil(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -155,7 +155,11 @@ func TestServeAnswersUntilCanceledThenReturnsNil(t *testing.T) {
 	go func() { done <- serve(ctx, ln, routes(alwaysReady), func(context.Context) {}, func() {}) }()
 
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-	resp, err := client.Get("http://" + ln.Addr().String() + "/ready")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+ln.Addr().String()+"/ready", http.NoBody)
+	if err != nil {
+		t.Fatalf("build GET /ready: %v", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET /ready: %v", err)
 	}
@@ -177,7 +181,7 @@ func TestServeAnswersUntilCanceledThenReturnsNil(t *testing.T) {
 
 // The work runs until serve stops, and serve returns only after it has.
 func TestServeStopsItsWorkBeforeReturning(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -210,7 +214,7 @@ func TestServeStopsItsWorkBeforeReturning(t *testing.T) {
 // playlist write begun before the drain does, so the request is answered only
 // if serve drains the API before it waits on requests in flight.
 func TestServeDrainsTheAPIBeforeWaitingOnRequestsInFlight(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -228,7 +232,13 @@ func TestServeDrainsTheAPIBeforeWaitingOnRequestsInFlight(t *testing.T) {
 	answered := make(chan int, 1)
 	go func() {
 		client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-		resp, err := client.Post("http://"+ln.Addr().String()+"/api/v1/playlists", "application/json", strings.NewReader(`{}`))
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+ln.Addr().String()+"/api/v1/playlists", strings.NewReader(`{}`))
+		if err != nil {
+			answered <- 0
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
 		if err != nil {
 			answered <- 0
 			return
@@ -334,7 +344,7 @@ func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
 		{http.MethodGet, goapiauth.ProtectedResourcePath, "", http.StatusOK},
 	}
 	for _, c := range cases {
-		req := httptest.NewRequest(c.method, c.path, http.NoBody)
+		req := httptest.NewRequestWithContext(t.Context(), c.method, c.path, http.NoBody)
 		if c.token != "" {
 			req.Header.Set("Authorization", "Bearer "+c.token)
 		}
@@ -360,7 +370,7 @@ func TestEveryServiceRouteIsARegisteredRoute(t *testing.T) {
 				t.Errorf("%s: %q names no method, so no request is routed to it", scope, pattern)
 				continue
 			}
-			req := httptest.NewRequest(method, wildcard.ReplaceAllString(path, "x"), http.NoBody)
+			req := httptest.NewRequestWithContext(t.Context(), method, wildcard.ReplaceAllString(path, "x"), http.NoBody)
 			if _, routed := mux.Handler(req); routed != pattern {
 				t.Errorf("%s: %s is routed to %q, want %q", scope, req.URL.Path, routed, pattern)
 			}
@@ -405,7 +415,7 @@ type child struct {
 func startChild(t *testing.T, issuer string, env ...string) *child {
 	t.Helper()
 	database := filepath.Join(t.TempDir(), "api.db")
-	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^$")
 	// The credentials are placeholders, and every request the sync makes goes to
 	// a proxy port nothing listens on, so no request leaves the machine. The
 	// identity provider is on the loopback address, which Go never proxies. A
@@ -535,7 +545,7 @@ func TestSecondSignalEndsTheDrain(t *testing.T) {
 
 	// A request whose headers never finish keeps the connection active, so
 	// Shutdown waits on it for the whole grace period.
-	conn, err := net.Dial("tcp", "127.0.0.1:"+port)
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", "127.0.0.1:"+port)
 	if err != nil {
 		t.Fatalf("dial child: %v", err)
 	}

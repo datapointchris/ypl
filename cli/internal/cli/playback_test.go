@@ -61,7 +61,7 @@ func playingMpv(t *testing.T, properties map[string]any) {
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		t.Fatalf("make the socket directory: %v", err)
 	}
-	listener, err := net.Listen("unix", socket)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatalf("listen on %s: %v", socket, err)
 	}
@@ -292,7 +292,7 @@ func deafSocket(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		t.Fatalf("make the socket directory: %v", err)
 	}
-	listener, err := net.Listen("unix", socket)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatalf("listen on %s: %v", socket, err)
 	}

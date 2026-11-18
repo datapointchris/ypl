@@ -240,7 +240,7 @@ func TestServerStatusCallsARouteTheRequestedScopeReaches(t *testing.T) {
 		t.Fatal("`ypl server status` sent nothing to hold against the scopes")
 	}
 	for _, sent := range f.sent {
-		if _, pattern := listed.Handler(httptest.NewRequest(sent.Method, sent.URL.Path, http.NoBody)); pattern == "" {
+		if _, pattern := listed.Handler(httptest.NewRequestWithContext(t.Context(), sent.Method, sent.URL.Path, http.NoBody)); pattern == "" {
 			t.Errorf("`ypl server status` sent %s %s, which the server lists for none of %v", sent.Method, sent.URL.Path, scopes)
 		}
 	}

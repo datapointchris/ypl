@@ -28,7 +28,7 @@ func editOrder(t *testing.T, mux *http.ServeMux, playlist youtube.PlaylistID, vi
 	if videos == "" {
 		ids = []byte("[]")
 	}
-	req := httptest.NewRequest(http.MethodPut, target, strings.NewReader(`{"video_ids": `+string(ids)+`}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, target, strings.NewReader(`{"video_ids": `+string(ids)+`}`))
 	req.Header.Set("If-Match", etag)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

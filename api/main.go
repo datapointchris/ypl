@@ -283,7 +283,7 @@ func enrichment() (enrich.Limits, bool, error) {
 // run binds addr and serves h on it, doing work beside the server. A port that
 // cannot be bound is returned before anything is logged as listening.
 func run(ctx context.Context, addr string, h http.Handler, work func(context.Context), drain func()) error {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}

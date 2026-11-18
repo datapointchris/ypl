@@ -213,7 +213,7 @@ var asked = []string{"path", "time-pos", "duration", "media-title", "speed", "pi
 // Replies are matched by request_id, because mpv pushes unsolicited event lines
 // down the same socket and the first line back is often not the answer.
 func Read(socketPath string) (State, error) {
-	connection, err := net.DialTimeout("unix", socketPath, dialTimeout)
+	connection, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(context.Background(), "unix", socketPath)
 	if err != nil {
 		return State{}, fmt.Errorf("%w: nothing is listening on %s", ErrNotPlaying, socketPath)
 	}

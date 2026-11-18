@@ -1,6 +1,7 @@
 package editbuffer
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -60,10 +61,11 @@ func Open(text string) (string, bool, error) {
 	// it needs and the opposite of how the browser launcher is run. An editor
 	// whose stdout is a pipe draws its interface into a string.
 	//
-	// No context bounds it, and none should: a person deciding what a playlist
-	// holds takes as long as they take, and the editor owns the terminal while
-	// they do. A deadline here would take the screen back mid-edit.
-	editor := exec.Command(command[0], append(command[1:], path)...)
+	// Its context is one that never ends, and nothing shorter should bound it: a
+	// person deciding what a playlist holds takes as long as they take, and the
+	// editor owns the terminal while they do. A deadline here would take the
+	// screen back mid-edit.
+	editor := exec.CommandContext(context.Background(), command[0], append(command[1:], path)...)
 	editor.Stdin, editor.Stdout, editor.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := editor.Run(); err != nil {
 		return "", false, fmt.Errorf("%s exited without saving, so nothing was changed: %w", command[0], err)

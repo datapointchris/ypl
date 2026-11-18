@@ -58,7 +58,7 @@ func (f *fixture) do(method, target, body string) *httptest.ResponseRecorder {
 		reader = strings.NewReader(body)
 	}
 	rec := httptest.NewRecorder()
-	f.mux.ServeHTTP(rec, httptest.NewRequest(method, target, reader))
+	f.mux.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), method, target, reader))
 	return rec
 }
 
