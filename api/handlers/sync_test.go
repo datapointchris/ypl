@@ -93,20 +93,20 @@ func (f *fixture) withRuns(t *testing.T) {
 	err := f.st.InTx(ctx, func(tx *store.Tx) error {
 		for i, r := range runs {
 			id, err := tx.InsertSyncRun(ctx, generated.InsertSyncRunParams{
-				StartedTs:        "2026-09-17T10:00:00Z",
-				FinishedTs:       "2026-09-17T10:00:05Z",
-				QuotaDate:        "2026-09-17",
-				Outcome:          r.outcome,
-				Playlists:        int64(36 + i),
-				ItemsAdded:       int64(i),
-				Requests:         68,
-				Units:            68,
-				VideoReads:       int64(2 * i),
-				VideosEnriched:   int64(i),
-				TracksFound:      int64(10 * i),
-				VideosUnreadable: int64(i % 2),
-				IsRateLimited:    i == len(runs)-1,
-				EnrichmentPaused: i == 2,
+				StartedTs:          "2026-09-17T10:00:00Z",
+				FinishedTs:         "2026-09-17T10:00:05Z",
+				QuotaDate:          "2026-09-17",
+				Outcome:            r.outcome,
+				Playlists:          int64(36 + i),
+				ItemsAdded:         int64(i),
+				Requests:           68,
+				Units:              68,
+				VideoReads:         int64(2 * i),
+				VideosEnriched:     int64(i),
+				TracksFound:        int64(10 * i),
+				VideosUnreadable:   int64(i % 2),
+				IsRateLimited:      i == len(runs)-1,
+				IsEnrichmentPaused: i == 2,
 			})
 			if err != nil {
 				return err

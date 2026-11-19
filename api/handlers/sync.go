@@ -284,7 +284,7 @@ func syncRunFrom(row generated.SyncRun) syncRun {
 		TracksFound:       row.TracksFound,
 		VideosUnreadable:  row.VideosUnreadable,
 		IsRateLimited:     row.IsRateLimited,
-		EnrichmentPaused:  row.EnrichmentPaused,
+		EnrichmentPaused:  row.IsEnrichmentPaused,
 		ProbeMisses:       row.ProbeMisses,
 		Failures:          []syncFailure{},
 	}

@@ -408,8 +408,8 @@ ON CONFLICT (stage) DO UPDATE SET description = excluded.description;
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
     playlists_deferred, items_added, items_removed, requests, units, writes, write_units,
-    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited, enrichment_paused,
-    probe_misses
+    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited,
+    is_enrichment_paused, probe_misses
 )
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id;
@@ -467,7 +467,7 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused,
+    is_enrichment_paused,
     probe_misses
 FROM sync_runs
 WHERE run_id = ?;
@@ -770,7 +770,7 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused,
+    is_enrichment_paused,
     probe_misses
 FROM sync_runs
 ORDER BY run_id DESC
@@ -799,7 +799,7 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused,
+    is_enrichment_paused,
     probe_misses
 FROM sync_runs
 WHERE run_id < sqlc.arg(run_id)
@@ -841,7 +841,7 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused,
+    is_enrichment_paused,
     probe_misses
 FROM sync_runs
 WHERE outcome = ?

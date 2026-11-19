@@ -329,7 +329,7 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused,
+    is_enrichment_paused,
     probe_misses
 FROM sync_runs
 WHERE outcome = ?
@@ -361,7 +361,7 @@ func (q *Queries) GetLatestSyncRunWithOutcome(ctx context.Context, outcome strin
 		&i.TracksFound,
 		&i.VideosUnreadable,
 		&i.IsRateLimited,
-		&i.EnrichmentPaused,
+		&i.IsEnrichmentPaused,
 		&i.ProbeMisses,
 	)
 	return i, err
@@ -623,7 +623,7 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused,
+    is_enrichment_paused,
     probe_misses
 FROM sync_runs
 WHERE run_id = ?
@@ -653,7 +653,7 @@ func (q *Queries) GetSyncRun(ctx context.Context, runID int64) (SyncRun, error) 
 		&i.TracksFound,
 		&i.VideosUnreadable,
 		&i.IsRateLimited,
-		&i.EnrichmentPaused,
+		&i.IsEnrichmentPaused,
 		&i.ProbeMisses,
 	)
 	return i, err
@@ -944,35 +944,35 @@ const insertSyncRun = `-- name: InsertSyncRun :one
 INSERT INTO sync_runs (
     started_ts, finished_ts, quota_date, outcome, playlists, playlists_deleted, playlists_skipped,
     playlists_deferred, items_added, items_removed, requests, units, writes, write_units,
-    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited, enrichment_paused,
-    probe_misses
+    video_reads, videos_enriched, tracks_found, videos_unreadable, is_rate_limited,
+    is_enrichment_paused, probe_misses
 )
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING run_id
 `
 
 type InsertSyncRunParams struct {
-	StartedTs         string
-	FinishedTs        string
-	QuotaDate         string
-	Outcome           string
-	Playlists         int64
-	PlaylistsDeleted  int64
-	PlaylistsSkipped  int64
-	PlaylistsDeferred int64
-	ItemsAdded        int64
-	ItemsRemoved      int64
-	Requests          int64
-	Units             int64
-	Writes            int64
-	WriteUnits        int64
-	VideoReads        int64
-	VideosEnriched    int64
-	TracksFound       int64
-	VideosUnreadable  int64
-	IsRateLimited     bool
-	EnrichmentPaused  bool
-	ProbeMisses       int64
+	StartedTs          string
+	FinishedTs         string
+	QuotaDate          string
+	Outcome            string
+	Playlists          int64
+	PlaylistsDeleted   int64
+	PlaylistsSkipped   int64
+	PlaylistsDeferred  int64
+	ItemsAdded         int64
+	ItemsRemoved       int64
+	Requests           int64
+	Units              int64
+	Writes             int64
+	WriteUnits         int64
+	VideoReads         int64
+	VideosEnriched     int64
+	TracksFound        int64
+	VideosUnreadable   int64
+	IsRateLimited      bool
+	IsEnrichmentPaused bool
+	ProbeMisses        int64
 }
 
 func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (int64, error) {
@@ -996,7 +996,7 @@ func (q *Queries) InsertSyncRun(ctx context.Context, arg InsertSyncRunParams) (i
 		arg.TracksFound,
 		arg.VideosUnreadable,
 		arg.IsRateLimited,
-		arg.EnrichmentPaused,
+		arg.IsEnrichmentPaused,
 		arg.ProbeMisses,
 	)
 	var run_id int64
@@ -1493,7 +1493,7 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused,
+    is_enrichment_paused,
     probe_misses
 FROM sync_runs
 ORDER BY run_id DESC
@@ -1531,7 +1531,7 @@ func (q *Queries) ListNewestSyncRuns(ctx context.Context, maxRows int64) ([]Sync
 			&i.TracksFound,
 			&i.VideosUnreadable,
 			&i.IsRateLimited,
-			&i.EnrichmentPaused,
+			&i.IsEnrichmentPaused,
 			&i.ProbeMisses,
 		); err != nil {
 			return nil, err
@@ -2433,7 +2433,7 @@ SELECT
     tracks_found,
     videos_unreadable,
     is_rate_limited,
-    enrichment_paused,
+    is_enrichment_paused,
     probe_misses
 FROM sync_runs
 WHERE run_id < ?1
@@ -2477,7 +2477,7 @@ func (q *Queries) ListSyncRunsBefore(ctx context.Context, arg ListSyncRunsBefore
 			&i.TracksFound,
 			&i.VideosUnreadable,
 			&i.IsRateLimited,
-			&i.EnrichmentPaused,
+			&i.IsEnrichmentPaused,
 			&i.ProbeMisses,
 		); err != nil {
 			return nil, err

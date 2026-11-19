@@ -106,28 +106,28 @@ type SyncOutcome struct {
 }
 
 type SyncRun struct {
-	RunID             int64
-	StartedTs         string
-	FinishedTs        string
-	QuotaDate         string
-	Outcome           string
-	Playlists         int64
-	PlaylistsDeleted  int64
-	PlaylistsSkipped  int64
-	ItemsAdded        int64
-	ItemsRemoved      int64
-	Requests          int64
-	Units             int64
-	PlaylistsDeferred int64
-	Writes            int64
-	WriteUnits        int64
-	VideoReads        int64
-	VideosEnriched    int64
-	TracksFound       int64
-	VideosUnreadable  int64
-	IsRateLimited     bool
-	EnrichmentPaused  bool
-	ProbeMisses       int64
+	RunID              int64
+	StartedTs          string
+	FinishedTs         string
+	QuotaDate          string
+	Outcome            string
+	Playlists          int64
+	PlaylistsDeleted   int64
+	PlaylistsSkipped   int64
+	ItemsAdded         int64
+	ItemsRemoved       int64
+	Requests           int64
+	Units              int64
+	PlaylistsDeferred  int64
+	Writes             int64
+	WriteUnits         int64
+	VideoReads         int64
+	VideosEnriched     int64
+	TracksFound        int64
+	VideosUnreadable   int64
+	IsRateLimited      bool
+	IsEnrichmentPaused bool
+	ProbeMisses        int64
 }
 
 type SyncStage struct {
