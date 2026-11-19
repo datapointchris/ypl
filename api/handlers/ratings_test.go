@@ -57,6 +57,7 @@ func TestEveryRatingIsKeptAndTheListFiltersByKindTagAndText(t *testing.T) {
 		decode[rating](t, f.do(http.MethodPost, "/api/v1/ratings", ratingBody(i+1, "a", rest)), http.StatusCreated)
 	}
 	refused(t, f.do(http.MethodPost, "/api/v1/ratings", ratingBody(9, "b", `, "kind": "note"`)), http.StatusUnprocessableEntity, wire.CodeMessageRequired)
+	refused(t, f.do(http.MethodPost, "/api/v1/ratings", ratingBody(10, "a", `, "kind": "like", "position_seconds": 3601`)), http.StatusUnprocessableEntity, wire.CodeInvalidPosition)
 
 	liked := decode[page[libraryVideo]](t, f.get("/api/v1/videos?rated=like&tag=deep%20house&text=CLOSING"), http.StatusOK)
 	if len(liked.Data) != 1 || liked.Data[0].ID != "a" || liked.Data[0].Likes != 1 || liked.Data[0].Dislikes != 1 || liked.Data[0].Notes != 1 {
