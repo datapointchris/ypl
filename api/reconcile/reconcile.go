@@ -40,6 +40,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -143,6 +144,35 @@ type Report struct {
 	ProbeMisses       int
 	Failures          []Failure
 	Retry             []string
+}
+
+// LogValue is the report as a log line carries it, so a counter added to
+// Report is added to the log here, beside the field. Failures is logged as a
+// count, and Retry not at all, because each is a list the sync_runs row
+// already holds or the worker acts on.
+func (r Report) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.Int64("run_id", r.RunID),
+		slog.String("outcome", r.Outcome),
+		slog.Int("playlists", r.Playlists),
+		slog.Int("deleted", r.PlaylistsDeleted),
+		slog.Int("skipped", r.PlaylistsSkipped),
+		slog.Int("deferred", r.PlaylistsDeferred),
+		slog.Int("items_added", r.ItemsAdded),
+		slog.Int("items_removed", r.ItemsRemoved),
+		slog.Int("writes", r.Writes),
+		slog.Int64("requests", r.Requests),
+		slog.Int64("units", r.Units),
+		slog.Int64("write_units", r.WriteUnits),
+		slog.Int("probe_misses", r.ProbeMisses),
+		slog.Int("video_reads", r.VideoReads),
+		slog.Int("videos_enriched", r.VideosEnriched),
+		slog.Int("tracks_found", r.TracksFound),
+		slog.Int("videos_unreadable", r.VideosUnreadable),
+		slog.Bool("rate_limited", r.RateLimited),
+		slog.Bool("enrichment_paused", r.EnrichmentPaused),
+		slog.Int("failures", len(r.Failures)),
+	)
 }
 
 // Failure is one thing that went wrong in a pass. Stage is which half of the

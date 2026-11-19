@@ -67,28 +67,9 @@ func (w *Worker) logged(ctx context.Context, pass func(context.Context) (Report,
 	case err != nil:
 		w.log.Error("sync run not recorded", "err", err, "outcome", report.Outcome)
 	case report.RunID != 0:
-		w.log.Log(context.WithoutCancel(ctx), levelOf(report.Outcome), "sync run",
-			"run_id", report.RunID,
-			"outcome", report.Outcome,
-			"playlists", report.Playlists,
-			"deleted", report.PlaylistsDeleted,
-			"skipped", report.PlaylistsSkipped,
-			"deferred", report.PlaylistsDeferred,
-			"items_added", report.ItemsAdded,
-			"items_removed", report.ItemsRemoved,
-			"writes", report.Writes,
-			"requests", report.Requests,
-			"units", report.Units,
-			"write_units", report.WriteUnits,
-			"probe_misses", report.ProbeMisses,
-			"video_reads", report.VideoReads,
-			"videos_enriched", report.VideosEnriched,
-			"tracks_found", report.TracksFound,
-			"videos_unreadable", report.VideosUnreadable,
-			"rate_limited", report.RateLimited,
-			"enrichment_paused", report.EnrichmentPaused,
-			"failures", len(report.Failures),
-		)
+		// A group under an empty key is inlined, so each counter is a
+		// top-level key of the line.
+		w.log.Log(context.WithoutCancel(ctx), levelOf(report.Outcome), "sync run", slog.Any("", report))
 	}
 }
 
