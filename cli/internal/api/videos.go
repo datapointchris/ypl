@@ -82,6 +82,12 @@ type VideoFilter struct {
 	Sort string
 }
 
+// Narrows says whether the filter leaves any video out. Sort only orders the
+// library, so a filter holding nothing else asks for every video.
+func (f VideoFilter) Narrows() bool {
+	return f != VideoFilter{Sort: f.Sort}
+}
+
 // VideoSorts is every order this build knows the library can be read in, the
 // first being the one the server uses when none is asked for.
 //

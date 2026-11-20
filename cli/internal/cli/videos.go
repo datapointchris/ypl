@@ -70,8 +70,10 @@ func (a *app) videosListCommand() *cobra.Command {
 			switch {
 			case asJSON:
 				err = emitJSON(cmd.OutOrStdout(), read.Rows)
-			case len(read.Rows) == 0:
+			case len(read.Rows) == 0 && filter.Narrows():
 				nothing(cmd, "No video matches. `ypl videos list` with no flags is the whole library.")
+			case len(read.Rows) == 0:
+				nothing(cmd, "The server holds no videos. `ypl server status` says when it last synced.")
 			default:
 				printVideos(cmd.OutOrStdout(), a.width(cmd.OutOrStdout()), read.Rows)
 			}

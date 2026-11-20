@@ -424,6 +424,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 	for _, args := range [][]string{
 		{"playlists", "list"},
 		{"videos", "list", "--artist", "nobody"},
+		{"videos", "list"},
 		{"plays", "list"},
 		{"server", "syncs", "list"},
 		{"ratings", "list"},
