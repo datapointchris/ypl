@@ -16,6 +16,13 @@ The server, on the machine it is deployed to:
 | --- | --- | --- | --- |
 | The Data API | `api/youtube` | YouTube, over HTTPS, signed in as the channel with an OAuth refresh token | Quota units, 10,000 a day |
 | yt-dlp | `api/ytdlp` | YouTube, over HTTPS, through a subprocess: signed in as nobody for a video, and with the stored cookie jar for the watch history | Nothing, the address's standing with YouTube, and the account's for history reads |
+| The trace exporter | `api/tracing` | The OTLP/HTTP endpoint `OTEL_EXPORTER_OTLP_ENDPOINT` names, only where it is set | Nothing |
+
+A request's span is what crosses to the trace exporter. It holds the method, the route, the status,
+the reference the path names (a playlist's title or slug, a video's id), the caller's subject and
+client id, and every baggage member the request carried. No token, no body and no other part of the
+store crosses. The server's own calls to YouTube start no span and send no trace header, so a
+caller's trace and baggage stop at the server.
 
 The CLI, on every workstation:
 

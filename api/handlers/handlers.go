@@ -35,6 +35,7 @@ import (
 	"golang.org/x/text/language"
 
 	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/tracing"
 	"github.com/datapointchris/ypl/api/wire"
 )
 
@@ -136,19 +137,20 @@ var ServiceRoutes = map[string][]string{
 
 // Register adds every route to mux. A path under /api/v1/ that no route
 // matches is a 404, and a method no route on its path takes is a 405 naming
-// the methods it does take.
+// the methods it does take. Each request's span is named by the pattern that
+// answered it.
 func (h *Handlers) Register(mux *http.ServeMux) {
 	allowed := make(map[string][]string)
 	for _, rt := range h.routes() {
-		mux.HandleFunc(rt.method+" "+rt.path, rt.handle)
+		mux.Handle(rt.method+" "+rt.path, tracing.NameSpanByRoute(rt.handle))
 		allowed[rt.path] = append(allowed[rt.path], rt.method)
 	}
 	for path, methods := range allowed {
-		mux.HandleFunc(path, methodNotAllowed(methods))
+		mux.Handle(path, tracing.NameSpanByRoute(methodNotAllowed(methods)))
 	}
-	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/api/v1/", tracing.NameSpanByRoute(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		wire.Refuse(w, http.StatusNotFound, wire.CodeRouteNotFound, "no route answers %s", r.URL.Path)
-	})
+	})))
 }
 
 func methodNotAllowed(methods []string) http.HandlerFunc {

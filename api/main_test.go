@@ -23,12 +23,17 @@ import (
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/datapointchris/goapiauth"
 
 	"github.com/datapointchris/ypl/api/handlers"
 	"github.com/datapointchris/ypl/api/reconcile"
 	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/tracing"
 	"github.com/datapointchris/ypl/api/wire"
 )
 
@@ -353,6 +358,60 @@ func TestTheAPIAnswersOnlyAVerifiedTokenAndTheProbesAnswerAnyone(t *testing.T) {
 		if rec.Code != c.want {
 			t.Errorf("%s %s with token %q = %d, want %d", c.method, c.path, c.token, rec.Code, c.want)
 		}
+	}
+}
+
+// A request carrying its caller's traceparent and baggage gets a server span
+// under the caller's span, holding the caller's flow, named by the route it
+// reached through the auth layers' copies of the request. A probe gets none.
+func TestARequestUnderACallersTraceIsServedInAChildSpan(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider, err := tracing.Install(t.Context(), "sha-test", sdktrace.WithSyncer(exporter))
+	if err != nil {
+		t.Fatalf("install the provider: %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	h := tracing.Handler(apiHandler(t, acceptOnly{"good": person}))
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ready", http.NoBody))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/playlists/sunday-morning", http.NoBody)
+	req.Header.Set("Authorization", "Bearer good")
+	req.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	req.Header.Set("baggage", "caller.flow.id=7d3c0a91e5f24b6c8a1d2e3f4b5c6d7e")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("exported %d spans, want the request's alone", len(spans))
+	}
+	span := spans[0]
+	if got := span.SpanContext.TraceID().String(); got != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("trace id = %s, want the caller's", got)
+	}
+	if got := span.Parent.SpanID().String(); got != "00f067aa0ba902b7" {
+		t.Errorf("parent span id = %s, want the caller's", got)
+	}
+	if span.SpanKind != trace.SpanKindServer || span.Name != "GET /api/v1/playlists/{id}" {
+		t.Errorf("span is %v %q, want a server span named by the route", span.SpanKind, span.Name)
+	}
+	attrs := attribute.NewSet(span.Attributes...)
+	for key, want := range map[attribute.Key]string{
+		"caller.flow.id":         "7d3c0a91e5f24b6c8a1d2e3f4b5c6d7e",
+		"http.route":             "/api/v1/playlists/{id}",
+		"ypl.playlist.reference": "sunday-morning",
+		"enduser.id":             person.Subject,
+		"ypl.client.id":          person.ClientID,
+	} {
+		if got, _ := attrs.Value(key); got.AsString() != want {
+			t.Errorf("%s = %q, want %q", key, got.AsString(), want)
+		}
+	}
+	resource := attribute.NewSet(span.Resource.Attributes()...)
+	if name, _ := resource.Value("service.name"); name.AsString() != "ypl" {
+		t.Errorf("service.name = %q, want ypl", name.AsString())
+	}
+	if version, _ := resource.Value("service.version"); version.AsString() != "sha-test" {
+		t.Errorf("service.version = %q, want the build's", version.AsString())
 	}
 }
 

@@ -48,9 +48,14 @@ const ReadLag = time.Minute
 // NewChannel acts as the channel whose owner granted creds. opts apply after
 // the credentials, so option.WithEndpoint and option.WithHTTPClient point it
 // elsewhere.
+//
+// The client's own telemetry is off. Left on, it wraps the transport in
+// otelhttp, which sends YouTube the trace and every baggage member of the
+// request that led to the call.
 func NewChannel(ctx context.Context, creds Credentials, opts ...option.ClientOption) (*Channel, error) {
 	source := oauthConfig(creds.Client).TokenSource(ctx, &oauth2.Token{RefreshToken: creds.RefreshToken})
-	service, err := ytapi.NewService(ctx, append([]option.ClientOption{option.WithTokenSource(source)}, opts...)...)
+	base := []option.ClientOption{option.WithTokenSource(source), option.WithTelemetryDisabled()}
+	service, err := ytapi.NewService(ctx, append(base, opts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("create the YouTube client: %w", err)
 	}

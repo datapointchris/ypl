@@ -25,6 +25,10 @@
 // With PUBLIC_URL set to the address clients reach it at, it serves the RFC
 // 9728 metadata naming that address and OIDC_ISSUER without a token, which is
 // how `ypl auth login <url>` finds the provider.
+//
+// With OTEL_EXPORTER_OTLP_ENDPOINT set, it exports a span for each request
+// over OTLP/HTTP, as a child of the traceparent the request carries, with the
+// other OTEL_* variables configuring the exporter. Unset, it exports nothing.
 package main
 
 import (
@@ -47,6 +51,7 @@ import (
 	"github.com/datapointchris/ypl/api/jarseal"
 	"github.com/datapointchris/ypl/api/reconcile"
 	"github.com/datapointchris/ypl/api/store"
+	"github.com/datapointchris/ypl/api/tracing"
 	"github.com/datapointchris/ypl/api/wire"
 	"github.com/datapointchris/ypl/api/youtube"
 	"github.com/datapointchris/ypl/api/ytdlp"
@@ -63,8 +68,12 @@ var version = "dev"
 // handlers.HistoryDuration or reconcile.WriteDuration. So the grace outlasts
 // every one with 5 seconds to answer. A history read cut short loses the jar
 // YouTube rotated during it, which is why it counts. A container's stop timeout
-// has to be longer still.
+// has to be longer still, by traceFlushLimit as well.
 const shutdownGrace = max(handlers.WriteDuration, handlers.HistoryDuration, reconcile.WriteDuration) + 5*time.Second
+
+// traceFlushLimit bounds the export of the spans still buffered once the
+// server has stopped serving.
+const traceFlushLimit = 5 * time.Second
 
 // defaultSyncInterval is the mean wait between ticks when SYNC_INTERVAL is
 // unset. A tick reads the listing and one average playlist, which reconcile's
@@ -144,6 +153,17 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	stopTracing, err := tracing.Start(ctx, version)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), traceFlushLimit)
+		defer cancel()
+		if err := stopTracing(flushCtx); err != nil {
+			slog.Warn("the last spans were not exported", "err", err)
+		}
+	}()
 	var metadata http.Handler
 	if public := os.Getenv("PUBLIC_URL"); public != "" {
 		metadata = goapiauth.ProtectedResourceMetadata{Resource: public, Issuer: issuer}
@@ -194,7 +214,7 @@ func start(ctx context.Context) error {
 			wg.Go(func() { _ = enrich.New(st, reader, limits, tally).Run(ctx) })
 		}
 	}
-	err = run(ctx, ":"+envOr("PORT", "8080"), hold, work, hold.drain)
+	err = run(ctx, ":"+envOr("PORT", "8080"), tracing.Handler(hold), work, hold.drain)
 	if st != nil {
 		_ = st.Close()
 	}
@@ -360,7 +380,7 @@ type tokenGate interface {
 func handler(api *handlers.Handlers, gate tokenGate, metadata http.Handler) http.Handler {
 	mux := routes(gate.Ready)
 	if metadata != nil {
-		mux.Handle("GET "+goapiauth.ProtectedResourcePath, metadata)
+		mux.Handle("GET "+goapiauth.ProtectedResourcePath, tracing.NameSpanByRoute(metadata))
 	}
 	api.Register(mux)
 	return goapiauth.RequireBearer(gate, slog.Default(), "/health", "/ready")(goapiauth.LimitServices(mux, handlers.ServiceRoutes, slog.Default()))

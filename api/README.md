@@ -19,6 +19,13 @@ server. The server listens on `PORT`, 8080 when unset. It keeps its store at `DA
 `/var/db/ypl/ypl.db`, in a directory for the host to mount, since a store inside the container goes
 with the container. It also sets `TZ` to UTC, the zone the log lines are written in.
 
+With `OTEL_EXPORTER_OTLP_ENDPOINT` set, the server exports a span for each API request over
+OTLP/HTTP, and the other standard `OTEL_*` variables configure the exporter. A request carrying a
+W3C `traceparent` gets its span as that caller's child, and every member of its `baggage` is copied
+onto the span. Each span is named by its route, such as `GET /api/v1/playlists/{id}`, and carries
+the reference the path names and the caller's client id. `/health` and `/ready` are never traced.
+With the variable unset, the server installs no exporter.
+
 One server syncs a store at a time. Before it opens the database, the server takes an exclusive
 lock on `<DATABASE_PATH>.server.lock`, and holds it until it exits. A second server started on the
 same store binds its port and answers `/health`, and `/ready` answers 503 naming the server holding
