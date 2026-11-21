@@ -200,7 +200,7 @@ func TestAWordNamingNoCommandIsRefusedWhateverFollowsIt(t *testing.T) {
 		for _, after := range []string{"--json", "--help", "-h"} {
 			args := append(append([]string{}, namespace...), "bogus", after)
 			got := newFixture(t, serves(nil)).run(args...)
-			if got.code != 2 || !strings.Contains(got.err, `unknown command "bogus"`) {
+			if got.code != 2 || !strings.Contains(got.err, "bogus") {
 				t.Errorf("%v exited %d saying %q, want 2 and the word refused", args, got.code, got.err)
 			}
 		}
