@@ -6,7 +6,7 @@ toolchain go1.26.11
 
 require (
 	github.com/charmbracelet/huh v1.0.0
-	github.com/datapointchris/goclikit v0.5.3
+	github.com/datapointchris/goclikit v0.7.0
 	github.com/datapointchris/goclilogin v0.7.0
 	github.com/datapointchris/goselfupdate v0.11.0
 	github.com/datapointchris/gotermstyle v0.6.0
@@ -24,6 +24,7 @@ require (
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/catppuccin/go v0.3.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/bubbles v0.21.1-0.20250623103423-23b8fd6302d7 // indirect
 	github.com/charmbracelet/bubbletea v1.3.6 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
@@ -50,6 +51,9 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zalando/go-keyring v0.2.8 // indirect
+	go.opentelemetry.io/contrib/propagators/envcar v0.72.0 // indirect
+	go.opentelemetry.io/otel v1.47.0 // indirect
+	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.23.0 // indirect

@@ -31,7 +31,8 @@ func freshStatus() string {
 
 // serviceIDP grants a token only to serviceClientID presenting serviceSecret in
 // a Basic header and naming exactly the scope ypl asks for. Anything else gets
-// the refusal the provider sends.
+// the refusal the provider sends. A request carrying the caller's trace or
+// baggage fails the test, because the provider is a third party to both.
 func serviceIDP(t *testing.T) *httptest.Server {
 	t.Helper()
 	var srv *httptest.Server
@@ -54,9 +55,34 @@ func serviceIDP(t *testing.T) *httptest.Server {
 		}
 		_, _ = w.Write([]byte(`{"access_token":"` + serviceToken + `","token_type":"bearer","expires_in":300}`))
 	})
-	srv = httptest.NewServer(mux)
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, header := range []string{"traceparent", "tracestate", "baggage"} {
+			if value := r.Header.Get(header); value != "" {
+				t.Errorf("the provider was sent %s %q", header, value)
+			}
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func TestARunUnderATraceSendsItToTheServer(t *testing.T) {
+	f := newFixture(t, serves(map[string]string{"/api/v1/status": freshStatus()}))
+	f.asService(serviceIDP(t).URL, serviceSecret)
+	t.Setenv("TRACEPARENT", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	t.Setenv("BAGGAGE", "caller.flow.id=7d3c0a91e5f24b6c8a1d2e3f4b5c6d7e")
+
+	if got := f.run("server", "status"); got.code != 0 {
+		t.Fatalf("exited %d: %s%s", got.code, got.out, got.err)
+	}
+	sent := f.sent[len(f.sent)-1].Header
+	if got := sent.Get("traceparent"); !strings.HasPrefix(got, "00-4bf92f3577b34da6a3ce929d0e0e4736-") {
+		t.Errorf("the server saw traceparent %q, want the run's trace id", got)
+	}
+	if got := sent.Get("baggage"); got != "caller.flow.id=7d3c0a91e5f24b6c8a1d2e3f4b5c6d7e" {
+		t.Errorf("the server saw baggage %q, want the run's", got)
+	}
 }
 
 // asService is f run as serviceClientID holding secret against issuer, with

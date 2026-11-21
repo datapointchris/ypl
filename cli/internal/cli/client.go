@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/datapointchris/goclikit"
 	"github.com/datapointchris/goclilogin"
 	"golang.org/x/oauth2"
 
@@ -22,6 +23,11 @@ var errNeedsLogin = errors.New("not logged in")
 // machine or as the service client YPL_CLIENT_SECRET selects. The oauth2 client
 // adds the bearer token to every request and renews it when it expires, so no
 // command here holds one.
+//
+// Each request also carries the trace and baggage the CLI was started under,
+// in TRACEPARENT, TRACESTATE and BAGGAGE, so the server's span for it sits
+// under whatever ran the CLI. The token source reaches the identity provider
+// through a client of its own, so the provider is sent neither.
 func newAPIClient(ctx context.Context) (*api.Client, error) {
 	deployment, err := config.Load(ctx, apiOverride)
 	if err != nil {
@@ -34,7 +40,9 @@ func newAPIClient(ctx context.Context) (*api.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prepare the API client: %w", err)
 	}
-	return api.New(deployment.API.Value, oauth2.NewClient(ctx, source)), nil
+	httpClient := oauth2.NewClient(ctx, source)
+	httpClient.Transport = goclikit.TraceForwardingTransport(httpClient.Transport)
+	return api.New(deployment.API.Value, httpClient), nil
 }
 
 // tokenSource is the config file's token_command where it names one, the
