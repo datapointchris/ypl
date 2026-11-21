@@ -244,8 +244,8 @@ func TestAStoreFailureStoringAnEditIsAnInternalError(t *testing.T) {
 	f.youtube.beforeVideos = func() { _ = f.st.Close() }
 
 	refused(t, f.editItems("PLA", []string{"newvid", "a"}, before), http.StatusInternalServerError, wire.CodeInternal)
-	if !strings.Contains(f.logs.String(), "database is closed") {
-		t.Fatalf("logged %q, want the store's failure", f.logs)
+	if cause := closedStoreCause(t, f.st); !strings.Contains(f.logs.String(), cause) {
+		t.Fatalf("logged %q, want the store's failure %q", f.logs, cause)
 	}
 }
 

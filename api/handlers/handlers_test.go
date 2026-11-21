@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -186,17 +187,29 @@ func text(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: true}
 }
 
+// closedStoreCause is the error st fails with once closed, beneath the store's
+// own wrapping, which is what a handler's log carries as the cause of a 500.
+func closedStoreCause(t *testing.T, st *store.Store) string {
+	t.Helper()
+	err := st.InTx(context.Background(), func(*store.Tx) error { return nil })
+	if err == nil {
+		t.Fatal("a closed store began a transaction")
+	}
+	return errors.Unwrap(err).Error()
+}
+
 func TestAFailedStoreReadIsA500ThatLogsItsCause(t *testing.T) {
 	f := newFixture(t)
 	_ = f.st.Close()
+	cause := closedStoreCause(t, f.st)
 
 	rec := f.get("/api/v1/playlists")
 	refused(t, rec, http.StatusInternalServerError, wire.CodeInternal)
-	if strings.Contains(rec.Body.String(), "closed") {
+	if strings.Contains(rec.Body.String(), cause) {
 		t.Errorf("the 500 carries its cause: %s", rec.Body)
 	}
-	if !strings.Contains(f.logs.String(), "database is closed") {
-		t.Errorf("the log does not carry the cause: %s", f.logs)
+	if !strings.Contains(f.logs.String(), cause) {
+		t.Errorf("the log does not carry the cause %q: %s", cause, f.logs)
 	}
 }
 
