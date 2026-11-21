@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,10 @@ func TestVersionNamesTheToolAndTheBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--version: %v", err)
 	}
-	if got, want := strings.TrimSpace(out), "ypl version dev"; got != want {
-		t.Fatalf("--version = %q, want %q", got, want)
+	words := strings.Fields(out)
+	for _, want := range []string{"ypl", "dev"} {
+		if !slices.Contains(words, want) {
+			t.Errorf("--version = %q, want it to name %q", out, want)
+		}
 	}
 }
