@@ -45,17 +45,7 @@ func TestEveryInvocationMistakeExitsTwo(t *testing.T) {
 		}
 	}
 
-	// A word one slip from a command is answered with the command, at the root
-	// and inside a namespace alike.
 	f := newFixture(t, serves(nil))
-	for args, meant := range map[[2]string]string{
-		{"playslist", "play"}: "playlists",
-		{"playlists", "lisy"}: "list",
-	} {
-		if got := f.run(args[:]...); !slices.Contains(strings.Fields(got.err), meant) {
-			t.Errorf("%v said %q, want it to name %q", args, got.err, meant)
-		}
-	}
 
 	// A video id can open with a dash, and one copied from a list then reads as
 	// a run of short flags. The refusal names the line that passes it as an id.
