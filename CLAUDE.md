@@ -75,12 +75,13 @@ therefore treated as untrusted input and given as little of the host as possible
 - **`--skip-download` and `--dump-json` for a tracklist.** A tracklist read wants one JSON
   document, so nothing is written to disk and no media is fetched. A caption read writes the one
   track it picks, and an audio read the one file, each to a directory removed when the answer ends.
-- **One process at a time, through the door.** `api/ytdlp.Door` starts the next read at least 8
-  seconds after the last ended, plus up to 8 at random, a person's first, then a service's, then
-  enrichment's. Inside a read, `--sleep-requests 2 --sleep-subtitles 5 --sleep-interval 8
-  --max-sleep-interval 16` pace yt-dlp's own requests. One refusal of the address pauses every
-  class for a day, and three failures in a row pause it for an hour. The store keeps the pause, so
-  a restart does not reopen the door.
+- **One process at a time, through the door.** `api/ytdlp.Door` starts the next read at least
+  `Gap`, plus up to `Jitter` at random, after the last ended: a person's first, then a service's,
+  then enrichment's. Inside a read, the sleep arguments `paced()` passes pace yt-dlp's own
+  requests. One refusal of the address pauses every class for `RefusedPause`, and failures of
+  `MaxFailuresInARow` different videos in a row pause it for `FailingPause`. The store keeps the
+  pause, so a restart does not reopen the door. `Close` stops every read under way but the
+  history's, because cutting that one short loses the cookies rotated during it.
 - **yt-dlp starts deno.** yt-dlp's release executable bundles yt-dlp-ejs. That script answers
   YouTube's player challenges by running YouTube's own script in deno. The image pins yt-dlp and deno, and
   its build check fails on any other version of either, or of yt-dlp-ejs.
@@ -146,12 +147,13 @@ requires every field it declares to arrive. Renaming a response field without re
 that catches, and it is the one mistake a green build on both sides would otherwise hide.
 
 A value the server *enforces* is the harder half. A shape the client has wrong degrades, because an
-unknown field is ignored. A value it has wrong is a refusal the client reports as a failure. Three
+unknown field is ignored. A value it has wrong is a refusal the client reports as a failure. Four
 such values are pinned. The slug Tab offers a playlist by is a derivation the server owns:
 `api/handlers` writes its own slug of a set of titles to `testdata/wire/slugs.json`, and the
 completion test holds the client's to every pair. The service client's scope is the second:
 `api/handlers` writes `service-scopes.json` beside it, and the CLI's service test requires the scope
 it requests to reach the route `ypl server status` calls. The kinds of rating are the third:
 `rating_kinds.json` holds the server's, and the CLI's wire test requires `RatingKinds` to match.
-`PageSize` and `VideoSorts` are unpinned copies of a number and words the server owns, with no
+The shape of a transcript's language is the fourth: `language_pattern.json` holds the server's,
+and the CLI's wire test requires `LanguagePattern` to match. `PageSize` and `VideoSorts` are unpinned copies of a number and words the server owns, with no
 door to read them through.

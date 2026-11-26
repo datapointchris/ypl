@@ -296,7 +296,9 @@ api_tried_first = ["http://ypl.lan"]
 ```
 
 A command moves to the next address only when it cannot open a connection to one. So a server's
-address on a home network is used at home and skipped elsewhere. Each address is sent the token
+address on a home network is used at home and skipped elsewhere. An address in the list gets a
+second to accept the connection, so one whose packets are dropped holds a command that long, and
+`api` gets the usual 30 seconds. Each address is sent the token
 `api` is sent, so the list names only that server. An address over plain HTTP belongs on a network
 you trust. `--api` replaces the list with itself.
 
