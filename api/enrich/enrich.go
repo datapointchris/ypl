@@ -2,14 +2,13 @@
 // that has none: the video's chapters, or the timestamped lines of its
 // description or of one of its top comments.
 //
-// A read goes through yt-dlp, signed in as nobody, and YouTube throttles an
-// address that reads too much too fast. So reads come one at a time, at least
-// Pace apart and up to twice that at random, and never in a burst. The store
-// records when each read began, so the pace holds across a restart. YouTube's
-// rate limit stops reading for RateLimitPause. MaxConsecutiveFailures reads
-// failing in a row stop it for FailingPause, whatever they failed with, since
-// a refusal worded in a way this package does not recognize would otherwise be
-// read into again and again.
+// A read goes through the server's one yt-dlp door, signed in as nobody, in
+// the door's last class, so a person's read and a service's go ahead of it.
+// Enrichment keeps a slower pace of its own on top of the door's: at least Pace
+// between two reads and up to twice that at random. The store records when
+// each read began, so the pace holds across a restart. While the door is
+// paused, on YouTube refusing the address or on reads failing in a row,
+// enrichment makes no read and waits for the pause to end.
 //
 // A read that stores no tracklist is recorded like one that failed, and the
 // video is read again after a widening wait up to MaxAttempts times. A
@@ -19,8 +18,7 @@
 // and api/cmd/reset-enrichment is what puts one back in the queue.
 //
 // What the reads did is added to a Tally, which the sync takes into the record
-// of each of its passes. A refusal is recorded at once, since a server that
-// restarted before recording one would read straight back into it.
+// of each of its passes.
 package enrich
 
 import (
@@ -38,24 +36,12 @@ import (
 	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
-// ErrReadsFailing is the failure recorded when MaxConsecutiveFailures reads in
-// a row failed, which says something is wrong with the reading rather than with
-// any one video.
-var ErrReadsFailing = errors.New("enrichment paused after consecutive reads failed")
-
 const (
-	// RateLimitPause is how long enrichment makes no read after YouTube refuses
-	// one. yt-dlp reports YouTube's rate limit as lasting up to an hour, and a
-	// read sent into a refusal is what turns it into a block.
-	RateLimitPause = 24 * time.Hour
-	// FailingPause is how long enrichment makes no read after
-	// MaxConsecutiveFailures reads in a row failed.
-	FailingPause = time.Hour
+	// failedWait is how long enrichment waits after the store fails it.
+	failedWait = time.Hour
 	// idleWait is how long enrichment waits to look again when no video is due a
 	// read.
 	idleWait = 10 * time.Minute
-	// readTimeout bounds one read, whose requests yt-dlp spaces a second apart.
-	readTimeout = 2 * time.Minute
 	// firstRetry is how long a video whose read stored no tracklist waits before
 	// it is read again, doubling with each attempt up to lastRetry.
 	firstRetry = 6 * time.Hour
@@ -64,11 +50,6 @@ const (
 	// reading it. At the waits above that reaches about a fortnight past the
 	// first read, which is long enough for a tracklist comment to be posted.
 	MaxAttempts = 6
-	// MaxConsecutiveFailures is how many reads in a row may fail before
-	// enrichment pauses. A read sent into a refusal is what turns a pause into a
-	// block, and only refusals worded the way ytdlp's markers spell them pause it
-	// on their own.
-	MaxConsecutiveFailures = 3
 )
 
 // verdict is what a read that stored no tracklist means for reading the video
@@ -84,9 +65,10 @@ const (
 	holdForGood
 )
 
-// Reader reads a video, as *ytdlp.Reader does.
+// Reader reads a video and says whether reads are paused, as *ytdlp.Door does.
 type Reader interface {
 	Video(ctx context.Context, id string) (ytdlp.Video, error)
+	PausedUntil() (ytdlp.Pause, bool)
 }
 
 // Limits bound how fast enrichment reads.
@@ -102,9 +84,7 @@ type Enricher struct {
 	reader Reader
 	limits Limits
 	tally  *Tally
-	// failedInARow is how many reads in a row have failed.
-	failedInARow int
-	now          func() time.Time
+	now    func() time.Time
 	// wait waits for d, or until ctx ends with ctx's error.
 	wait func(ctx context.Context, d time.Duration) error
 }
@@ -117,12 +97,12 @@ func New(st *store.Store, reader Reader, limits Limits, tally *Tally) *Enricher 
 
 // Report is what reads did: the reads made, the videos a tracklist search was
 // stored for and the tracks those held, the videos found closed to reading for
-// good, whether YouTube refused a read for now, whether reading is paused
-// because an earlier refusal still holds, and each read that failed in a way
-// the reading is accountable for.
+// good, whether YouTube refused a read for now, whether the door's pause kept
+// reading from going on, and each read that failed in a way the reading is
+// accountable for.
 //
-// Paused is not a failure. A pause is enrichment doing what a refusal asks of
-// it, and recording it as a failure would make every pass for a day partial.
+// Paused is not a failure. A pause is the door doing what a refusal asks of it,
+// and recording it as a failure would make every pass for a day partial.
 type Report struct {
 	Reads       int
 	Enriched    int
@@ -146,18 +126,15 @@ type Tally struct {
 	mu     sync.Mutex
 	report Report
 	paused bool
-	// refused is signaled when a read is refused, so the sync records the
-	// refusal without waiting for its next pass.
-	refused chan struct{}
 }
 
 // NewTally is a Tally holding nothing.
 func NewTally() *Tally {
-	return &Tally{refused: make(chan struct{}, 1)}
+	return &Tally{}
 }
 
-// Take is what enrichment did since the last Take, and whether it is paused on
-// a refusal now.
+// Take is what enrichment did since the last Take, and whether the door's pause
+// holds it now.
 func (t *Tally) Take() Report {
 	if t == nil {
 		return Report{}
@@ -170,14 +147,6 @@ func (t *Tally) Take() Report {
 	return taken
 }
 
-// Refused is signaled each time YouTube refuses a read for its rate limit.
-func (t *Tally) Refused() <-chan struct{} {
-	if t == nil {
-		return nil
-	}
-	return t.refused
-}
-
 func (t *Tally) add(r Report) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -186,13 +155,8 @@ func (t *Tally) add(r Report) {
 	t.report.Tracks += r.Tracks
 	t.report.Unreadable += r.Unreadable
 	t.report.RateLimited = t.report.RateLimited || r.RateLimited
+	t.report.Paused = t.report.Paused || r.Paused
 	t.report.Failures = append(t.report.Failures, r.Failures...)
-	if r.RateLimited {
-		select {
-		case t.refused <- struct{}{}:
-		default:
-		}
-	}
 }
 
 func (t *Tally) setPaused(paused bool) {
@@ -249,13 +213,9 @@ func (e *Enricher) pace() time.Duration {
 // long to wait before the next.
 func (e *Enricher) step(ctx context.Context) time.Duration {
 	now := e.now()
-	until, err := e.pausedUntil(ctx, now)
-	if err != nil {
-		return e.failed(err)
-	}
-	if until.After(now) {
+	if pause, held := e.reader.PausedUntil(); held {
 		e.tally.setPaused(true)
-		return until.Sub(now)
+		return pause.Until.Sub(now)
 	}
 	e.tally.setPaused(false)
 	ids, err := e.store.Queries.ListVideosToEnrich(ctx, generated.ListVideosToEnrichParams{
@@ -280,43 +240,24 @@ func (e *Enricher) step(ctx context.Context) time.Duration {
 		return 0
 	case err != nil:
 		return e.failed(err)
-	case report.RateLimited:
+	}
+	if pause, held := e.reader.PausedUntil(); held {
 		e.tally.setPaused(true)
-		return RateLimitPause
-	case e.failedInARow >= MaxConsecutiveFailures:
-		e.tally.add(Report{Failures: []Failure{{Err: fmt.Errorf("%w: %d in a row", ErrReadsFailing, e.failedInARow)}}})
-		e.failedInARow = 0
-		return FailingPause
+		return pause.Until.Sub(e.now())
 	}
 	return e.pace()
 }
 
-// failed records a failure of the reading itself and pauses it.
+// failed records a failure of the reading itself and waits before reading on.
 func (e *Enricher) failed(err error) time.Duration {
 	e.tally.add(Report{Failures: []Failure{{Err: err}}})
-	return FailingPause
-}
-
-// pausedUntil is when the pause on YouTube's latest refusal ends, which is in
-// the past when no refusal holds.
-func (e *Enricher) pausedUntil(ctx context.Context, now time.Time) (time.Time, error) {
-	finished, err := e.store.Queries.LatestRateLimitedRunFinished(ctx)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("read when YouTube last refused a read: %w", err)
-	}
-	if finished == "" {
-		return now, nil
-	}
-	refused, err := time.Parse(time.RFC3339, finished)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("read when YouTube last refused a read, %q: %w", finished, err)
-	}
-	return refused.Add(RateLimitPause), nil
+	return failedWait
 }
 
 // read reads the video id and stores what it finds. The error is a failure of
-// the store, or ctx's once it ends. The read's start is recorded before it is
-// sent, so a read cut short still paces the next.
+// the store, or ctx's once it ends. The read's start is recorded before it
+// waits at the door, so a read cut short still paces the next. When the door
+// turns a read away for a pause, no read was made, and the video is untouched.
 func (e *Enricher) read(ctx context.Context, id string) (Report, error) {
 	err := e.store.InTx(ctx, func(tx *store.Tx) error {
 		return tx.RecordVideoReadStarted(ctx, generated.RecordVideoReadStartedParams{VideoID: id, StartedTs: store.Timestamp(e.now())})
@@ -325,12 +266,12 @@ func (e *Enricher) read(ctx context.Context, id string) (Report, error) {
 		return Report{}, fmt.Errorf("record the start of the read of %s: %w", id, err)
 	}
 	report := Report{Reads: 1}
-	readCtx, cancel := context.WithTimeout(ctx, readTimeout)
-	video, err := e.reader.Video(readCtx, id)
-	cancel()
+	video, err := e.reader.Video(ctx, id)
 	switch {
 	case ctx.Err() != nil:
 		return report, ctx.Err()
+	case errors.Is(err, ytdlp.ErrPaused):
+		return Report{Paused: true}, nil
 	case errors.Is(err, ytdlp.ErrRateLimited):
 		report.RateLimited = true
 		report.Failures = append(report.Failures, Failure{VideoID: id, Err: err})
@@ -339,13 +280,11 @@ func (e *Enricher) read(ctx context.Context, id string) (Report, error) {
 			return report, err
 		}
 		report.Unreadable++
-		e.failedInARow = 0
 	case err != nil:
 		if err := e.recordFailure(ctx, id, err, readAgain); err != nil {
 			return report, err
 		}
 		report.Failures = append(report.Failures, Failure{VideoID: id, Err: err})
-		e.failedInARow++
 	default:
 		tracks, err := e.storeVideo(ctx, video)
 		if err != nil {
@@ -353,7 +292,6 @@ func (e *Enricher) read(ctx context.Context, id string) (Report, error) {
 		}
 		report.Enriched++
 		report.Tracks += tracks
-		e.failedInARow = 0
 	}
 	return report, nil
 }

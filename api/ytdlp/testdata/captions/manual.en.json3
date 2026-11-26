@@ -1,0 +1,25 @@
+{
+  "wireMagic": "pb3",
+  "pens": [ {  } ],
+  "wsWinStyles": [ {  } ],
+  "wpWinPositions": [ {  } ],
+  "events": [ {
+    "tStartMs": 1200,
+    "dDurationMs": 2500,
+    "segs": [ {
+      "utf8": "Welcome back to the\nwritten talk."
+    } ]
+  }, {
+    "tStartMs": 3700,
+    "dDurationMs": 3000,
+    "segs": [ {
+      "utf8": "Today we pace every read."
+    } ]
+  }, {
+    "tStartMs": 6700,
+    "dDurationMs": 1000,
+    "segs": [ {
+      "utf8": "\n"
+    } ]
+  } ]
+}

@@ -15,24 +15,93 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
-// Client reaches one ypl server.
+// Client reaches one ypl server, through the first of its addresses that
+// accepts a connection.
 type Client struct {
-	base string
-	http *http.Client
+	bases []string
+	http  *http.Client
+	// reached is the index of the address that last accepted a connection,
+	// where every later request starts.
+	reached atomic.Int64
 }
 
-// New is a client for the server at base, sending every request through
-// httpClient. A trailing slash on base is dropped so a path is joined to it
-// once.
-func New(base string, httpClient *http.Client) *Client {
-	return &Client{base: strings.TrimRight(base, "/"), http: httpClient}
+// New is a client for the server at bases, tried in order, sending every
+// request through httpClient. A trailing slash on each is dropped so a path is
+// joined to it once.
+func New(bases []string, httpClient *http.Client) *Client {
+	c := &Client{http: httpClient}
+	for _, base := range bases {
+		c.bases = append(c.bases, strings.TrimRight(base, "/"))
+	}
+	return c
+}
+
+// unreachable is a request that never reached a connection: its address did
+// not resolve, or nothing accepted the dial. None of it was sent, so sending it
+// to the next address cannot make a write twice.
+type unreachable struct{ err error }
+
+func (u *unreachable) Error() string { return u.err.Error() }
+func (u *unreachable) Unwrap() error { return u.err }
+
+// markConnectFailures is the transport MarkConnectFailures returns.
+type markConnectFailures struct{ next http.RoundTripper }
+
+func (m markConnectFailures) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := m.next.RoundTrip(req)
+	var op *net.OpError
+	if err != nil && errors.As(err, &op) && op.Op == "dial" {
+		return nil, &unreachable{err: err}
+	}
+	return resp, err
+}
+
+// MarkConnectFailures is next, with each request that never reached a
+// connection marked, so a Client moves to its next address on that failure
+// alone. It belongs beneath whatever adds the token. There it sees only the
+// server's connections, and a provider that cannot be reached is never read as
+// the server.
+func MarkConnectFailures(next http.RoundTripper) http.RoundTripper {
+	return markConnectFailures{next: next}
+}
+
+// triedFirstDial bounds the dial of every address but a Client's last. Such an
+// address is reached on some networks only, and on another its packets may be
+// dropped rather than refused, which would hold the dial for the transport's
+// own 30 seconds. The last address keeps those 30 seconds.
+const triedFirstDial = time.Second
+
+// triedFirstKey marks the context of a request to an address that is not a
+// Client's last.
+type triedFirstKey struct{}
+
+// ServerTransport is what the server's requests go out on, beneath whatever
+// adds the token. It is http.DefaultTransport, with an address that is not a
+// Client's last dialed for at most triedFirstDial, and with each request that
+// never reached a connection marked, as MarkConnectFailures marks it.
+func ServerTransport() http.RoundTripper {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if ctx.Value(triedFirstKey{}) != nil {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, triedFirstDial)
+			defer cancel()
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+	return MarkConnectFailures(transport)
 }
 
 // Refusal is an answer the server refused, carrying the code it refused with.
@@ -114,29 +183,16 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 // a particular request needs beyond the ones every request sends. It returns
 // the answer's own headers, for a caller that needs the ETag.
 func (c *Client) send(ctx context.Context, method, path string, header http.Header, body, out any) (http.Header, error) {
-	var reader io.Reader
+	var encoded []byte
 	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if encoded, err = json.Marshal(body); err != nil {
 			return nil, fmt.Errorf("encode the request body: %w", err)
 		}
-		reader = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
+	resp, err := c.do(ctx, method, path, header, encoded)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	for name, values := range header {
-		req.Header[name] = values
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("reach the ypl server at %s: %w", c.base, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -155,6 +211,45 @@ func (c *Client) send(ctx context.Context, method, path string, header http.Head
 		return resp.Header, fmt.Errorf("read the server's answer: %w", err)
 	}
 	return resp.Header, nil
+}
+
+// do sends one request, starting at the address that last accepted a
+// connection, and moves to the next only where a connection could not be
+// opened. An answer of any kind, a refusal included, is the server's, so it
+// ends the trying.
+func (c *Client) do(ctx context.Context, method, path string, header http.Header, encoded []byte) (*http.Response, error) {
+	start := int(c.reached.Load())
+	for i := start; ; i++ {
+		var reader io.Reader
+		if encoded != nil {
+			reader = bytes.NewReader(encoded)
+		}
+		attempt := ctx
+		if i+1 < len(c.bases) {
+			attempt = context.WithValue(ctx, triedFirstKey{}, true)
+		}
+		req, err := http.NewRequestWithContext(attempt, method, c.bases[i]+path, reader)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/json")
+		if encoded != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		for name, values := range header {
+			req.Header[name] = values
+		}
+		resp, err := c.http.Do(req)
+		var down *unreachable
+		if errors.As(err, &down) && i+1 < len(c.bases) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reach the ypl server at %s: %w", strings.Join(c.bases[start:i+1], ", then "), err)
+		}
+		c.reached.Store(int64(i))
+		return resp, nil
+	}
 }
 
 // maxRefusalBody bounds what is read from an answer that refused, many times

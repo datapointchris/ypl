@@ -8,12 +8,14 @@
 // tick every SYNC_INTERVAL (5m when unset) give or take a fifth, and a pass at
 // once whenever an edit arrives.
 //
-// Beside the sync it reads tracklists with the yt-dlp binary YTDLP_PATH names
-// (yt-dlp on PATH when unset), one video at a time, at least ENRICH_PACE apart
-// (90s when unset) and up to twice that at random. ENRICH_PACE=off reads no
-// video, and reading no video needs no yt-dlp. The same binary reads the watch
-// history with the cookie jar `ypl server cookies set` stores, when asked and
-// when YOUTUBE_COOKIE_KEY holds the key the jar is sealed under in the store.
+// Every read it makes with the yt-dlp binary YTDLP_PATH names (yt-dlp on PATH
+// when unset) waits at one door, which runs one at a time with a gap between
+// them. Beside the sync it reads tracklists through the door, at least
+// ENRICH_PACE apart (90s when unset) and up to twice that at random.
+// ENRICH_PACE=off reads no tracklist, and reading none needs no yt-dlp. The
+// door also serves a video's captions, transcript and audio when asked, and
+// the watch history with the cookie jar `ypl server cookies set` stores, when
+// YOUTUBE_COOKIE_KEY holds the key the jar is sealed under in the store.
 //
 // It answers /api/v1 only to a request carrying an access token the identity
 // provider OIDC_ISSUER signed for a client whose id starts with
@@ -24,7 +26,9 @@
 //
 // With PUBLIC_URL set to the address clients reach it at, it serves the RFC
 // 9728 metadata naming that address and OIDC_ISSUER without a token, which is
-// how `ypl auth login <url>` finds the provider.
+// how `ypl auth login <url>` finds the provider. A request naming PUBLIC_URL's
+// host meets the limits of the proxy in front of it: an audio answer is capped
+// at handlers.maxPublicAudio, and a read ends at handlers.publicReadBudget.
 //
 // With OTEL_EXPORTER_OTLP_ENDPOINT set, it exports a span for each request
 // over OTLP/HTTP, as a child of the traceparent the request carries, with the
@@ -38,6 +42,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -62,14 +67,15 @@ import (
 var version = "dev"
 
 // shutdownGrace bounds how long in-flight requests get to finish after the
-// first SIGINT or SIGTERM. No playlist write or watch-history read begins once
-// the drain starts and no push write once the sync is canceled, which happen
-// together. One begun before then ends within handlers.WriteDuration,
-// handlers.HistoryDuration or reconcile.WriteDuration. So the grace outlasts
-// every one with 5 seconds to answer. A history read cut short loses the jar
-// YouTube rotated during it, which is why it counts. A container's stop timeout
-// has to be longer still, by traceFlushLimit as well.
-const shutdownGrace = max(handlers.WriteDuration, handlers.HistoryDuration, reconcile.WriteDuration) + 5*time.Second
+// first SIGINT or SIGTERM. No playlist write, watch-history read or Data API
+// call begins once the drain starts, the door stops every read but the
+// history's, and no push write begins once the sync is canceled. These happen
+// together. Work begun before then ends within the bound its component names:
+// handlers.DrainBound, ytdlp.DrainBound or reconcile.WriteDuration. So the
+// grace outlasts every one with 5 seconds to answer. A history read cut short
+// loses the jar YouTube rotated during it, which is why it runs on. A
+// container's stop timeout has to be longer still, by traceFlushLimit as well.
+const shutdownGrace = max(handlers.DrainBound, ytdlp.DrainBound, reconcile.WriteDuration) + 5*time.Second
 
 // traceFlushLimit bounds the export of the spans still buffered once the
 // server has stopped serving.
@@ -122,30 +128,35 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// A configuration that reads no video needs no yt-dlp, so the binary is
-	// looked for only where the reading would run it.
-	var reader enrich.Reader
-	if reads {
-		reader, err = ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp"))
-		if err != nil {
-			return fmt.Errorf("%w: install yt-dlp or set YTDLP_PATH to it", err)
-		}
+	// Only a configuration that reads tracklists cannot start without yt-dlp.
+	// Without it, every other read through the door answers 503.
+	binary, missing := ytdlp.Find(envOr("YTDLP_PATH", "yt-dlp"))
+	switch {
+	case missing != nil && reads:
+		return fmt.Errorf("%w: install yt-dlp or set YTDLP_PATH to it", missing)
+	case missing != nil:
+		slog.Warn("no yt-dlp, so the server reads no caption, audio or watch history", "err", missing)
 	}
 	issuer, clientIDPrefix, serviceClientIDPrefix, err := identityProvider()
 	if err != nil {
 		return err
 	}
-	history, err := watchHistory()
+	sealer, err := cookieSealer()
 	if err != nil {
 		return err
 	}
-	// The sync and the API each get a channel, because a run counts its own
-	// requests and units from its channel's totals.
+	// The sync, the person's playlist writes and the Data API routes each get a
+	// channel, because each counts its own requests and units from its
+	// channel's totals.
 	syncChannel, err := youtube.NewChannel(ctx, creds)
 	if err != nil {
 		return err
 	}
 	apiChannel, err := youtube.NewChannel(ctx, creds)
+	if err != nil {
+		return err
+	}
+	dataAPIChannel, err := youtube.NewChannel(ctx, creds)
 	if err != nil {
 		return err
 	}
@@ -165,8 +176,14 @@ func start(ctx context.Context) error {
 		}
 	}()
 	var metadata http.Handler
+	var publicHost string
 	if public := os.Getenv("PUBLIC_URL"); public != "" {
 		metadata = goapiauth.ProtectedResourceMetadata{Resource: public, Issuer: issuer}
+		parsed, err := url.Parse(public)
+		if err != nil || parsed.Hostname() == "" {
+			return fmt.Errorf("PUBLIC_URL %q is not an address such as https://ypl.example.com", public)
+		}
+		publicHost = parsed.Hostname()
 	} else {
 		slog.Warn("PUBLIC_URL is unset, so no RFC 9728 metadata is served and `ypl auth login <url>` cannot discover the issuer")
 	}
@@ -199,19 +216,39 @@ func start(ctx context.Context) error {
 			return
 		}
 		slog.Info("database ready", "path", path)
+		// The door opens after the store, because it takes up the latest pause
+		// from it.
+		var door *ytdlp.Door
+		if missing == nil {
+			if door, err = ytdlp.NewDoor(ctx, binary, doorPauses{st: st}, slog.Default()); err != nil {
+				if ctx.Err() == nil {
+					fail(err)
+				}
+				return
+			}
+		}
 		tally := enrich.NewTally()
 		edits := reconcile.NewEdits()
 		worker := reconcile.NewWorker(reconcile.NewRunner(st, syncChannel, tally, edits, interval), interval, slog.Default())
 		api := handlers.New(st, apiChannel, handlers.Sync{Edits: edits, Interval: interval}, version, slog.Default())
-		if history != nil {
-			api.ReadHistoryWith(history.reader, history.sealer)
+		api.CallDataAPIWith(dataAPIChannel)
+		drain := api.Drain
+		if door != nil {
+			api.ReadVideosWith(door, publicHost)
+			if sealer != nil {
+				api.ReadHistoryWith(door, sealer)
+			}
+			drain = func() {
+				api.Drain()
+				door.Close()
+			}
 		}
-		if !hold.open(handler(api, provider, metadata), api.Drain) {
+		if !hold.open(handler(api, provider, metadata), drain) {
 			return
 		}
 		wg.Go(func() { worker.Run(ctx) })
 		if reads {
-			wg.Go(func() { _ = enrich.New(st, reader, limits, tally).Run(ctx) })
+			wg.Go(func() { _ = enrich.New(st, door, limits, tally).Run(ctx) })
 		}
 	}
 	err = run(ctx, ":"+envOr("PORT", "8080"), tracing.Handler(hold), work, hold.drain)
@@ -408,17 +445,10 @@ func probe(w http.ResponseWriter, code int, status string) {
 	wire.JSON(w, code, map[string]string{"status": status})
 }
 
-// historyReading is what the API reads the watch history through, and the
-// sealer it stores the cookie jar under.
-type historyReading struct {
-	reader *ytdlp.Reader
-	sealer *jarseal.Sealer
-}
-
-// watchHistory is how to read the watch history when yt-dlp is found and
-// YOUTUBE_COOKIE_KEY is set, and nil otherwise, logging which is missing. A key
-// that is set and unusable stops the server.
-func watchHistory() (*historyReading, error) {
+// cookieSealer seals the stored cookie jar under YOUTUBE_COOKIE_KEY. It is nil
+// where the key is unset, and then no watch history is read. A key that is set
+// and unusable stops the server.
+func cookieSealer() (*jarseal.Sealer, error) {
 	key := os.Getenv("YOUTUBE_COOKIE_KEY")
 	if key == "" {
 		slog.Warn("no YOUTUBE_COOKIE_KEY, so the watch history is not read")
@@ -428,12 +458,7 @@ func watchHistory() (*historyReading, error) {
 	if err != nil {
 		return nil, fmt.Errorf("YOUTUBE_COOKIE_KEY: %w", err)
 	}
-	reader, err := ytdlp.NewReader(envOr("YTDLP_PATH", "yt-dlp"))
-	if err != nil {
-		slog.Warn("no yt-dlp, so the watch history is not read", "err", err)
-		return nil, nil
-	}
-	return &historyReading{reader: reader, sealer: sealer}, nil
+	return sealer, nil
 }
 
 // envOr reads key, treating an empty value as unset. An exported empty PORT

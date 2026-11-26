@@ -916,6 +916,34 @@ func (q *Queries) InsertRatingTag(ctx context.Context, arg InsertRatingTagParams
 	return err
 }
 
+const insertServiceCall = `-- name: InsertServiceCall :exec
+INSERT INTO youtube_service_calls (client_id, method, sent_ts, quota_date, requests, units, error)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertServiceCallParams struct {
+	ClientID  string
+	Method    string
+	SentTs    string
+	QuotaDate string
+	Requests  int64
+	Units     int64
+	Error     sql.NullString
+}
+
+func (q *Queries) InsertServiceCall(ctx context.Context, arg InsertServiceCallParams) error {
+	_, err := q.db.ExecContext(ctx, insertServiceCall,
+		arg.ClientID,
+		arg.Method,
+		arg.SentTs,
+		arg.QuotaDate,
+		arg.Requests,
+		arg.Units,
+		arg.Error,
+	)
+	return err
+}
+
 const insertSyncFailure = `-- name: InsertSyncFailure :exec
 INSERT INTO sync_failures (run_id, playlist_id, video_id, error, stage)
 VALUES (?, ?, ?, ?, ?)
@@ -1078,6 +1106,28 @@ func (q *Queries) InsertYouTubeWrite(ctx context.Context, arg InsertYouTubeWrite
 	return write_id, err
 }
 
+const insertYtdlpPause = `-- name: InsertYtdlpPause :exec
+INSERT INTO ytdlp_pauses (paused_ts, until_ts, cause, error)
+VALUES (?, ?, ?, ?)
+`
+
+type InsertYtdlpPauseParams struct {
+	PausedTs string
+	UntilTs  string
+	Cause    string
+	Error    string
+}
+
+func (q *Queries) InsertYtdlpPause(ctx context.Context, arg InsertYtdlpPauseParams) error {
+	_, err := q.db.ExecContext(ctx, insertYtdlpPause,
+		arg.PausedTs,
+		arg.UntilTs,
+		arg.Cause,
+		arg.Error,
+	)
+	return err
+}
+
 const isPlayDeleted = `-- name: IsPlayDeleted :one
 SELECT EXISTS (
     SELECT 1 FROM deleted_plays AS d
@@ -1150,20 +1200,6 @@ func (q *Queries) LatestPlaylistWriteSettledAfter(ctx context.Context, arg Lates
 	return i, err
 }
 
-const latestRateLimitedRunFinished = `-- name: LatestRateLimitedRunFinished :one
-SELECT CAST(coalesce(max(finished_ts), '') AS TEXT) AS finished_ts FROM sync_runs
-WHERE is_rate_limited = 1
-`
-
-// When the latest run that had YouTube refuse its reads of videos for now
-// finished, and empty when none has.
-func (q *Queries) LatestRateLimitedRunFinished(ctx context.Context) (string, error) {
-	row := q.db.QueryRowContext(ctx, latestRateLimitedRunFinished)
-	var finished_ts string
-	err := row.Scan(&finished_ts)
-	return finished_ts, err
-}
-
 const latestVideoReadStarted = `-- name: LatestVideoReadStarted :one
 SELECT CAST(coalesce(max(started_ts), '') AS TEXT) AS started_ts FROM latest_video_read
 `
@@ -1174,6 +1210,37 @@ func (q *Queries) LatestVideoReadStarted(ctx context.Context) (string, error) {
 	var started_ts string
 	err := row.Scan(&started_ts)
 	return started_ts, err
+}
+
+const latestYtdlpPause = `-- name: LatestYtdlpPause :one
+SELECT
+    paused_ts,
+    until_ts,
+    cause,
+    error
+FROM ytdlp_pauses
+ORDER BY until_ts DESC, pause_id DESC
+LIMIT 1
+`
+
+type LatestYtdlpPauseRow struct {
+	PausedTs string
+	UntilTs  string
+	Cause    string
+	Error    string
+}
+
+// The pause of yt-dlp reads that ends last.
+func (q *Queries) LatestYtdlpPause(ctx context.Context) (LatestYtdlpPauseRow, error) {
+	row := q.db.QueryRowContext(ctx, latestYtdlpPause)
+	var i LatestYtdlpPauseRow
+	err := row.Scan(
+		&i.PausedTs,
+		&i.UntilTs,
+		&i.Cause,
+		&i.Error,
+	)
+	return i, err
 }
 
 const listArtistsOfVideo = `-- name: ListArtistsOfVideo :many
@@ -3306,6 +3373,45 @@ func (q *Queries) SumRunsSince(ctx context.Context, since string) (SumRunsSinceR
 	var i SumRunsSinceRow
 	err := row.Scan(&i.VideoReads, &i.ProbeMisses)
 	return i, err
+}
+
+const sumServiceCallUnits = `-- name: SumServiceCallUnits :many
+SELECT
+    client_id,
+    CAST(sum(units) AS INTEGER) AS units
+FROM youtube_service_calls
+WHERE quota_date = ?
+GROUP BY client_id
+ORDER BY client_id
+`
+
+type SumServiceCallUnitsRow struct {
+	ClientID string
+	Units    int64
+}
+
+// The units each service client's calls on quota_date cost.
+func (q *Queries) SumServiceCallUnits(ctx context.Context, quotaDate string) ([]SumServiceCallUnitsRow, error) {
+	rows, err := q.db.QueryContext(ctx, sumServiceCallUnits, quotaDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SumServiceCallUnitsRow
+	for rows.Next() {
+		var i SumServiceCallUnitsRow
+		if err := rows.Scan(&i.ClientID, &i.Units); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const sumWriteUnits = `-- name: SumWriteUnits :one

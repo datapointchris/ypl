@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -34,6 +35,9 @@ type Channel struct {
 	// pause waits between attempts at a request YouTube aborted, and returns
 	// early with ctx's error when ctx ends.
 	pause func(ctx context.Context, d time.Duration) error
+	// uploads is each channel's uploads playlist, by the id or handle a read
+	// named the channel with.
+	uploads sync.Map
 }
 
 // ReadLag is how long after YouTube answers a write a read can still return the
@@ -98,6 +102,8 @@ const (
 	MethodPlaylistItemsUpdate = "playlistItems.update"
 	MethodPlaylistItemsDelete = "playlistItems.delete"
 	MethodVideosList          = "videos.list"
+	MethodChannelsList        = "channels.list"
+	MethodCommentThreadsList  = "commentThreads.list"
 )
 
 // WriteUnits is what one request of any write this package makes costs, as the
@@ -146,8 +152,54 @@ var (
 		name: MethodPlaylistItemsDelete, units: WriteUnits,
 		refusals: map[string]error{"playlistItemNotFound": ErrItemNotFound},
 	}
-	videosList = method{name: MethodVideosList, units: 1}
+	videosList         = method{name: MethodVideosList, units: 1}
+	channelsList       = method{name: MethodChannelsList, units: 1}
+	commentThreadsList = method{
+		name: MethodCommentThreadsList, units: 1,
+		refusals: map[string]error{"commentsDisabled": ErrCommentsDisabled, "videoNotFound": ErrVideoNotFound},
+	}
 )
+
+// Estimate is what a call is priced at before it is sent: the method it is
+// recorded under, and the units the day's quota is asked to admit. A paged read
+// is priced at its first page, and each page after costs as much again.
+type Estimate struct {
+	Method string
+	Units  int64
+}
+
+// ItemsEstimate prices a read of every item of a playlist.
+func ItemsEstimate() Estimate {
+	return Estimate{Method: playlistItemsList.name, Units: playlistItemsList.units}
+}
+
+// AppendEstimate prices an append of a video to a playlist.
+func AppendEstimate() Estimate {
+	return Estimate{Method: playlistItemsInsert.name, Units: playlistItemsInsert.units}
+}
+
+// DeleteItemEstimate prices a delete of a playlist item.
+func DeleteItemEstimate() Estimate {
+	return Estimate{Method: playlistItemsDelete.name, Units: playlistItemsDelete.units}
+}
+
+// UploadsEstimate prices a page of a channel's uploads. It counts the read of
+// the channel that finds its uploads playlist, which the running server sends
+// only the first time it reads that channel.
+func UploadsEstimate() Estimate {
+	return Estimate{Method: playlistItemsList.name, Units: channelsList.units + playlistItemsList.units}
+}
+
+// VideoDetailsEstimate prices a read of n videos' details, one request for
+// each PageSize of them.
+func VideoDetailsEstimate(n int) Estimate {
+	return Estimate{Method: videosList.name, Units: videosList.units * int64((n+PageSize-1)/PageSize)}
+}
+
+// TopCommentsEstimate prices a read of a video's top comments.
+func TopCommentsEstimate() Estimate {
+	return Estimate{Method: commentThreadsList.name, Units: commentThreadsList.units}
+}
 
 const (
 	// attempts is how many times send makes a request YouTube keeps aborting,
@@ -205,8 +257,17 @@ func refusal(m method, err error) error {
 		return err
 	}
 	refused := &refusedError{answer: err}
-	if hasReason(err, http.StatusForbidden, "quotaExceeded") {
+	switch {
+	case hasReason(err, http.StatusForbidden, "quotaExceeded"):
 		refused.named = ErrQuotaSpent
+	case google.Code == http.StatusTooManyRequests,
+		hasReason(err, http.StatusForbidden, "rateLimitExceeded"),
+		hasReason(err, http.StatusForbidden, "userRateLimitExceeded"):
+		refused.named = ErrThrottled
+	case google.Code == http.StatusUnauthorized,
+		hasReason(err, http.StatusForbidden, "insufficientPermissions"),
+		hasReason(err, http.StatusForbidden, "accessNotConfigured"):
+		refused.named = ErrCredentialRefused
 	}
 	for _, item := range google.Errors {
 		if named, ok := m.refusals[item.Reason]; ok {

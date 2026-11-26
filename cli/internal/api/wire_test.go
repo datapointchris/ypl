@@ -88,6 +88,7 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 		{"ratings", func() any { return &page[Rating]{} }},
 		{"tags", func() any { return &[]TagCount{} }},
 		{"history", func() any { return &[]HistoryEntry{} }},
+		{"transcript", func() any { return &Transcript{} }},
 		{"version", func() any { return &Version{} }},
 		// The order's revision is a header rather than a field, so it is marked
 		// as no part of the body and this walk sees only what the document
@@ -123,6 +124,20 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 	}
 	if bytes.Contains(sentOrder, []byte("revision")) {
 		t.Errorf("an edit sends %s, and the revision is only ever a header", sentOrder)
+	}
+}
+
+func TestTheLanguageShapeIsTheServers(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(wireDir, "language_pattern.json"))
+	if err != nil {
+		t.Fatalf("read the server's language pattern — run `go test ./handlers -update` in the api module: %v", err)
+	}
+	var pattern string
+	if err := json.Unmarshal(body, &pattern); err != nil {
+		t.Fatalf("decode the language pattern: %v", err)
+	}
+	if pattern != LanguagePattern {
+		t.Errorf("LanguagePattern is %q, and the server checks %q", LanguagePattern, pattern)
 	}
 }
 

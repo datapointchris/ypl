@@ -16,7 +16,13 @@
       "date": "2026-09-17",
       "units_spent": 0,
       "units_limit": 10000,
-      "resets_at": "2026-09-18T07:00:00Z"
+      "resets_at": "2026-09-18T07:00:00Z",
+      "by_caller": [
+        {
+          "caller": "ypl",
+          "units": 0
+        }
+      ]
     },
     "pushes": [
       {
@@ -34,5 +40,9 @@
     "last_ok_ts": "2026-09-17T12:00:00Z",
     "last_refused_ts": null,
     "last_error": null
+  },
+  "youtube_reads": {
+    "paused_until": null,
+    "pause_cause": null
   }
 }

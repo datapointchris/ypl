@@ -102,37 +102,24 @@ func (run *run) held(m merged) (bool, error) {
 
 // allows is whether the day's quota has room for units more at priority,
 // beside what the day has spent and the reads of every tick left before the
-// quota resets. Anything but an edit leaves EditReserve on top of that. As
-// the reset nears the ticks left fall, so what a push stopped for comes back.
+// quota resets. Anything but an edit leaves store.EditReserve on top of that.
+// As the reset nears the ticks left fall, so what a push stopped for comes
+// back.
 func (run *run) allows(priority Priority, units int64) (bool, error) {
 	now := run.now()
-	spent, err := store.Spent(run.ctx, run.store.Queries, youtube.QuotaDate(now))
-	if err != nil {
-		return false, err
-	}
+	var unrecorded int64
 	if youtube.QuotaDate(now) == run.date {
-		spent += run.channel.Units() - run.units0 - run.report.WriteUnits
+		unrecorded = run.channel.Units() - run.units0 - run.report.WriteUnits
 	}
 	if run.perTick == 0 {
-		if run.perTick, err = readsPerTick(run.ctx, run.store.Queries); err != nil {
+		var err error
+		if run.perTick, err = store.ReadsPerTick(run.ctx, run.store.Queries); err != nil {
 			return false, err
 		}
 	}
-	floor := (int64(youtube.QuotaReset(now).Sub(now)/run.interval) + 1) * run.perTick
-	if priority != PriorityEdit {
-		floor += EditReserve
-	}
-	return spent+units+floor <= youtube.DailyQuota, nil
-}
-
-// readsPerTick is what one tick reads: the listing, and a sweep of a playlist of
-// the library's average number of pages.
-func readsPerTick(ctx context.Context, q *generated.Queries) (int64, error) {
-	pages, err := q.CountPlaylistPages(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return 1 + (pages.Pages+max(pages.Playlists, 1)-1)/max(pages.Playlists, 1), nil
+	return store.Admits(run.ctx, run.store.Queries, now, store.QuotaAsk{
+		Units: units, Unrecorded: unrecorded, Interval: run.interval, PerTick: run.perTick, Edit: priority == PriorityEdit,
+	})
 }
 
 // write records w as pending and as the playlist's unanswered write, sends it,

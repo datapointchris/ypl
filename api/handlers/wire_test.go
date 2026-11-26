@@ -43,6 +43,9 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 	if set := f.do(http.MethodPut, "/api/v1/youtube/session", fmt.Sprintf(`{"cookie_jar": %q}`, cookieJar)); set.Code != http.StatusOK {
 		t.Fatalf("setting the session answered %d: %s", set.Code, set.Body)
 	}
+	f.h.ReadVideosWith(&fakeDoor{transcript: ytdlp.Transcript{
+		VideoID: "a", Track: ytdlp.Track{Language: "en", Kind: ytdlp.Manual}, Text: "a written line of the mix ",
+	}}, "ypl.example.com")
 	// An edit no sync has pushed, so the status document lists a push rather
 	// than none.
 	if edited := f.editItems("PLB", []string{"e", "c", "b"}, "*"); edited.Code != http.StatusOK {
@@ -70,6 +73,7 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		{name: "ratings", target: "/api/v1/ratings"},
 		{name: "tags", target: "/api/v1/tags"},
 		{name: "history", target: "/api/v1/youtube/history"},
+		{name: "transcript", target: "/api/v1/youtube/videos/a/transcript?lang=en"},
 		{name: "version", target: "/api/v1/version"},
 	} {
 		rec := f.get(doc.target)
@@ -121,6 +125,15 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		t.Fatalf("encode the service routes: %v", err)
 	}
 	pinned(t, "service-scopes", "ServiceRoutes", body)
+
+	// The shape of a transcript's language. The CLI refuses a language of any
+	// other shape as a usage error, and one the server refuses that the CLI
+	// sends is reported as a failure of the request.
+	body, err = json.Marshal(ytdlp.LanguagePattern)
+	if err != nil {
+		t.Fatalf("encode the language pattern: %v", err)
+	}
+	pinned(t, "language_pattern", "ytdlp.LanguagePattern", body)
 }
 
 // pinned writes body as the wire document name under -update, and otherwise

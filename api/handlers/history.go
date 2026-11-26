@@ -4,14 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/datapointchris/ypl/api/enrich"
 	"github.com/datapointchris/ypl/api/jarseal"
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
@@ -20,7 +18,7 @@ import (
 )
 
 // HistoryReader reads the watch history of the account whose cookies a jar
-// holds, as *ytdlp.Reader does, returning the jar written back after the read.
+// holds, as *ytdlp.Door does, returning the jar written back after the read.
 type HistoryReader interface {
 	History(ctx context.Context, jar string, entries int) ([]ytdlp.HistoryEntry, string, error)
 }
@@ -30,12 +28,11 @@ type HistoryReader interface {
 // YouTube may ban an account it sees read too often, so reads are one at a
 // time and only on request.
 type historyReads struct {
-	reader       HistoryReader
-	sealer       *jarseal.Sealer
-	mu           sync.Mutex
-	at           time.Time
-	last         []ytdlp.HistoryEntry
-	refusedUntil time.Time
+	reader HistoryReader
+	sealer *jarseal.Sealer
+	mu     sync.Mutex
+	at     time.Time
+	last   []ytdlp.HistoryEntry
 }
 
 // historyReuse is how long one read of the watch history answers for.
@@ -46,14 +43,11 @@ const historyReuse = 30 * time.Second
 // so the read goes deeper than the answer.
 const historyDepth = 25
 
-// historyDuration bounds one read of the watch history.
-const historyDuration = 60 * time.Second
-
-// HistoryDuration is the longest a read of the watch history runs once it has
-// begun: the read, and the store of the jar yt-dlp wrote back, which waits at
-// most recordTimeout for the write lock. No read begins once Drain has been
-// called.
-const HistoryDuration = historyDuration + recordTimeout
+// HistoryDuration is the longest a read of the watch history runs once its
+// turn at the door has come: the read, and the store of the jar yt-dlp wrote
+// back, which waits at most recordTimeout for the write lock. No read begins
+// once Drain has been called, or once the door has closed.
+const HistoryDuration = ytdlp.HistoryLimit + recordTimeout
 
 var errHistoryDraining = errors.New("the server is shutting down, so it begins no read of the watch history")
 
@@ -154,24 +148,23 @@ func (h *Handlers) historyUnavailable(w http.ResponseWriter) bool {
 	if h.history != nil {
 		return false
 	}
-	wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeHistoryUnavailable, "this server reads no watch history: it has no yt-dlp")
+	wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsUnavailable, "this server reads no watch history: it has no yt-dlp")
 	return true
 }
 
-// read reads the history with jar. A request ending early does not end the
-// read, because yt-dlp writes the rotated jar back only once it finishes, and
-// the jar stored before the read may no longer be honored.
+// read reads the history with jar. The caller's ctx carries no cancellation, so
+// a request ending early does not end the read. yt-dlp writes the rotated jar
+// back only once it finishes, and YouTube may refuse the jar stored before the
+// read once it has rotated. The door bounds the wait for a turn and the read
+// itself.
 func (r *historyReads) read(ctx context.Context, jar string) ([]ytdlp.HistoryEntry, string, error) {
-	readCtx, cancel := context.WithTimeout(ctx, historyDuration)
-	defer cancel()
-	return r.reader.History(readCtx, jar, historyDepth)
+	return r.reader.History(ctx, jar, historyDepth)
 }
 
 // readHistory is the watch history, read with the stored jar or reused from a
 // read within historyReuse. Each read records how YouTube answered, and keeps
-// the jar yt-dlp wrote back. While YouTube refuses the server's address, as
-// enrichment or an earlier history read found, no read is made, because a read
-// sent into a refusal is what turns a pause into a block.
+// the jar yt-dlp wrote back. While the door's pause holds, as a refusal of the
+// address or reads failing in a row began it, the door makes no read.
 func (h *Handlers) readHistory(ctx context.Context) ([]ytdlp.HistoryEntry, error) {
 	ctx = context.WithoutCancel(ctx)
 	h.history.mu.Lock()
@@ -179,27 +172,12 @@ func (h *Handlers) readHistory(ctx context.Context) ([]ytdlp.HistoryEntry, error
 	if h.history.last != nil && h.now().Sub(h.history.at) < historyReuse {
 		return h.history.last, nil
 	}
-	var session generated.GetYouTubeSessionRow
-	var refused string
-	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
-		var err error
-		if refused, err = q.LatestRateLimitedRunFinished(ctx); err != nil {
-			return err
-		}
-		session, err = q.GetYouTubeSession(ctx)
-		return err
-	})
+	session, err := h.store.Queries.GetYouTubeSession(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errNoSession
 	}
 	if err != nil {
 		return nil, err
-	}
-	if at, err := time.Parse(time.RFC3339, refused); err == nil && at.Add(enrich.RateLimitPause).After(h.history.refusedUntil) {
-		h.history.refusedUntil = at.Add(enrich.RateLimitPause)
-	}
-	if h.now().Before(h.history.refusedUntil) {
-		return nil, fmt.Errorf("%w until %s", ytdlp.ErrRateLimited, store.Timestamp(h.history.refusedUntil))
 	}
 	if h.isDraining() {
 		return nil, errHistoryDraining
@@ -232,9 +210,6 @@ func (h *Handlers) readHistory(ctx context.Context) ([]ytdlp.HistoryEntry, error
 // the stored session.
 func (h *Handlers) readWith(ctx context.Context, jar string) ([]ytdlp.HistoryEntry, string, error) {
 	entries, written, err := h.history.read(ctx, jar)
-	if errors.Is(err, ytdlp.ErrRateLimited) {
-		h.history.refusedUntil = h.now().Add(enrich.RateLimitPause)
-	}
 	if errors.Is(err, ytdlp.ErrSignedOut) {
 		recorded := h.store.InTx(ctx, func(tx *store.Tx) error {
 			return tx.RecordYouTubeSessionRefused(ctx, generated.RecordYouTubeSessionRefusedParams{
@@ -264,8 +239,7 @@ func (h *Handlers) refuseHistory(w http.ResponseWriter, r *http.Request, err err
 		wire.Refuse(w, http.StatusConflict, wire.CodeYouTubeSessionMissing, "the server's YouTube session was sealed under another key; export a cookie jar and send it with `ypl server cookies set`")
 	case errors.Is(err, ytdlp.ErrSignedOut):
 		wire.Refuse(w, http.StatusBadGateway, wire.CodeYouTubeSignedOut, "YouTube answered the watch history signed out; export the cookie jar again and send it with `ypl server cookies set`")
-	case errors.Is(err, ytdlp.ErrRateLimited):
-		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeRateLimited, "YouTube is refusing reads from the server for now")
+	case h.refuseAtTheDoor(w, r, err):
 	default:
 		h.refuseAndLog(w, r, slog.LevelWarn, http.StatusBadGateway, wire.CodeYouTubeReadFailed, err, "the watch history could not be read")
 	}

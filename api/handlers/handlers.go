@@ -54,6 +54,11 @@ type Handlers struct {
 	drainOnce sync.Once
 	// history reads the watch history, and is nil on a server with no yt-dlp.
 	history *historyReads
+	// videos reads captions, transcripts and audio through the yt-dlp door, and
+	// is nil on a server with no yt-dlp.
+	videos *videoReads
+	// dataAPI is what the Data API routes call YouTube through.
+	dataAPI *dataAPICalls
 	// version is the release this server was built from.
 	version string
 }
@@ -117,6 +122,15 @@ func (h *Handlers) routes() []route {
 		{http.MethodGet, "/api/v1/tags", h.listTags},
 		{http.MethodGet, "/api/v1/youtube/history", h.listHistory},
 		{http.MethodPut, "/api/v1/youtube/session", h.setSession},
+		{http.MethodGet, "/api/v1/youtube/playlists/{id}/items", h.listLiveItems},
+		{http.MethodPost, "/api/v1/youtube/playlists/{id}/items", h.addLiveItem},
+		{http.MethodDelete, "/api/v1/youtube/playlists/{id}/items/{item}", h.deleteLiveItem},
+		{http.MethodGet, "/api/v1/youtube/channels/{id}/uploads", h.listUploads},
+		{http.MethodGet, "/api/v1/youtube/videos", h.listLiveVideos},
+		{http.MethodGet, "/api/v1/youtube/videos/{id}/comments", h.listComments},
+		{http.MethodGet, "/api/v1/youtube/videos/{id}/captions", h.showCaptions},
+		{http.MethodGet, "/api/v1/youtube/videos/{id}/transcript", h.showTranscript},
+		{http.MethodGet, "/api/v1/youtube/videos/{id}/audio", h.streamAudio},
 		{http.MethodGet, "/api/v1/suggestions", h.listSuggestions},
 		{http.MethodGet, "/api/v1/sync/runs", h.listSyncRuns},
 		{http.MethodGet, "/api/v1/status", h.showStatus},
@@ -133,6 +147,15 @@ var ServiceRoutes = map[string][]string{
 	"ypl.status.read": {"GET /api/v1/status"},
 	// The release the server was built from.
 	"ypl.version.read": {"GET /api/v1/version"},
+	// The stored playlists, to find one by name, and a playlist's items as
+	// YouTube holds them now.
+	"ypl.playlists.read":       {"GET /api/v1/playlists", "GET /api/v1/youtube/playlists/{id}/items"},
+	"ypl.playlist-items.write": {"POST /api/v1/youtube/playlists/{id}/items", "DELETE /api/v1/youtube/playlists/{id}/items/{item}"},
+	"ypl.channels.read":        {"GET /api/v1/youtube/channels/{id}/uploads"},
+	"ypl.videos.read":          {"GET /api/v1/youtube/videos"},
+	"ypl.comments.read":        {"GET /api/v1/youtube/videos/{id}/comments"},
+	"ypl.transcripts.read":     {"GET /api/v1/youtube/videos/{id}/captions", "GET /api/v1/youtube/videos/{id}/transcript"},
+	"ypl.audio.read":           {"GET /api/v1/youtube/videos/{id}/audio"},
 }
 
 // Register adds every route to mux. A path under /api/v1/ that no route

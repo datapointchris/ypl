@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"regexp"
 	"strconv"
 )
 
@@ -137,4 +138,34 @@ func (c *Client) GetVideo(ctx context.Context, id string) (Video, error) {
 	var video Video
 	err := c.Get(ctx, "/api/v1/videos/"+ref(id), &video)
 	return video, err
+}
+
+// Transcript is one caption track of a video as a single line of text. Kind
+// is manual for a track someone wrote and automatic for YouTube's own.
+type Transcript struct {
+	VideoID  string `json:"video_id"`
+	Language string `json:"language"`
+	Kind     string `json:"kind"`
+	Text     string `json:"text"`
+}
+
+// LanguagePattern is the shape of a transcript's language, as the server
+// checks it. The server owns it, and the wire test holds this copy to the
+// server's.
+const LanguagePattern = `^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$`
+
+var language = regexp.MustCompile(LanguagePattern)
+
+// ValidLanguage is whether lang has the shape of a language, such as en or
+// pt-BR, as the server checks it.
+func ValidLanguage(lang string) bool {
+	return language.MatchString(lang)
+}
+
+// ReadTranscript is the video id's captions in lang, which the server reads
+// from YouTube when asked. A lang of "" is the server's own default, English.
+func (c *Client) ReadTranscript(ctx context.Context, id, lang string) (Transcript, error) {
+	var transcript Transcript
+	err := c.Get(ctx, query("/api/v1/youtube/videos/"+ref(id)+"/transcript", [2]string{"lang", lang}), &transcript)
+	return transcript, err
 }

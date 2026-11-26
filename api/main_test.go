@@ -415,6 +415,31 @@ func TestARequestUnderACallersTraceIsServedInAChildSpan(t *testing.T) {
 	}
 }
 
+// A service token holding one scope reaches every route that scope lists, and
+// is refused with 403 on every route another scope lists.
+func TestAServiceTokenReachesItsScopesRoutesAndNoOther(t *testing.T) {
+	tokens := acceptOnly{}
+	for scope := range handlers.ServiceRoutes {
+		tokens[scope] = goapiauth.Identity{ClientID: "ypl-svc-" + scope, Service: true, Scopes: []string{scope}}
+	}
+	h := apiHandler(t, tokens)
+	wildcard := regexp.MustCompile(`\{[^}]*\}`)
+	for scope := range handlers.ServiceRoutes {
+		for listing, patterns := range handlers.ServiceRoutes {
+			for _, pattern := range patterns {
+				method, path, _ := strings.Cut(pattern, " ")
+				req := httptest.NewRequestWithContext(t.Context(), method, wildcard.ReplaceAllString(path, "x"), strings.NewReader("{}"))
+				req.Header.Set("Authorization", "Bearer "+scope)
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				if reached := rec.Code != http.StatusForbidden; reached != (listing == scope) {
+					t.Errorf("a %s token at %s answered %d, want 403 only where %s lists no such route", scope, pattern, rec.Code, scope)
+				}
+			}
+		}
+	}
+}
+
 // A pattern in handlers.ServiceRoutes that no route registers matches nothing,
 // so the scope it was written for reaches nothing and every call answers 403.
 func TestEveryServiceRouteIsARegisteredRoute(t *testing.T) {

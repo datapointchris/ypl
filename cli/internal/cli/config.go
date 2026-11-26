@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/datapointchris/goclilogin"
@@ -39,12 +40,24 @@ func newConfigShowCommand() *cobra.Command {
 			if err != nil && !errors.Is(err, goclilogin.ErrNotConfigured) {
 				return err
 			}
+			triedFirst, listErr := config.TriedFirst(deployment)
+			if listErr != nil {
+				return listErr
+			}
 			if asJSON {
-				if err := emitJSON(cmd.OutOrStdout(), deployment); err != nil {
+				shown := struct {
+					goclilogin.Deployment
+					TriedFirst []string `json:"api_tried_first,omitempty"`
+				}{deployment, triedFirst}
+				if err := emitJSON(cmd.OutOrStdout(), shown); err != nil {
 					return err
 				}
 			} else {
 				goclilogin.WriteDeployment(cmd.OutOrStdout(), deployment)
+				if len(triedFirst) > 0 {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s  %s  (config file, tried in order before api)\n",
+						config.TriedFirstKey, strings.Join(triedFirst, ", "))
+				}
 			}
 			if err != nil {
 				nothing(cmd, "\n"+err.Error())

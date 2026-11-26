@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrSignedOut is YouTube answering a watch-history read as a signed-out
@@ -41,64 +41,70 @@ var signedOutMarkers = []string{
 	"sign in to view",
 }
 
-// History reads the newest entries of the watch history of the account whose
-// cookies jar holds, in Netscape format, and returns them with the jar yt-dlp
-// wrote back, which carries whatever cookies YouTube rotated during the read.
-// The error wraps ErrSignedOut when YouTube answered signed out, ErrRateLimited
-// when it refused the address, and ctx's error when ctx ended first.
+// HistoryLimit bounds one read of the watch history once its turn has come.
+const HistoryLimit = time.Minute
+
+// History reads, as a person's read, the newest entries of the watch history of
+// the account whose cookies jar holds, in Netscape format, and returns them
+// with the jar yt-dlp wrote back, which carries whatever cookies YouTube
+// rotated during the read. The error wraps ErrSignedOut when YouTube answered
+// signed out, ErrRateLimited when it refused the address, ErrPaused while the
+// door is paused, ErrBusy or ErrClosed when no turn came, and ctx's error when
+// ctx ended first.
 //
 // The jar is written to a file only this process can read, in a directory
 // removed when the read ends, since yt-dlp takes cookies only from a file.
-func (r *Reader) History(ctx context.Context, jar string, entries int) ([]HistoryEntry, string, error) {
-	dir, err := os.MkdirTemp("", "ypl-history-")
-	if err != nil {
-		return nil, "", fmt.Errorf("read the watch history: %w", err)
+func (d *Door) History(ctx context.Context, jar string, entries int) ([]HistoryEntry, string, error) {
+	type read struct {
+		entries []HistoryEntry
+		jar     string
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	path := filepath.Join(dir, "cookies.txt")
-	if err := os.WriteFile(path, []byte(jar), 0o600); err != nil {
-		return nil, "", fmt.Errorf("read the watch history: %w", err)
-	}
-	cmd := exec.CommandContext(ctx, r.path, historyArguments(path, entries)...)
-	cmd.Dir = dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	cmd.WaitDelay = waitDelay
-	err = cmd.Run()
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, "", fmt.Errorf("read the watch history: %w", ctxErr)
-	}
-	if err != nil {
-		return nil, "", fmt.Errorf("read the watch history: %w", historyRefusal(stderr.String(), err))
-	}
-	read, err := decodeHistory(stdout.Bytes())
-	if err != nil {
-		return nil, "", fmt.Errorf("read the watch history: %w", err)
-	}
-	percents, err := resumePercents(dir)
-	if err != nil {
-		slog.Warn("the watch history was read without its resume points", "err", err)
-	}
-	for i := range read {
-		if percent, ok := percents[read[i].ID]; ok {
-			read[i].ResumePercent = &percent
+	terms := readTerms{class: Person, subject: "the watch history", limit: HistoryLimit, outlivesClose: true}
+	got, err := through(ctx, d, terms, func(ctx context.Context) (read, error) {
+		dir, err := os.MkdirTemp("", "ypl-history-")
+		if err != nil {
+			return read{}, err
 		}
-	}
-	written, err := os.ReadFile(path)
+		defer func() { _ = os.RemoveAll(dir) }()
+		path := filepath.Join(dir, "cookies.txt")
+		if err := os.WriteFile(path, []byte(jar), 0o600); err != nil {
+			return read{}, err
+		}
+		output, err := d.binary.run(ctx, dir, historyArguments(path, entries), historyRefusal)
+		if err != nil {
+			return read{}, err
+		}
+		decoded, err := decodeHistory(output)
+		if err != nil {
+			return read{}, err
+		}
+		percents, err := resumePercents(dir)
+		if err != nil {
+			slog.Warn("the watch history was read without its resume points", "err", err)
+		}
+		for i := range decoded {
+			if percent, ok := percents[decoded[i].ID]; ok {
+				decoded[i].ResumePercent = &percent
+			}
+		}
+		written, err := os.ReadFile(path)
+		if err != nil {
+			return read{}, fmt.Errorf("read back the cookie jar: %w", err)
+		}
+		return read{entries: decoded, jar: string(written)}, nil
+	})
 	if err != nil {
-		return nil, "", fmt.Errorf("read back the cookie jar: %w", err)
+		return nil, "", fmt.Errorf("read the watch history: %w", err)
 	}
-	return read, string(written), nil
+	return got.entries, got.jar, nil
 }
 
-// historyArguments is what a read of the watch history passes yt-dlp: no
-// config file, no plugin, no cache, and only the list of entries rather than
-// each video's page. --write-pages leaves the history page it read in the
+// historyArguments is what a read of the watch history passes yt-dlp: what
+// every read passes, no cache, and only the list of entries rather than each
+// video's page. --write-pages leaves the history page it read in the
 // working directory, which is where the resume points are.
 func historyArguments(cookies string, entries int) []string {
-	return []string{
-		"--ignore-config",
-		"--no-plugin-dirs",
+	return append(paced(),
 		"--no-cache-dir",
 		"--cookies", cookies,
 		"--write-pages",
@@ -107,7 +113,7 @@ func historyArguments(cookies string, entries int) []string {
 		"--dump-single-json",
 		"--",
 		":ythis",
-	}
+	)
 }
 
 // historyRefusal is refusal, except that a stderr carrying a signed-out marker

@@ -14,8 +14,8 @@ The server, on the machine it is deployed to:
 
 | Door | Package | Reaches | Costs |
 | --- | --- | --- | --- |
-| The Data API | `api/youtube` | YouTube, over HTTPS, signed in as the channel with an OAuth refresh token | Quota units, 10,000 a day |
-| yt-dlp | `api/ytdlp` | YouTube, over HTTPS, through a subprocess: signed in as nobody for a video, and with the stored cookie jar for the watch history | Nothing, the address's standing with YouTube, and the account's for history reads |
+| The Data API | `api/youtube` | YouTube, over HTTPS, signed in as the channel with an OAuth refresh token: for the sync, and live for each `/api/v1/youtube/` route that calls it | Quota units, 10,000 a day, each route's call charged to the client that made it |
+| yt-dlp | `api/ytdlp` | YouTube, over HTTPS, through a subprocess, one at a time through the door: signed in as nobody for a video's tracklist, captions, transcript or audio, and with the stored cookie jar for the watch history | Nothing, the address's standing with YouTube, and the account's for history reads |
 | The trace exporter | `api/tracing` | The OTLP/HTTP endpoint `OTEL_EXPORTER_OTLP_ENDPOINT` names, only where it is set | Nothing |
 
 A request's span is what crosses to the trace exporter. It holds the method, the route, the status,
@@ -28,7 +28,7 @@ The CLI, on every workstation:
 
 | Door | Package | Reaches | Costs |
 | --- | --- | --- | --- |
-| The ypl server | `cli/internal/api`; `goclilogin` for the metadata | The configured server, over HTTPS: the API with a bearer token and the trace and baggage `TRACEPARENT`, `TRACESTATE` and `BAGGAGE` handed the CLI, and its RFC 9728 metadata with none, during `ypl auth login <url>` and for an `--api` other than the file's | Nothing |
+| The ypl server | `cli/internal/api`; `goclilogin` for the metadata | The configured server, at each address `api_tried_first` names in order and then `api`'s, over HTTPS or the HTTP an address names: the API with a bearer token and the trace and baggage `TRACEPARENT`, `TRACESTATE` and `BAGGAGE` handed the CLI, and its RFC 9728 metadata with none, during `ypl auth login <url>` and for an `--api` other than the file's | Nothing |
 | The identity provider | `goclilogin` | The configured issuer, for discovery and the device grant, or the client-credentials grant where `YPL_CLIENT_SECRET` is set | Nothing, and it is reached on every command |
 | A token command | `goclilogin` | The argv the config file's `token_command` names, once its last token has expired, in place of the identity provider | A subprocess |
 | This machine's keychain | `goclilogin` | The OS keychain, or a mode-600 file where there is none | The refresh token lives there |
@@ -72,9 +72,20 @@ therefore treated as untrusted input and given as little of the host as possible
 - **`--ignore-config` and `--no-plugin-dirs`.** These are separate settings, and either one left
   on would let whatever is installed beside yt-dlp change what a read does. A plugin can replace
   the extractor outright.
-- **`--skip-download` and `--dump-json`.** A read wants one JSON document. Nothing is written to
-  disk and no media is fetched.
-- **One process a read, bounded by the caller's context, with `WaitDelay` set.** A process yt-dlp
+- **`--skip-download` and `--dump-json` for a tracklist.** A tracklist read wants one JSON
+  document, so nothing is written to disk and no media is fetched. A caption read writes the one
+  track it picks, and an audio read the one file, each to a directory removed when the answer ends.
+- **One process at a time, through the door.** `api/ytdlp.Door` starts the next read at least
+  `Gap`, plus up to `Jitter` at random, after the last ended: a person's first, then a service's,
+  then enrichment's. Inside a read, the sleep arguments `paced()` passes pace yt-dlp's own
+  requests. One refusal of the address pauses every class for `RefusedPause`, and failures of
+  `MaxFailuresInARow` different videos in a row pause it for `FailingPause`. The store keeps the
+  pause, so a restart does not reopen the door. `Close` stops every read under way but the
+  history's, because cutting that one short loses the cookies rotated during it.
+- **yt-dlp starts deno.** yt-dlp's release executable bundles yt-dlp-ejs. That script answers
+  YouTube's player challenges by running YouTube's own script in deno. The image pins yt-dlp and deno, and
+  its build check fails on any other version of either, or of yt-dlp-ejs.
+- **Each process is bounded by the caller's context, with `WaitDelay` set.** A process yt-dlp
   itself starts can hold the output pipe open after yt-dlp is gone, so the deadline alone does not
   end a read.
 - **Only the fields a read keeps are decoded.** `api/ytdlp.info` names them; everything else in
@@ -92,14 +103,14 @@ so yt-dlp keeps nothing on disk between reads. It also adds `--write-pages`, whi
 history page in that directory, and `api/ytdlp` reads each entry's resume point from the page's
 `ytInitialData` before the directory goes. That parse is ours rather than yt-dlp's, so a page YouTube
 reshapes loses the resume points, never the history. Reads happen only when a person asks for the
-history, and none is made while enrichment's pause on a refusal of the address holds. Nothing else
+history, and none is made while the door's pause holds. Nothing else
 is handed to yt-dlp with the jar, and a video read never sees it. The store holds the jar sealed
 by `api/jarseal` under `YOUTUBE_COOKIE_KEY`, which reaches only the server's environment, so a
 backup of the store carries no usable session.
 
 The server needs yt-dlp only when it is configured to read videos. `ENRICH_PACE=off` is a
 supported configuration and starts without one. The server looks for yt-dlp at start whatever
-`ENRICH_PACE` says, and the history routes answer 503 when it found none.
+`ENRICH_PACE` says, and the history and video-read routes answer 503 when it found none.
 
 ## Classifying another program's prose is the fragile part
 
@@ -109,8 +120,8 @@ turns a pause into a block, so a rate limit is looked for first and a bare "Vide
 read as neither — YouTube words its rate limit beginning with that sentence.
 
 The marker lists are a judgment about wording nobody here controls, so nothing is allowed to
-depend on them alone. `api/enrich` stops reading for an hour after three reads fail in a row
-whatever they failed with, which holds however YouTube words the next refusal.
+depend on them alone. The door in `api/ytdlp` stops every read for an hour after three reads fail
+in a row whatever they failed with, which holds however YouTube words the next refusal.
 
 ## A verdict about a video always has a way out
 
@@ -136,12 +147,13 @@ requires every field it declares to arrive. Renaming a response field without re
 that catches, and it is the one mistake a green build on both sides would otherwise hide.
 
 A value the server *enforces* is the harder half. A shape the client has wrong degrades, because an
-unknown field is ignored. A value it has wrong is a refusal the client reports as a failure. Three
+unknown field is ignored. A value it has wrong is a refusal the client reports as a failure. Four
 such values are pinned. The slug Tab offers a playlist by is a derivation the server owns:
 `api/handlers` writes its own slug of a set of titles to `testdata/wire/slugs.json`, and the
 completion test holds the client's to every pair. The service client's scope is the second:
 `api/handlers` writes `service-scopes.json` beside it, and the CLI's service test requires the scope
 it requests to reach the route `ypl server status` calls. The kinds of rating are the third:
 `rating_kinds.json` holds the server's, and the CLI's wire test requires `RatingKinds` to match.
-`PageSize` and `VideoSorts` are unpinned copies of a number and words the server owns, with no
+The shape of a transcript's language is the fourth: `language_pattern.json` holds the server's,
+and the CLI's wire test requires `LanguagePattern` to match. `PageSize` and `VideoSorts` are unpinned copies of a number and words the server owns, with no
 door to read them through.

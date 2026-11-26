@@ -12,9 +12,9 @@ import (
 	ytapi "google.golang.org/api/youtube/v3"
 )
 
-// pageSize is the most items one list request returns. A request that names no
+// PageSize is the most items one list request returns. A request that names no
 // maxResults gets 5, and one that names more than 50 gets 50.
-const pageSize = 50
+const PageSize = 50
 
 // PlaylistID is YouTube's id for a playlist.
 type PlaylistID string
@@ -54,7 +54,7 @@ type Item struct {
 // Playlists is every playlist the channel owns, in the order YouTube lists
 // them.
 func (c *Channel) Playlists(ctx context.Context) ([]Playlist, error) {
-	call := c.service.Playlists.List(playlistParts).Mine(true).MaxResults(pageSize)
+	call := c.service.Playlists.List(playlistParts).Mine(true).MaxResults(PageSize)
 	// The total a playlists page reports counts more playlists than the list
 	// returns, so it is compared across pages and never with the length.
 	playlists, _, err := readPages(func(token string) (page[Playlist], error) {
@@ -85,7 +85,7 @@ func (c *Channel) Playlists(ctx context.Context) ([]Playlist, error) {
 // when YouTube has no playlist with that id, which a read by id answers with no
 // playlists rather than a refusal.
 func (c *Channel) Playlist(ctx context.Context, id PlaylistID) (Playlist, error) {
-	call := c.service.Playlists.List([]string{"snippet", "status"}).Id(string(id)).MaxResults(pageSize)
+	call := c.service.Playlists.List([]string{"snippet", "status"}).Id(string(id)).MaxResults(PageSize)
 	response, err := send(ctx, c, playlistsList, call.Context(ctx).Do)
 	if err != nil {
 		return Playlist{}, fmt.Errorf("read playlist %s: %w", id, err)
@@ -141,13 +141,28 @@ func lengthOf(iso string) *int64 {
 // request. YouTube leaves out an id no video has, a deleted video, and a
 // private video another channel owns, and refuses none of them.
 func (c *Channel) Videos(ctx context.Context, ids []VideoID) ([]Video, error) {
-	var videos []Video
-	for chunk := range slices.Chunk(ids, pageSize) {
+	resources, err := c.readVideos(ctx, ids, []string{"snippet", "status", "contentDetails"})
+	if err != nil {
+		return nil, err
+	}
+	videos := make([]Video, len(resources))
+	for i, resource := range resources {
+		videos[i] = videoFrom(resource)
+	}
+	return videos, nil
+}
+
+// readVideos is each of ids that YouTube returns a video for, with parts, read
+// 50 ids a request. Each must carry its snippet and its status, and a privacy
+// of public, unlisted or private.
+func (c *Channel) readVideos(ctx context.Context, ids []VideoID, parts []string) ([]*ytapi.Video, error) {
+	var videos []*ytapi.Video
+	for chunk := range slices.Chunk(ids, PageSize) {
 		names := make([]string, len(chunk))
 		for i, id := range chunk {
 			names[i] = string(id)
 		}
-		call := c.service.Videos.List([]string{"snippet", "status", "contentDetails"}).Id(strings.Join(names, ","))
+		call := c.service.Videos.List(parts).Id(strings.Join(names, ","))
 		response, err := send(ctx, c, videosList, call.Context(ctx).Do)
 		if err != nil {
 			return nil, fmt.Errorf("read videos by id: %w", err)
@@ -164,19 +179,24 @@ func (c *Channel) Videos(ctx context.Context, ids []VideoID) ([]Video, error) {
 			if !slices.Contains(chunk, VideoID(resource.Id)) {
 				return nil, fmt.Errorf("%w: a read of videos by id returned %s, which it did not name", ErrUnexpectedResponse, resource.Id)
 			}
-			video := Video{
-				ID:           VideoID(resource.Id),
-				Title:        resource.Snippet.Title,
-				ChannelTitle: resource.Snippet.ChannelTitle,
-				Privacy:      resource.Status.PrivacyStatus,
-			}
-			if resource.ContentDetails != nil {
-				video.DurationSeconds = lengthOf(resource.ContentDetails.Duration)
-			}
-			videos = append(videos, video)
+			videos = append(videos, resource)
 		}
 	}
 	return videos, nil
+}
+
+// videoFrom is a video readVideos returned.
+func videoFrom(resource *ytapi.Video) Video {
+	video := Video{
+		ID:           VideoID(resource.Id),
+		Title:        resource.Snippet.Title,
+		ChannelTitle: resource.Snippet.ChannelTitle,
+		Privacy:      resource.Status.PrivacyStatus,
+	}
+	if resource.ContentDetails != nil {
+		video.DurationSeconds = lengthOf(resource.ContentDetails.Duration)
+	}
+	return video
 }
 
 // ExistingItems is each of ids that YouTube still has a playlist item for, read
@@ -184,12 +204,12 @@ func (c *Channel) Videos(ctx context.Context, ids []VideoID) ([]Video, error) {
 // YouTube leaves out an id it has no item for.
 func (c *Channel) ExistingItems(ctx context.Context, ids []ItemID) ([]ItemID, error) {
 	var found []ItemID
-	for chunk := range slices.Chunk(ids, pageSize) {
+	for chunk := range slices.Chunk(ids, PageSize) {
 		names := make([]string, len(chunk))
 		for i, id := range chunk {
 			names[i] = string(id)
 		}
-		call := c.service.PlaylistItems.List([]string{"id"}).Id(strings.Join(names, ",")).MaxResults(pageSize)
+		call := c.service.PlaylistItems.List([]string{"id"}).Id(strings.Join(names, ",")).MaxResults(PageSize)
 		response, err := send(ctx, c, playlistItemsList, call.Context(ctx).Do)
 		if err != nil {
 			return nil, fmt.Errorf("read playlist items by id: %w", err)
@@ -212,7 +232,7 @@ func (c *Channel) ExistingItems(ctx context.Context, ids []ItemID) ([]ItemID, er
 // number of items differs from the total the pages report, or the positions are
 // not exactly 0 through n-1.
 func (c *Channel) Items(ctx context.Context, playlistID PlaylistID) ([]Item, error) {
-	call := c.service.PlaylistItems.List([]string{"snippet", "status"}).PlaylistId(string(playlistID)).MaxResults(pageSize)
+	call := c.service.PlaylistItems.List([]string{"snippet", "status"}).PlaylistId(string(playlistID)).MaxResults(PageSize)
 	items, total, err := readPages(func(token string) (page[Item], error) {
 		response, err := send(ctx, c, playlistItemsList, call.PageToken(token).Context(ctx).Do)
 		if err != nil {

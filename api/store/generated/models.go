@@ -164,6 +164,17 @@ type Video struct {
 	EnrichedTs      sql.NullString
 }
 
+type YoutubeServiceCall struct {
+	CallID    int64
+	ClientID  string
+	Method    string
+	SentTs    string
+	QuotaDate string
+	Requests  int64
+	Units     int64
+	Error     sql.NullString
+}
+
 type YoutubeSession struct {
 	SessionID     int64
 	CookieJar     string
@@ -200,4 +211,12 @@ type YoutubeWriteOutcome struct {
 	Outcome     string
 	Label       string
 	Description string
+}
+
+type YtdlpPause struct {
+	PauseID  int64
+	PausedTs string
+	UntilTs  string
+	Cause    string
+	Error    string
 }

@@ -3,6 +3,7 @@ package youtube
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -120,6 +121,35 @@ func TestEveryRefusalIsErrRefusedAndNothingElseIs(t *testing.T) {
 	cancel()
 	if _, err := channel.UpdatePlaylist(canceled, "PLA", PlaylistDetails{Title: "Renamed"}); err == nil || errors.Is(err, ErrRefused) {
 		t.Errorf("a request that got no answer = %v, want an error that is not ErrRefused", err)
+	}
+}
+
+// A YouTube rate limit, a revoked or under-scoped server credential, and a
+// disabled API are each named, so no caller is told its own request was
+// refused. A 403 for any other reason is a refusal of the request alone.
+func TestAThrottleOrARefusedServerCredentialIsNamedApartFromTheRequest(t *testing.T) {
+	api := newFakeAPI(t)
+	api.playlists = []map[string]any{fakePlaylist(t, "PLA")}
+	channel := api.channel()
+	cases := []struct {
+		status int
+		reason string
+		want   error
+	}{
+		{http.StatusTooManyRequests, "rateLimitExceeded", ErrThrottled},
+		{http.StatusForbidden, "rateLimitExceeded", ErrThrottled},
+		{http.StatusForbidden, "insufficientPermissions", ErrCredentialRefused},
+		{http.StatusUnauthorized, "authError", ErrCredentialRefused},
+		{http.StatusForbidden, "accessNotConfigured", ErrCredentialRefused},
+		{http.StatusForbidden, "forbidden", nil},
+	}
+	for _, c := range cases {
+		api.answer = &fakeAnswer{status: c.status, body: fmt.Sprintf(`{"error":{"code":%d,"message":"refused","errors":[{"reason":%q,"domain":"global"}]}}`, c.status, c.reason)}
+		_, err := channel.UpdatePlaylist(context.Background(), "PLA", PlaylistDetails{Title: "Renamed"})
+		named := errors.Is(err, ErrThrottled) || errors.Is(err, ErrCredentialRefused)
+		if !errors.Is(err, ErrRefused) || (c.want == nil && named) || (c.want != nil && !errors.Is(err, c.want)) {
+			t.Errorf("a %d %s = %v, want ErrRefused named %v", c.status, c.reason, err, c.want)
+		}
 	}
 }
 
