@@ -26,9 +26,9 @@
 //
 // With PUBLIC_URL set to the address clients reach it at, it serves the RFC
 // 9728 metadata naming that address and OIDC_ISSUER without a token, which is
-// how `ypl auth login <url>` finds the provider. An audio answer to a request
-// naming PUBLIC_URL's host is capped at 100 MB, which is the most the proxy in
-// front of a public address commonly passes.
+// how `ypl auth login <url>` finds the provider. A request naming PUBLIC_URL's
+// host meets the limits of the proxy in front of it: an audio answer is capped
+// at handlers.maxPublicAudio, and a read ends at handlers.publicReadBudget.
 //
 // With OTEL_EXPORTER_OTLP_ENDPOINT set, it exports a span for each request
 // over OTLP/HTTP, as a child of the traceparent the request carries, with the
@@ -67,14 +67,15 @@ import (
 var version = "dev"
 
 // shutdownGrace bounds how long in-flight requests get to finish after the
-// first SIGINT or SIGTERM. No playlist write or watch-history read begins once
-// the drain starts and no push write once the sync is canceled, which happen
-// together. One begun before then ends within handlers.WriteDuration,
-// handlers.HistoryDuration or reconcile.WriteDuration. So the grace outlasts
-// every one with 5 seconds to answer. A history read cut short loses the jar
-// YouTube rotated during it, which is why it counts. A container's stop timeout
-// has to be longer still, by traceFlushLimit as well.
-const shutdownGrace = max(handlers.WriteDuration, handlers.HistoryDuration, reconcile.WriteDuration) + 5*time.Second
+// first SIGINT or SIGTERM. No playlist write, watch-history read or Data API
+// call begins once the drain starts, the door stops every read but the
+// history's, and no push write begins once the sync is canceled. These happen
+// together. Work begun before then ends within the bound its component names:
+// handlers.DrainBound, ytdlp.DrainBound or reconcile.WriteDuration. So the
+// grace outlasts every one with 5 seconds to answer. A history read cut short
+// loses the jar YouTube rotated during it, which is why it runs on. A
+// container's stop timeout has to be longer still, by traceFlushLimit as well.
+const shutdownGrace = max(handlers.DrainBound, ytdlp.DrainBound, reconcile.WriteDuration) + 5*time.Second
 
 // traceFlushLimit bounds the export of the spans still buffered once the
 // server has stopped serving.

@@ -59,7 +59,8 @@ func (d *Door) History(ctx context.Context, jar string, entries int) ([]HistoryE
 		entries []HistoryEntry
 		jar     string
 	}
-	got, err := through(ctx, d, Person, HistoryLimit, func(ctx context.Context) (read, error) {
+	terms := readTerms{class: Person, subject: "the watch history", limit: HistoryLimit, outlivesClose: true}
+	got, err := through(ctx, d, terms, func(ctx context.Context) (read, error) {
 		dir, err := os.MkdirTemp("", "ypl-history-")
 		if err != nil {
 			return read{}, err

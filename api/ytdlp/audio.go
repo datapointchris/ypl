@@ -41,7 +41,7 @@ func (d *Door) Audio(ctx context.Context, class Class, id string, maxBytes int64
 	if !videoID.MatchString(id) {
 		return nil, fmt.Errorf("read the audio of %q: not a YouTube video id", id)
 	}
-	audio, err := through(ctx, d, class, audioLimit, func(ctx context.Context) (*Audio, error) {
+	audio, err := through(ctx, d, readTerms{class: class, subject: id, limit: audioLimit}, func(ctx context.Context) (*Audio, error) {
 		return d.binary.audio(ctx, id, maxBytes)
 	})
 	if err != nil {
@@ -91,12 +91,14 @@ func (b Binary) fetchAudio(ctx context.Context, dir, id string, maxBytes int64) 
 
 // audioArguments is what a read of the video id's audio passes yt-dlp: the
 // best audio-only format, written whole to dir with no part file, and under
-// maxBytes where it is not 0.
+// maxBytes where it is not 0. yt-dlp otherwise skips a fragment it cannot
+// fetch and exits 0 with a shorter file, so a missing fragment fails the read.
 func audioArguments(dir, id string, maxBytes int64) []string {
 	args := append(paced(),
 		"--no-playlist",
 		"--no-part",
 		"--no-mtime",
+		"--abort-on-unavailable-fragments",
 		"--format", "bestaudio",
 		"-o", filepath.Join(dir, "audio.%(ext)s"),
 	)

@@ -125,6 +125,15 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		t.Fatalf("encode the service routes: %v", err)
 	}
 	pinned(t, "service-scopes", "ServiceRoutes", body)
+
+	// The shape of a transcript's language. The CLI refuses a language of any
+	// other shape as a usage error, and one the server refuses that the CLI
+	// sends is reported as a failure of the request.
+	body, err = json.Marshal(ytdlp.LanguagePattern)
+	if err != nil {
+		t.Fatalf("encode the language pattern: %v", err)
+	}
+	pinned(t, "language_pattern", "ytdlp.LanguagePattern", body)
 }
 
 // pinned writes body as the wire document name under -update, and otherwise

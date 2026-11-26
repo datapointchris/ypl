@@ -11,13 +11,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/datapointchris/ypl/api/tracklist"
 )
 
 // captions is yt-dlp reading a video's caption tracks from
 // testdata/captions/<id>.json, or, handed that info back, writing the track
-// it names from testdata/captions/<kind>.<language>.json3.
+// it names from testdata/captions/<kind>.<base language>.json3.
 func captions(args []string) int {
 	info := argAfter(args, "--load-info-json")
 	if info == "" {
@@ -43,7 +44,8 @@ func captions(args []string) int {
 		kind = "automatic"
 	}
 	lang := argAfter(args, "--sub-langs")
-	track, err := os.ReadFile(filepath.Join(os.Getenv(fakeTestdata), "captions", kind+"."+strings.TrimSuffix(lang, "-orig")+".json3"))
+	base, _, _ := strings.Cut(lang, "-")
+	track, err := os.ReadFile(filepath.Join(os.Getenv(fakeTestdata), "captions", kind+"."+base+".json3"))
 	if err != nil {
 		return 0
 	}
@@ -55,7 +57,8 @@ func captions(args []string) int {
 }
 
 // audio is yt-dlp writing YPL_FAKE_YTDLP_AUDIO bytes of audio where -o names,
-// or nothing where that is more than --max-filesize, as yt-dlp skips it.
+// or nothing where that is more than --max-filesize, as yt-dlp skips it. Under
+// YPL_FAKE_YTDLP_AUDIO_HOLD it then goes on downloading until it is killed.
 func audio(args []string) int {
 	size, _ := strconv.Atoi(os.Getenv(fakeAudio))
 	if most := argAfter(args, "--max-filesize"); most != "" {
@@ -68,11 +71,18 @@ func audio(args []string) int {
 	if err := os.WriteFile(out, make([]byte, size), 0o600); err != nil {
 		return 1
 	}
+	if os.Getenv(fakeAudioHold) != "" {
+		time.Sleep(30 * time.Second)
+	}
 	return 0
 }
 
-// fakeAudio is how many bytes of audio the fake writes.
-const fakeAudio = "YPL_FAKE_YTDLP_AUDIO"
+// fakeAudio is how many bytes of audio the fake writes, and fakeAudioHold makes
+// it hold on after writing them.
+const (
+	fakeAudio     = "YPL_FAKE_YTDLP_AUDIO"
+	fakeAudioHold = "YPL_FAKE_YTDLP_AUDIO_HOLD"
+)
 
 // argAfter is the argument after flag, and "" where flag is absent.
 func argAfter(args []string, flag string) string {
@@ -105,20 +115,28 @@ func TestCaptionsAnswerTheManualTrackOverTheAutomaticOne(t *testing.T) {
 	}
 }
 
-// The transcript is the line a shell pipeline over the same json3 track prints,
+// The transcript is every segment of the track on one line, one space apart,
 // and falls back to the automatic track where there is no manual one. A
 // language the video has no track in is ErrNoCaptions.
-func TestATranscriptIsTheLineTheShellPipelinePrints(t *testing.T) {
-	// What `jq -r '.events[]?.segs[]?.utf8 // empty' automatic.en.json3 | tr '\n' ' ' | sed 's/  */ /g'`
-	// prints.
-	const printed = "so the door opens once every eight seconds [Music] "
+func TestATranscriptIsEverySegmentOnOneLine(t *testing.T) {
+	const line = "so the door opens once every eight seconds [Music] "
 	d := reader(t, "captions")
 	got, err := d.Transcript(context.Background(), Person, "Wr1tt3nVid1", "en")
-	if err != nil || got.Text != printed || got.Track != (Track{Language: "en", Kind: Automatic}) {
-		t.Fatalf("Transcript = %+v, %v, want %q from the automatic en track", got, err, printed)
+	if err != nil || got.Text != line || got.Track != (Track{Language: "en", Kind: Automatic}) {
+		t.Fatalf("Transcript = %+v, %v, want %q from the automatic en track", got, err, line)
 	}
 	if _, err := d.Transcript(context.Background(), Person, "Wr1tt3nVid1", "de"); !errors.Is(err, ErrNoCaptions) {
 		t.Fatalf("a transcript in a language with no track = %v, want ErrNoCaptions", err)
+	}
+}
+
+// ypl transcript, or the transcript route with its default lang=en, on a video
+// whose manual English track YouTube files under a region code reads that
+// manual track over YouTube's automatic en one.
+func TestATranscriptInEnglishReadsAManualTrackFiledUnderARegion(t *testing.T) {
+	got, err := reader(t, "captions").Transcript(context.Background(), Person, "Wr1tt3nVid2", "en")
+	if err != nil || got.Track != (Track{Language: "en-GB", Kind: Manual}) {
+		t.Fatalf("Transcript = %+v, %v, want the manual en-GB track", got.Track, err)
 	}
 }
 
@@ -148,9 +166,9 @@ func TestATrackIsPickedManualThenEnglishThenRecognizedThenTranslated(t *testing.
 func TestAudioIsAFileCloseRemovesAndAudioOverItsBoundIsTooLarge(t *testing.T) {
 	t.Setenv(fakeAudio, "1000")
 	d := reader(t, "audio")
-	d.failures = 2
-	if _, err := d.Audio(context.Background(), Service, "Wr1tt3nVid0", 999); !errors.Is(err, ErrTooLarge) || d.failures != 0 {
-		t.Fatalf("audio over its bound = %v with %d failures in a row, want ErrTooLarge and none", err, d.failures)
+	d.failedSubjects = []string{"Wr1tt3nVid1", "Wr1tt3nVid2"}
+	if _, err := d.Audio(context.Background(), Service, "Wr1tt3nVid0", 999); !errors.Is(err, ErrTooLarge) || len(d.failedSubjects) != 0 {
+		t.Fatalf("audio over its bound = %v with failures in a row of %q, want ErrTooLarge and none", err, d.failedSubjects)
 	}
 	got, err := d.Audio(context.Background(), Person, "Wr1tt3nVid0", 0)
 	if err != nil || got.Size != 1000 || got.Ext != "webm" {

@@ -80,7 +80,7 @@ func (d *Door) Captions(ctx context.Context, class Class, id string) (Captions, 
 	if !videoID.MatchString(id) {
 		return Captions{}, fmt.Errorf("read the captions of %q: not a YouTube video id", id)
 	}
-	read, err := through(ctx, d, class, captionLimit, func(ctx context.Context) (captionsWithText, error) {
+	read, err := through(ctx, d, readTerms{class: class, subject: id, limit: captionLimit}, func(ctx context.Context) (captionsWithText, error) {
 		return d.binary.captions(ctx, id, func(read captionInfo) (Track, bool) {
 			return pickTrack(read.language(), read.Subtitles.json3(), read.AutomaticCaptions.json3())
 		})
@@ -91,25 +91,22 @@ func (d *Door) Captions(ctx context.Context, class Class, id string) (Captions, 
 	return read.Captions, nil
 }
 
-// Transcript reads the video id's captions in lang for class as one line: its
-// manual track in lang, else its automatic one, each named exactly. The error
-// wraps ErrNoCaptions where the video has neither.
+// Transcript reads the video id's captions in lang for class as one line. It
+// takes a manual track in lang, else an automatic one, else the automatic track
+// YouTube recognized from audio in lang. Within a kind, lang itself goes
+// first, then its base language, then the base filed under a region, so en
+// takes en-GB where no en is filed. The error wraps ErrNoCaptions where the
+// video has none of those.
 func (d *Door) Transcript(ctx context.Context, class Class, id, lang string) (Transcript, error) {
 	if !videoID.MatchString(id) {
 		return Transcript{}, fmt.Errorf("read the transcript of %q: not a YouTube video id", id)
 	}
-	if !language.MatchString(lang) {
+	if !ValidLanguage(lang) {
 		return Transcript{}, fmt.Errorf("read the transcript of %s: %q is not a language, such as en or pt-BR", id, lang)
 	}
-	read, err := through(ctx, d, class, captionLimit, func(ctx context.Context) (captionsWithText, error) {
+	read, err := through(ctx, d, readTerms{class: class, subject: id, limit: captionLimit}, func(ctx context.Context) (captionsWithText, error) {
 		return d.binary.captions(ctx, id, func(read captionInfo) (Track, bool) {
-			switch {
-			case slices.Contains(read.Subtitles.json3(), lang):
-				return Track{Language: lang, Kind: Manual}, true
-			case slices.Contains(read.AutomaticCaptions.json3(), lang):
-				return Track{Language: lang, Kind: Automatic}, true
-			}
-			return Track{}, false
+			return transcriptTrack(lang, read.Subtitles.json3(), read.AutomaticCaptions.json3())
 		})
 	})
 	if err == nil && read.Track == nil {
@@ -121,8 +118,32 @@ func (d *Door) Transcript(ctx context.Context, class Class, id, lang string) (Tr
 	return Transcript{VideoID: id, Track: *read.Track, Text: read.text}, nil
 }
 
-// language is the shape of a caption track's language.
-var language = regexp.MustCompile(`^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$`)
+// LanguagePattern is the shape of a caption track's language.
+const LanguagePattern = `^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$`
+
+var language = regexp.MustCompile(LanguagePattern)
+
+// ValidLanguage is whether lang has the shape of a caption track's language,
+// such as en, pt-BR or de-orig.
+func ValidLanguage(lang string) bool {
+	return language.MatchString(lang)
+}
+
+// transcriptTrack is the track a transcript in lang reads, from the languages
+// of the video's manual and automatic tracks, and false where none matches.
+func transcriptTrack(lang string, manual, automatic []string) (Track, bool) {
+	base, _, _ := strings.Cut(lang, "-")
+	if found, ok := matching(manual, lang, base); ok {
+		return Track{Language: found, Kind: Manual}, true
+	}
+	if found, ok := matching(automatic, lang, base); ok {
+		return Track{Language: found, Kind: Automatic}, true
+	}
+	if slices.Contains(automatic, base+"-orig") {
+		return Track{Language: base + "-orig", Kind: Automatic}, true
+	}
+	return Track{}, false
+}
 
 // captionsWithText is a read of captions with its track's text as one line.
 type captionsWithText struct {
@@ -352,9 +373,8 @@ func segments(events []json3Event) []Segment {
 var spaces = regexp.MustCompile(` {2,}`)
 
 // transcriptLine is the track as one line: each segment's text followed by a
-// line break, every line break then a space, and every run of spaces one. That
-// is `jq -r '.events[]?.segs[]?.utf8 // empty' | tr '\n' ' ' | sed 's/  */ /g'`
-// byte for byte, so it ends in a space.
+// line break, every line break then a space, and every run of spaces one. A
+// segment's own spacing is kept, and the line ends in a space.
 func transcriptLine(events []json3Event) string {
 	var joined strings.Builder
 	for _, event := range events {

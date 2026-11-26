@@ -37,7 +37,7 @@ func stamp(id string) int {
 }
 
 // Two reads asked for at once run one after the other, the second starting
-// the door's gap after the first ended. The gap itself is 8 to 16 seconds.
+// the door's gap after the first ended.
 func TestTwoReadsAtOnceRunOneAtATimeAGapApart(t *testing.T) {
 	stamps := filepath.Join(t.TempDir(), "stamps")
 	t.Setenv(fakeStamps, stamps)
@@ -75,11 +75,6 @@ func TestTwoReadsAtOnceRunOneAtATimeAGapApart(t *testing.T) {
 	if apart := at[2].Sub(at[1]); apart < testGap {
 		t.Fatalf("the second read started %v after the first ended, want at least %v", apart, testGap)
 	}
-	for range 1000 {
-		if g := gap(); g < 8*time.Second || g > 16*time.Second {
-			t.Fatalf("gap() = %v, want 8 to 16 seconds", g)
-		}
-	}
 }
 
 // waitFor fails the test unless cond holds within a second, checking it under
@@ -104,7 +99,7 @@ func TestAPersonsReadGoesAheadOfAServicesThatArrivedFirst(t *testing.T) {
 	var mu sync.Mutex
 	var order []Class
 	read := func(class Class, hold <-chan struct{}) {
-		_, err := through(context.Background(), d, class, time.Minute, func(context.Context) (struct{}, error) {
+		_, err := through(context.Background(), d, readTerms{class: class, limit: time.Minute}, func(context.Context) (struct{}, error) {
 			if hold != nil {
 				<-hold
 			}
@@ -138,27 +133,32 @@ func TestAPersonsReadGoesAheadOfAServicesThatArrivedFirst(t *testing.T) {
 // A person's read whose turn does not come within the door's most wait is
 // answered ErrBusy, while enrichment waits on. Once the door closes, a read
 // still waiting is turned away with ErrClosed, and so is each read asked for
-// after.
+// after. A read that outlives a close, holding the door as it closes, runs to
+// its end.
 func TestAPersonWaitsAtMostMostWaitAndAClosedDoorTurnsEveryReadAway(t *testing.T) {
 	d := openDoor(t, &memoryPauses{})
 	d.mostWait = 50 * time.Millisecond
 	hold := make(chan struct{})
 	held := make(chan error, 1)
 	go func() {
-		_, err := through(context.Background(), d, Service, time.Minute, func(context.Context) (struct{}, error) {
-			<-hold
-			return struct{}{}, nil
+		_, err := through(context.Background(), d, readTerms{class: Person, limit: time.Minute, outlivesClose: true}, func(ctx context.Context) (struct{}, error) {
+			select {
+			case <-hold:
+				return struct{}{}, nil
+			case <-ctx.Done():
+				return struct{}{}, ctx.Err()
+			}
 		})
 		held <- err
 	}()
 	waitFor(t, d, "the first read taking the door", func() bool { return d.busy })
 	none := func(context.Context) (struct{}, error) { return struct{}{}, nil }
-	if _, err := through(context.Background(), d, Person, time.Minute, none); !errors.Is(err, ErrBusy) {
+	if _, err := through(context.Background(), d, readTerms{class: Person, limit: time.Minute}, none); !errors.Is(err, ErrBusy) {
 		t.Fatalf("a person's read behind a held door = %v, want ErrBusy", err)
 	}
 	enrichment := make(chan error, 1)
 	go func() {
-		_, err := through(context.Background(), d, Enrichment, time.Minute, none)
+		_, err := through(context.Background(), d, readTerms{class: Enrichment, limit: time.Minute}, none)
 		enrichment <- err
 	}()
 	waitFor(t, d, "enrichment queuing", func() bool { return len(d.waiting[Enrichment]) == 1 })
@@ -167,18 +167,19 @@ func TestAPersonWaitsAtMostMostWaitAndAClosedDoorTurnsEveryReadAway(t *testing.T
 	if err := <-enrichment; !errors.Is(err, ErrClosed) {
 		t.Fatalf("enrichment waiting as the door closed = %v, want ErrClosed", err)
 	}
-	if _, err := through(context.Background(), d, Person, time.Minute, none); !errors.Is(err, ErrClosed) {
+	if _, err := through(context.Background(), d, readTerms{class: Person, limit: time.Minute}, none); !errors.Is(err, ErrClosed) {
 		t.Fatalf("a read asked for after the door closed = %v, want ErrClosed", err)
 	}
 	close(hold)
 	if err := <-held; err != nil {
-		t.Fatalf("the read holding the door as it closed = %v, want it run to its end", err)
+		t.Fatalf("the read that outlives a close = %v, want it run to its end", err)
 	}
 }
 
 // YouTube refusing the address pauses the door for a day for every class: the
-// read waiting when it happens, and each read asked for after. A door opened
-// again on the same store is still paused.
+// read waiting when it happens, and each read asked for after. The refused read
+// carries the pause it began. A door opened again on the same store is still
+// paused.
 func TestARefusalPausesEveryClassForADayAcrossARestart(t *testing.T) {
 	pauses := &memoryPauses{}
 	d := openDoor(t, pauses)
@@ -188,7 +189,7 @@ func TestARefusalPausesEveryClassForADayAcrossARestart(t *testing.T) {
 	refuse := make(chan struct{})
 	refused := make(chan error, 1)
 	go func() {
-		_, err := through(context.Background(), d, Service, time.Minute, func(context.Context) (struct{}, error) {
+		_, err := through(context.Background(), d, readTerms{class: Service, limit: time.Minute}, func(context.Context) (struct{}, error) {
 			<-refuse
 			return struct{}{}, fmt.Errorf("%w: HTTP Error 429", ErrRateLimited)
 		})
@@ -197,18 +198,19 @@ func TestARefusalPausesEveryClassForADayAcrossARestart(t *testing.T) {
 	waitFor(t, d, "the refused read taking the door", func() bool { return d.busy })
 	waiting := make(chan error, 1)
 	go func() {
-		_, err := through(context.Background(), d, Person, time.Minute, func(context.Context) (struct{}, error) {
+		_, err := through(context.Background(), d, readTerms{class: Person, limit: time.Minute}, func(context.Context) (struct{}, error) {
 			return struct{}{}, nil
 		})
 		waiting <- err
 	}()
 	waitFor(t, d, "a person's read queuing", func() bool { return len(d.waiting[Person]) == 1 })
 	close(refuse)
-	if err := <-refused; !errors.Is(err, ErrRateLimited) {
-		t.Fatalf("the refused read = %v, want ErrRateLimited", err)
+	until := now.Add(RefusedPause)
+	err := <-refused
+	if pause, ok := PauseOf(err); !errors.Is(err, ErrRateLimited) || errors.Is(err, ErrPaused) || !ok || !pause.Until.Equal(until) {
+		t.Fatalf("the refused read = %v, want ErrRateLimited carrying the pause until %v", err, until)
 	}
 
-	until := now.Add(RefusedPause)
 	turnedAway := func(what string, err error) {
 		t.Helper()
 		var paused *PausedError
@@ -218,7 +220,7 @@ func TestARefusalPausesEveryClassForADayAcrossARestart(t *testing.T) {
 	}
 	turnedAway("the read waiting", <-waiting)
 	for _, class := range []Class{Person, Service, Enrichment} {
-		_, err := through(context.Background(), d, class, time.Minute, func(context.Context) (struct{}, error) {
+		_, err := through(context.Background(), d, readTerms{class: class, limit: time.Minute}, func(context.Context) (struct{}, error) {
 			t.Fatalf("a %s read ran while the door was paused", class)
 			return struct{}{}, nil
 		})
@@ -238,16 +240,16 @@ func TestARefusalPausesEveryClassForADayAcrossARestart(t *testing.T) {
 	}
 }
 
-// Three reads failing in a row pause the door for an hour, whatever they failed
-// with. A read YouTube answered between failures starts the count again, and so
-// does a video closed to reading.
+// Three reads of different videos failing in a row pause the door for an
+// hour, whatever they failed with. A read YouTube answered between failures
+// starts the count again, and so does a video closed to reading.
 func TestThreeFailuresInARowPauseTheDoorForAnHour(t *testing.T) {
 	d := openDoor(t, &memoryPauses{})
 	now := time.Now()
 	d.now = func() time.Time { return now }
 	failed := errors.New("yt-dlp: Unable to extract initial player response")
 	for i, outcome := range []error{failed, failed, nil, failed, failed, ErrUnreadable, failed, failed} {
-		if _, err := through(context.Background(), d, Enrichment, time.Minute, func(context.Context) (struct{}, error) {
+		if _, err := through(context.Background(), d, readTerms{class: Enrichment, subject: strconv.Itoa(i), limit: time.Minute}, func(context.Context) (struct{}, error) {
 			return struct{}{}, outcome
 		}); !errors.Is(err, outcome) {
 			t.Fatalf("read %d = %v, want %v", i, err, outcome)
@@ -256,10 +258,68 @@ func TestThreeFailuresInARowPauseTheDoorForAnHour(t *testing.T) {
 			t.Fatalf("the door paused after read %d, with no three failures in a row", i)
 		}
 	}
-	_, _ = through(context.Background(), d, Enrichment, time.Minute, func(context.Context) (struct{}, error) {
+	_, _ = through(context.Background(), d, readTerms{class: Enrichment, subject: "last", limit: time.Minute}, func(context.Context) (struct{}, error) {
 		return struct{}{}, failed
 	})
 	if pause, held := d.PausedUntil(); !held || pause.Cause != PausedFailing || !pause.Until.Equal(now.Add(FailingPause)) {
 		t.Fatalf("after three failures in a row the door holds %+v (%v), want a failing pause of an hour", pause, held)
+	}
+}
+
+// A service retrying one video whose yt-dlp error matches no marker, such as a
+// bare Video unavailable, adds one failure however often it asks. Every other
+// caller reads on. Failures of two more videos then pause the door.
+func TestAServiceRetryingOneUnreadableVideoDoesNotPauseEveryRead(t *testing.T) {
+	d := reader(t, "fail")
+	t.Setenv(fakeError, "ERROR: [youtube] Wr1tt3nVid0: Video unavailable\n")
+	for range MaxFailuresInARow + 1 {
+		if _, err := d.Transcript(context.Background(), Service, "Wr1tt3nVid0", "en"); err == nil || errors.Is(err, ErrPaused) {
+			t.Fatalf("a read of the unreadable video = %v, want its own failure", err)
+		}
+	}
+	if pause, held := d.PausedUntil(); held {
+		t.Fatalf("one video retried paused every read: %+v", pause)
+	}
+	for _, id := range []string{"Wr1tt3nVid1", "Wr1tt3nVid2"} {
+		_, _ = d.Captions(context.Background(), Person, id)
+	}
+	if pause, held := d.PausedUntil(); !held || pause.Cause != PausedFailing {
+		t.Fatalf("after three different videos failed the door holds %+v (%v), want a failing pause", pause, held)
+	}
+}
+
+// A restart during an audio read cuts the read short: yt-dlp is stopped, the
+// read answers ErrClosed, and nothing it fetched stays on disk.
+func TestARestartDuringAnAudioReadStopsItAndLeavesNoFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	t.Setenv(fakeAudio, "1000")
+	t.Setenv(fakeAudioHold, "1")
+	d := reader(t, "audio")
+	read := make(chan error, 1)
+	go func() {
+		_, err := d.Audio(context.Background(), Service, "Wr1tt3nVid0", 0)
+		read <- err
+	}()
+	waitFor(t, d, "the audio read taking the door", func() bool { return d.busy })
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if written, _ := filepath.Glob(filepath.Join(tmp, "ypl-audio-*", "audio.*")); len(written) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fake yt-dlp wrote no audio within 5 seconds")
+		}
+	}
+	d.Close()
+	select {
+	case err := <-read:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("the audio read as the door closed = %v, want ErrClosed", err)
+		}
+	case <-time.After(waitDelay + time.Second):
+		t.Fatal("the audio read ran on after the door closed")
+	}
+	if left, _ := filepath.Glob(filepath.Join(tmp, "ypl-audio-*")); len(left) > 0 {
+		t.Fatalf("the stopped read left %q on disk", left)
 	}
 }

@@ -20,6 +20,17 @@ var ErrRefused = errors.New("YouTube refused the request")
 // quota is spent. The quota resets at midnight Pacific.
 var ErrQuotaSpent = errors.New("YouTube reports the project's daily quota spent")
 
+// ErrThrottled is YouTube refusing a request because this server sent too many
+// too fast: a 429, or a 403 for rateLimitExceeded or userRateLimitExceeded. The
+// same request can go through once the rate falls.
+var ErrThrottled = errors.New("YouTube is limiting how fast this server may call it")
+
+// ErrCredentialRefused is YouTube refusing the server's own credential rather
+// than what a request asked for: a 401, or a 403 for insufficientPermissions or
+// accessNotConfigured. No request goes through until the credential, its
+// scopes or the Cloud project is fixed.
+var ErrCredentialRefused = errors.New("YouTube refuses the server's credential or its Cloud project")
+
 // ErrInconsistentRead is the refusal for a paged read whose pages disagree: they
 // report different totals, an id appears twice, or the items do not match the
 // total or their positions. That is what an edit between two page requests

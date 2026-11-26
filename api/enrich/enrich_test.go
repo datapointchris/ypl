@@ -259,9 +259,9 @@ func TestAReadThatFindsNoTracklistKeepsTheTracksAVideoHolds(t *testing.T) {
 	}
 }
 
-// YouTube refuses the second read, so the run stops there, and a run while the
-// door's pause holds reads nothing and says why.
-func TestARateLimitStopsTheRunUntilTheDoorsPauseEnds(t *testing.T) {
+// YouTube refuses the second read, so the run stops there and records no
+// failure against the video.
+func TestARateLimitStopsTheRun(t *testing.T) {
 	f := newFixture(t, "vc", "vb", "va")
 	f.reader.answers["vb"] = fmt.Errorf("read video vb: %w: ERROR: rate-limited by YouTube", ytdlp.ErrRateLimited)
 
@@ -272,18 +272,21 @@ func TestARateLimitStopsTheRunUntilTheDoorsPauseEnds(t *testing.T) {
 	if _, failed := f.failure(t, "vb"); failed {
 		t.Fatal("a rate-limited read recorded a failure of vb, which says nothing about vb")
 	}
-	delete(f.reader.answers, "vb")
+}
 
-	// The pause is what a refusal asks for, so it is recorded on the run rather
-	// than as a failure of it. A run that failed for being paused would make
-	// every run of the day after one refusal partial.
-	f.clock = start.Add(ytdlp.RefusedPause - time.Second)
+// While the door's pause holds, a run reads nothing, says it is paused, and
+// records no failure, since a pause is what a refusal asks for. Once the pause
+// ends, the reads resume.
+func TestAHeldPauseStopsEnrichmentUntilItEnds(t *testing.T) {
+	f := newFixture(t, "vb", "va")
+	f.reader.pause = ytdlp.Pause{At: start, Until: start.Add(time.Hour), Cause: ytdlp.PausedRefused}
+
 	if report := f.run(t); report.Reads != 0 || !report.Paused || report.Failures != nil {
-		t.Fatalf("report %+v a second short of a day, want no read, paused, and no failure", report)
+		t.Fatalf("report %+v while the pause holds, want no read, paused, and no failure", report)
 	}
-	f.clock = start.Add(ytdlp.RefusedPause)
+	f.clock = f.reader.pause.Until
 	if report := f.run(t); report.Reads != 2 || report.Paused {
-		t.Fatalf("report %+v a day on, want vb and va read and no pause", report)
+		t.Fatalf("report %+v once the pause ended, want vb and va read and no pause", report)
 	}
 }
 

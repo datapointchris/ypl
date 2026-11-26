@@ -99,19 +99,19 @@ chapters nor comments, so these reads go through `yt-dlp`, signed in as nobody, 
 on `PATH`.
 
 Every `yt-dlp` read the server makes passes through one door in `api/ytdlp`, which runs one process
-at a time. The next read starts at least 8 seconds after the last one ended, plus up to 8 more at
-random. A person's read goes first, then a service's read of captions or audio, then enrichment's.
-Reads of one kind go in the order they arrived. A person's or a service's read that waits 2 minutes
-for its turn answers 503 `youtube_reads_busy`, with a `Retry-After`. Inside one read, `yt-dlp`
-waits 2 seconds between requests, 5 before each subtitle, and 8 to 16 before each download.
+at a time. The next read starts at least 8 seconds after the last one ended (the door's `Gap`), plus
+up to 8 more at random (its `Jitter`). A person's read goes first, then a service's read of captions
+or audio, then enrichment's. Reads of one kind go in the order they arrived. A person's or a
+service's read that waits 2 minutes for its turn answers 503 `youtube_reads_busy`, with a
+`Retry-After`. Inside one read, `yt-dlp` waits 2 seconds between requests, 5 before each subtitle,
+and 8 to 16 before each download, as `paced()` in `api/ytdlp` passes it.
 
 Enrichment keeps its own pace on top of the door's. Its reads come at least `ENRICH_PACE` apart, 90
 seconds when unset, and up to twice that at random, so they never arrive in a burst. The store keeps
 when the latest read began, so a server that restarts waits out the pace from it before its first
 read. Each pass records what the reads did since the pass before. `ENRICH_PACE=off` reads no
 tracklist, and a server configured that way starts without `yt-dlp`. Without one, every read of a
-video answers 503 `youtube_reads_unavailable`, and the history answers 503
-`youtube_history_unavailable`.
+video and the history answer 503 `youtube_reads_unavailable`.
 
 `api/tracklist` is what reads a tracklist out of a video. It is the video's chapters, or failing
 those the timestamped lines of its description, or failing that the first of its top 20 comments
@@ -129,11 +129,15 @@ every tracklist that way whenever it opens and whenever a read stores one, the c
 each exchange counts toward the next.
 
 When YouTube refuses a read for its rate limit or its bot check, the door makes no read of any kind
-for a day, and the next pass records the refusal. The door also pauses every read for an hour once 3
-reads in a row fail, whatever they failed with, since only a refusal worded the way `api/ytdlp`
-spells it is recognized as one. The store keeps each pause, so a server that restarts takes it up
-again. While a pause holds, a read answers 503 `youtube_reads_paused` with a `Retry-After` of the
-seconds until it ends. `GET /api/v1/status` answers its end and its cause under `youtube_reads`.
+for a day, and the next pass records the refusal. The door also pauses every read for an hour once
+reads of 3 different videos fail in a row, whatever they failed with, since only a refusal worded
+the way `api/ytdlp` spells it is recognized as one. A video failing again adds nothing, so a caller
+asking for one unreadable video again and again pauses nobody else. YouTube's answer that a video is
+a premiere or a live stream still to come is no failure, and that read answers 409
+`video_not_started`. The store keeps each pause, so a server that restarts takes it up again. While a
+pause holds, a read answers 503 `youtube_reads_paused` with a `Retry-After` of the seconds until it
+ends, and so does the read YouTube refused. `GET /api/v1/status` answers the pause's end and its
+cause under `youtube_reads`.
 
 A read that stores no tracklist, and a read that fails, are both tried again 6 hours later, then 12,
 doubling up to a week, for up to 6 attempts. A video YouTube will never let a signed-out read
@@ -290,35 +294,54 @@ is refused with 422 `cookie_jar_signed_out`, and the session already held is kep
 signed out later answers 502 `youtube_signed_out` and is recorded, and `GET /api/v1/status`
 answers the session's `last_ok_ts` and `last_refused_ts` under `youtube_session`, so a refusal
 later than the last ok read is the jar to export again. With no session, the history answers 409
-`youtube_session_missing`, and a server with no `yt-dlp` answers 503 `youtube_history_unavailable`.
+`youtube_session_missing`, and a server with no `yt-dlp` answers 503 `youtube_reads_unavailable`.
 While the door's pause holds, the history answers 503 `youtube_reads_paused` without reading,
 because a read sent into a refusal can turn it into a block on the account.
 
 A video's captions, transcript and audio are read through the same door, signed out, for a person
 or for a service with the scope. The captions route picks one track. That is the manual track in
-the video's language, else the manual English one, else the automatic track in the video's
-language, else the automatic English one. It answers the track's segments with their times, the
-video's chapters, and its title, description and length. A video with no such track answers 404
-`no_captions`. The transcript route picks the track in `lang` the same way, manual first, and
-answers its segments as one line. The line is each piece of the track's text followed by a space,
-with every line break read as a space and every run of spaces as one.
+the video's language, else the manual English one, else the automatic track YouTube recognized from
+the audio, filed as `<language>-orig`, else the automatic track in the video's language, else the
+automatic English one. It answers the track's segments with their times, the video's chapters, and
+its title, description and length. A video with no such track answers 200 with `track` null and no
+segments.
+
+The transcript route reads the track in `lang`, `en` when absent, and answers its segments as one
+line. It takes a manual track in `lang`, else an automatic one, else the automatic track YouTube
+recognized from audio in that language. Within each kind, `lang` itself goes first, then its base
+language, then that language filed under a region, so `en` reads an `en-GB` track where no `en` is
+filed. A video with none of those answers 404 `no_captions`, and a `lang` that is no language
+answers 400 `invalid_parameter` before any read. The line is each piece of the track's text followed
+by a space, with every line break read as a space and every run of spaces as one.
 
 The audio route streams the video's best audio from a file the read leaves, removed once the answer
-is sent. A request whose `Host` is `PUBLIC_URL`'s host gets at most 100 MB, and longer audio
-answers 422 `audio_too_large` before any of it is fetched. A request that reaches the server by any
-other name, such as a caller on the same network, gets the whole file. An audio read holds the door
-for as long as the download takes, so reads waiting behind it are the ones that turn busy.
+is sent. A download missing a piece fails the read rather than answering a shorter file. A request
+whose `Host` is `PUBLIC_URL`'s host gets at most 100 MB, and longer audio answers 422
+`audio_too_large` before any of it is fetched. A request that reaches the server by any other name,
+such as a caller on the same network, gets the whole file. An audio read holds the door for as long
+as the download takes, so reads waiting behind it are the ones that turn busy.
+
+A proxy in front of a public address drops a request whose answer has not begun within its read
+timeout. So a caption, transcript or audio read for a request through `PUBLIC_URL`'s host takes at
+most 90 seconds, its wait at the door included. Past that it answers 503 `youtube_reads_busy` with
+a `Retry-After`, and audio that takes longer to fetch is read through the server's own address.
 
 The routes under `/api/v1/youtube/` that are not the history, the session or a video read call the
 Data API live, rather than answering from the store. They exist for services, and a person's token
 reaches them too. Each call runs one at a time and is charged to the client that received the
 token, which `GET /api/v1/status` lists under `sync.quota.by_caller` beside `ypl`, the server's own
 sync. A call costs what the Data API charges for it: 1 unit a page of reads, and 50 for an append or
-a delete. The channel's uploads cost 1 unit for the channel the first time the server reads it,
-then 1 a page. Before each call the server asks the same question a push does, with the same
-reserve left untouched. A call the day cannot afford answers 503 `youtube_quota_spent` with a
-`Retry-After` of the seconds until midnight Pacific, and nothing is sent. The sync counts every
+a delete. The channel's uploads cost 1 unit for the channel the first time the running server reads
+that channel, then 1 a page. Before each call the server asks the same question a push does, with
+the same reserve left untouched. A call the day cannot afford answers 503 `youtube_quota_spent` with
+a `Retry-After` of the seconds until midnight Pacific, and nothing is sent. The sync counts every
 such call against the day's quota.
+
+A call waits up to 20 seconds for the one ahead of it, then answers 503 `youtube_data_api_busy`
+with a `Retry-After`. A caller that leaves while its call waits has nothing sent. YouTube limiting
+how fast the server calls it answers 503 `youtube_rate_limited` with a `Retry-After`. YouTube
+refusing the server's own credential or its Cloud project answers 502, and the server logs it as an
+error. Any other refusal is of what the call asked, and answers 422 `youtube_refused`.
 
 Creating, renaming and deleting a playlist write to YouTube in the request, one request at a time.
 The server records each write before sending it and settles it with YouTube's answer, and the store
@@ -353,10 +376,11 @@ slot for a video the server knows is private or deleted, answers 422 `video_unav
 such video in `video_ids`, as 422 `invalid_video_id` names each malformed id.
 
 On SIGTERM the server begins no new playlist write, no Data API call and no read through `yt-dlp`,
-answering 503 `shutting_down`, and turns away every read still waiting at the door. It gives
-requests in flight up to 70 seconds to finish. A history read begun before the signal is one of
-those, because cutting it short loses the cookies YouTube rotated during it. A container's stop
-timeout has to be longer.
+answering 503 `shutting_down`. It turns away every read still waiting at the door, and stops a
+caption, transcript or audio read under way, which answers 503 `shutting_down` as well. It gives
+requests in flight up to 75 seconds to finish. A history read begun before the signal runs on,
+because cutting it short loses the cookies YouTube rotated during it. A container's stop timeout has
+to be longer.
 
 A paged list answers `{"data": [...], "has_more": true}`. The next page is the same request with
 `starting_after` set to the last id on this one. `limit` sets the page size, at most 100. When it is

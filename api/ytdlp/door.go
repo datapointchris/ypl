@@ -45,13 +45,15 @@ const (
 	Gap    = 8 * time.Second
 	Jitter = 8 * time.Second
 	// RefusedPause is how long the door opens to nothing after YouTube refuses
-	// the address. yt-dlp reports YouTube's rate limit as lasting up to an hour,
-	// and a read sent into a refusal is what turns it into a block.
+	// the address. YouTube's rate limit can outlast an hour, and a read sent
+	// into a refusal is what turns it into a block.
 	RefusedPause = 24 * time.Hour
-	// FailingPause is how long the door opens to nothing after
-	// MaxFailuresInARow reads in a row failed, whatever they failed with. A
-	// refusal worded in a way this package does not recognize would otherwise
-	// be read into again and again.
+	// FailingPause is how long the door opens to nothing after reads of
+	// MaxFailuresInARow different subjects failed in a row, whatever they
+	// failed with. A refusal worded in a way this package does not recognize
+	// would otherwise be read into again and again. A subject failing again
+	// adds nothing, so one caller asking for one unreadable video again and
+	// again does not pause every other caller.
 	FailingPause      = time.Hour
 	MaxFailuresInARow = 3
 	// MostWait is how long a person's or a service's read waits for its turn
@@ -102,6 +104,32 @@ func (e *PausedError) Error() string {
 
 func (e *PausedError) Is(target error) bool { return target == ErrPaused }
 
+// pauseBegun is the refusal of a read by YouTube, which began pause for every
+// read. It is no ErrPaused, since the read was made.
+type pauseBegun struct {
+	pause Pause
+	err   error
+}
+
+func (e *pauseBegun) Error() string { return e.err.Error() }
+
+func (e *pauseBegun) Unwrap() error { return e.err }
+
+// PauseOf is the pause the read that failed with err met: the one that turned
+// it away, or the one YouTube's refusal of it began. ok is false where no pause
+// touched the read.
+func PauseOf(err error) (Pause, bool) {
+	var paused *PausedError
+	if errors.As(err, &paused) {
+		return paused.Pause, true
+	}
+	var begun *pauseBegun
+	if errors.As(err, &begun) {
+		return begun.pause, true
+	}
+	return Pause{}, false
+}
+
 // Pauses keeps the door's pauses across a restart: the latest one, which the
 // door takes up again as it opens, and each new one.
 type Pauses interface {
@@ -114,8 +142,8 @@ const recordLimit = 5 * time.Second
 
 // Door is the one way this server runs yt-dlp. It runs one process at a time,
 // and starts each read at least Gap, plus up to Jitter, after the last ended.
-// A refusal of the address, or MaxFailuresInARow failures in a row, pause it
-// for every Class.
+// A refusal of the address, or failures in a row of MaxFailuresInARow
+// different subjects, pause it for every Class.
 type Door struct {
 	binary   Binary
 	pauses   Pauses
@@ -123,6 +151,10 @@ type Door struct {
 	now      func() time.Time
 	gap      func() time.Duration
 	mostWait time.Duration
+	// stopped is done once Close is called, which cuts short every read that
+	// does not outlive it.
+	stopped context.Context
+	stop    context.CancelFunc
 
 	mu sync.Mutex
 	// busy is set while a read holds the door, and closed once Close is called.
@@ -132,8 +164,27 @@ type Door struct {
 	nextStart time.Time
 	waiting   [classes][]*turn
 	paused    Pause
-	failures  int
+	// failedSubjects is the subject of each read in the current run of
+	// failures, each once.
+	failedSubjects []string
 }
+
+// readTerms is how one read goes through the door.
+type readTerms struct {
+	class Class
+	// subject is what the read is of, such as a video id. A read failing on a
+	// subject already in the run of failures adds none.
+	subject string
+	limit   time.Duration
+	// outlivesClose is a read that Close lets run to its end.
+	outlivesClose bool
+}
+
+// DrainBound is the longest a read runs on once Close is called. That is the
+// history read, which Close lets finish so the jar YouTube rotated during it
+// is kept. Every other read is cut short, and its process is gone within
+// waitDelay.
+const DrainBound = max(HistoryLimit, waitDelay)
 
 // turn is one read waiting at the door. wake is signaled whenever what it waits
 // on may have changed: the door freed, a read ahead of it arrived or left, or a
@@ -153,6 +204,7 @@ type turn struct {
 // ago.
 func NewDoor(ctx context.Context, binary Binary, pauses Pauses, log *slog.Logger) (*Door, error) {
 	d := &Door{binary: binary, pauses: pauses, log: log, now: time.Now, gap: gap, mostWait: MostWait}
+	d.stopped, d.stop = context.WithCancel(context.Background())
 	d.nextStart = d.now().Add(d.gap())
 	latest, ok, err := pauses.LatestPause(ctx)
 	if err != nil {
@@ -177,19 +229,23 @@ func (d *Door) PausedUntil() (Pause, bool) {
 }
 
 // Close turns away every read waiting at the door and every read asked for
-// after, with ErrClosed. A read holding the door runs to its end.
+// after, with ErrClosed. It cuts short the read holding the door, which then
+// answers ErrClosed too, unless that read outlives a close. The history read
+// does.
 func (d *Door) Close() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.closed = true
 	d.refuseAllLocked(ErrClosed)
+	d.stop()
 }
 
 // enter waits for the door, for a read of class, and returns the function that
-// lets it go with how the read ended. It returns a *PausedError while a pause
+// lets it go with what the read was of and how it ended, which leave describes.
+// It returns a *PausedError while a pause
 // holds or once one begins, ErrBusy once a person or a service has waited
 // mostWait, ErrClosed once the door closes, and ctx's error once ctx ends.
-func (d *Door) enter(ctx context.Context, class Class) (func(outcome error), error) {
+func (d *Door) enter(ctx context.Context, class Class) (func(subject string, outcome error) (Pause, bool), error) {
 	t := &turn{class: class, wake: make(chan struct{}, 1)}
 	d.mu.Lock()
 	if d.closed {
@@ -216,7 +272,7 @@ func (d *Door) enter(ctx context.Context, class Class) (func(outcome error), err
 		defer most.Stop()
 		givenUp = most.C
 	}
-	leaveQueue := func(err error) (func(error), error) {
+	leaveQueue := func(err error) (func(string, error) (Pause, bool), error) {
 		d.mu.Lock()
 		d.removeLocked(t)
 		d.wakeAllLocked()
@@ -236,7 +292,7 @@ func (d *Door) enter(ctx context.Context, class Class) (func(outcome error), err
 				d.removeLocked(t)
 				d.busy, t.granted = true, true
 				d.mu.Unlock()
-				return func(outcome error) { d.leave(class, outcome) }, nil
+				return func(subject string, outcome error) (Pause, bool) { return d.leave(class, subject, outcome) }, nil
 			}
 			if timer == nil {
 				timer = time.NewTimer(wait)
@@ -257,9 +313,10 @@ func (d *Door) enter(ctx context.Context, class Class) (func(outcome error), err
 	}
 }
 
-// leave frees the door after a read of class that ended with outcome, and
-// pauses it where outcome calls for that.
-func (d *Door) leave(class Class, outcome error) {
+// leave frees the door after a read of class and subject that ended with
+// outcome, and pauses it where outcome calls for that. It returns the pause
+// outcome began, and false where it began none.
+func (d *Door) leave(class Class, subject string, outcome error) (Pause, bool) {
 	d.mu.Lock()
 	now := d.now()
 	d.busy = false
@@ -269,15 +326,15 @@ func (d *Door) leave(class Class, outcome error) {
 	case errors.Is(outcome, ErrRateLimited):
 		begun = &Pause{At: now, Until: now.Add(RefusedPause), Cause: PausedRefused, Error: outcome.Error()}
 	case counted < 0:
-		d.failures = 0
-	case counted > 0:
-		d.failures++
-		if d.failures >= MaxFailuresInARow {
-			begun = &Pause{At: now, Until: now.Add(FailingPause), Cause: PausedFailing, Error: fmt.Sprintf("%d reads in a row failed, the last: %v", d.failures, outcome)}
+		d.failedSubjects = nil
+	case counted > 0 && !slices.Contains(d.failedSubjects, subject):
+		d.failedSubjects = append(d.failedSubjects, subject)
+		if len(d.failedSubjects) >= MaxFailuresInARow {
+			begun = &Pause{At: now, Until: now.Add(FailingPause), Cause: PausedFailing, Error: fmt.Sprintf("reads of %d different subjects failed in a row, the last: %v", len(d.failedSubjects), outcome)}
 		}
 	}
 	if begun != nil {
-		d.failures = 0
+		d.failedSubjects = nil
 		d.paused = *begun
 		d.refuseAllLocked(&PausedError{Pause: *begun})
 	}
@@ -285,7 +342,7 @@ func (d *Door) leave(class Class, outcome error) {
 	d.mu.Unlock()
 
 	if begun == nil {
-		return
+		return Pause{}, false
 	}
 	d.log.Warn("reads of YouTube paused", "until", begun.Until.UTC().Format(time.RFC3339), "cause", begun.Cause, "class", class.String(), "err", outcome)
 	ctx, cancel := context.WithTimeout(context.Background(), recordLimit)
@@ -293,6 +350,7 @@ func (d *Door) leave(class Class, outcome error) {
 	if err := d.pauses.RecordPause(ctx, *begun); err != nil {
 		d.log.Error("the pause of YouTube reads was not recorded, so a restart reads again before it ends", "until", begun.Until.UTC().Format(time.RFC3339), "err", err)
 	}
+	return *begun, true
 }
 
 // counts is how outcome moves the failures in a row: -1 clears them, since
@@ -300,7 +358,8 @@ func (d *Door) leave(class Class, outcome error) {
 // than for YouTube; and 1 adds one.
 func counts(outcome error) int {
 	switch {
-	case outcome == nil, errors.Is(outcome, ErrUnreadable), errors.Is(outcome, ErrSignedOut), errors.Is(outcome, ErrTooLarge):
+	case outcome == nil, errors.Is(outcome, ErrUnreadable), errors.Is(outcome, ErrNotStarted),
+		errors.Is(outcome, ErrSignedOut), errors.Is(outcome, ErrTooLarge):
 		return -1
 	case errors.Is(outcome, errCallerLeft):
 		return 0
@@ -360,25 +419,35 @@ func (d *Door) wakeAllLocked() {
 	}
 }
 
-// through runs read as one turn at the door for class, bounded by limit, and
-// lets the door go with how it ended. A read cut short because ctx ended is
-// ctx's error, and one cut short by limit fails like any other read.
-func through[T any](ctx context.Context, d *Door, class Class, limit time.Duration, read func(context.Context) (T, error)) (T, error) {
+// through runs read as one turn at the door on terms, and lets the door go
+// with how it ended. A read cut short because ctx ended is ctx's error. One cut
+// short by Close is ErrClosed, and neither counts as a failure. One cut short
+// by its limit fails like any other read. A refusal of the address carries the
+// pause it began, which PauseOf reads.
+func through[T any](ctx context.Context, d *Door, terms readTerms, read func(context.Context) (T, error)) (T, error) {
 	var none T
-	release, err := d.enter(ctx, class)
+	release, err := d.enter(ctx, terms.class)
 	if err != nil {
 		return none, err
 	}
-	readCtx, cancel := context.WithTimeout(ctx, limit)
+	readCtx, cancel := context.WithTimeout(ctx, terms.limit)
 	defer cancel()
+	if !terms.outlivesClose {
+		defer context.AfterFunc(d.stopped, cancel)()
+	}
 	got, err := read(readCtx)
 	switch {
 	case ctx.Err() != nil:
-		release(errCallerLeft)
+		release(terms.subject, errCallerLeft)
 		return none, ctx.Err()
+	case err != nil && !terms.outlivesClose && d.stopped.Err() != nil:
+		release(terms.subject, errCallerLeft)
+		return none, fmt.Errorf("%w, and stopped the read under way", ErrClosed)
 	case err != nil && readCtx.Err() != nil:
-		err = fmt.Errorf("the read ran past %v: %w", limit, err)
+		err = fmt.Errorf("the read ran past %v: %w", terms.limit, err)
 	}
-	release(err)
+	if pause, begun := release(terms.subject, err); begun && errors.Is(err, ErrRateLimited) {
+		err = &pauseBegun{pause: pause, err: err}
+	}
 	return got, err
 }

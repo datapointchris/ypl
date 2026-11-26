@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/datapointchris/goapiauth"
@@ -34,49 +33,85 @@ type DataAPI interface {
 }
 
 // dataAPICalls holds the channel that every Data API route calls YouTube
-// through. One call runs at a time, so what the channel counts during a call
-// is that call's own.
+// through. One call runs at a time, holding turn, so what the channel counts
+// during a call is that call's own.
 type dataAPICalls struct {
 	channel DataAPI
-	mu      sync.Mutex
+	turn    chan struct{}
 }
 
 // CallDataAPIWith sets the channel that every Data API route calls YouTube
-// through. Without it those routes answer 503.
+// through. Without it those routes answer 500.
 func (h *Handlers) CallDataAPIWith(channel DataAPI) {
-	h.dataAPI = &dataAPICalls{channel: channel}
+	h.dataAPI = &dataAPICalls{channel: channel, turn: make(chan struct{}, 1)}
 }
 
-// dataAPITimeout bounds one call: a read of every page of a playlist of 5,000
-// items is 100 requests.
-const dataAPITimeout = time.Minute
+const (
+	// dataAPITimeout bounds one call: a read of every page of a playlist of
+	// 5,000 items is 100 requests.
+	dataAPITimeout = time.Minute
+	// dataAPIDuration is the longest a Data API call runs once its turn has
+	// come: the quota read, the call, and its record.
+	dataAPIDuration = recordTimeout + dataAPITimeout + recordTimeout
+	// dataAPIMostWait is how long a call waits for the one ahead of it before
+	// it answers busy.
+	dataAPIMostWait = 20 * time.Second
+	// throttledWait is the Retry-After when YouTube refuses a call for its
+	// rate, since YouTube names no wait.
+	throttledWait = time.Minute
+)
 
-// errQuotaReserved is a call the day's quota cannot afford beside what the
-// sync keeps back.
-var errQuotaReserved = errors.New("the day's quota cannot afford the call beside what the sync keeps back")
+// DrainBound is the longest a request begun before Drain runs on after it: a
+// playlist write, a read of the watch history, or a Data API call, each run to
+// its end.
+const DrainBound = max(WriteDuration, HistoryDuration, dataAPIDuration)
 
-// callDataAPI makes call, which spends about units, for the caller of r, once
-// the day's quota has room for it beside what the sync keeps back. It records
-// the requests and units the call spent against the caller, whether YouTube
+var (
+	// errQuotaReserved is a call the day's quota cannot afford beside what the
+	// sync keeps back.
+	errQuotaReserved = errors.New("the day's quota cannot afford the call beside what the sync keeps back")
+	// errDataAPIBusy is a call whose turn did not come within dataAPIMostWait.
+	errDataAPIBusy = errors.New("the server's Data API calls stayed busy with another caller's")
+	// errNoDataAPI is a server started with no channel for its Data API routes.
+	errNoDataAPI = errors.New("the server was started with no channel for its Data API routes")
+)
+
+// callDataAPI makes call, which estimate prices, for the caller of r, once the
+// day's quota has room for it beside what the sync keeps back. It records the
+// requests and units the call spent against the caller, whether YouTube
 // answered or not. The error is errQuotaReserved where the day cannot afford
-// the call. A call runs to its end, or its timeout, when its caller leaves,
-// so what it spent is recorded.
-func callDataAPI[T any](h *Handlers, r *http.Request, method string, units int64, call func(context.Context, DataAPI) (T, error)) (T, error) {
+// the call, errDataAPIBusy where the call ahead held its turn past
+// dataAPIMostWait, and r's context error where the caller left before the call
+// was sent. Once sent, a call runs to its end or its timeout whether its
+// caller stays or not, so what it spent is recorded.
+func callDataAPI[T any](h *Handlers, r *http.Request, estimate youtube.Estimate, call func(context.Context, DataAPI) (T, error)) (T, error) {
 	var none T
 	calls := h.dataAPI
-	calls.mu.Lock()
-	defer calls.mu.Unlock()
+	wait := time.NewTimer(dataAPIMostWait)
+	defer wait.Stop()
+	select {
+	case calls.turn <- struct{}{}:
+	case <-r.Context().Done():
+		return none, r.Context().Err()
+	case <-h.draining:
+		return none, errDraining
+	case <-wait.C:
+		return none, errDataAPIBusy
+	}
+	defer func() { <-calls.turn }()
 	if h.isDraining() {
 		return none, errDraining
 	}
 	ctx, cancel := recordContext(r)
-	room, err := h.quotaRoom(ctx, units)
+	room, err := h.quotaRoom(ctx, estimate.Units)
 	cancel()
 	switch {
 	case err != nil:
 		return none, err
 	case !room:
 		return none, errQuotaReserved
+	case r.Context().Err() != nil:
+		return none, r.Context().Err()
 	}
 	requests, spent := calls.channel.Requests(), calls.channel.Units()
 	sentAt := h.now()
@@ -86,7 +121,7 @@ func callDataAPI[T any](h *Handlers, r *http.Request, method string, units int64
 
 	row := generated.InsertServiceCallParams{
 		ClientID:  callerOf(r),
-		Method:    method,
+		Method:    estimate.Method,
 		SentTs:    store.Timestamp(sentAt),
 		QuotaDate: youtube.QuotaDate(sentAt),
 		Requests:  calls.channel.Requests() - requests,
@@ -98,7 +133,7 @@ func callDataAPI[T any](h *Handlers, r *http.Request, method string, units int64
 	ctx, cancel = recordContext(r)
 	defer cancel()
 	if err := h.store.InTx(ctx, func(tx *store.Tx) error { return tx.InsertServiceCall(ctx, row) }); err != nil {
-		h.log.ErrorContext(r.Context(), "a Data API call was not recorded, so the day's quota counts it nowhere", "method", method, "units", row.Units, "err", err)
+		h.log.ErrorContext(r.Context(), "a Data API call was not recorded, so the day's quota counts it nowhere", "method", row.Method, "units", row.Units, "err", err)
 	}
 	return got, callErr
 }
@@ -109,16 +144,12 @@ func (h *Handlers) quotaRoom(ctx context.Context, units int64) (bool, error) {
 	now := h.now()
 	var room bool
 	err := h.store.InReadTx(ctx, func(q *generated.Queries) error {
-		spent, err := store.Spent(ctx, q, youtube.QuotaDate(now))
-		if err != nil {
-			return err
-		}
 		perTick, err := store.ReadsPerTick(ctx, q)
 		if err != nil {
 			return err
 		}
-		room = spent+units+store.Reserved(now, h.sync.Interval, perTick, false) <= youtube.DailyQuota
-		return nil
+		room, err = store.Admits(ctx, q, now, store.QuotaAsk{Units: units, Interval: h.sync.Interval, PerTick: perTick})
+		return err
 	})
 	return room, err
 }
@@ -220,9 +251,9 @@ type videoComment struct {
 // channel, or a channel's handle.
 var youtubeID = regexp.MustCompile(`^@?[A-Za-z0-9_.-]+$`)
 
-// uploadsPageSize is how many uploads a page answers: 50 when limit is absent,
-// and at most 50, which is one request.
-var uploadsPageSize = pageSize{fallback: 50, most: 50}
+// uploadsPageSize is how many uploads a page answers: one request's worth when
+// limit is absent, and at most that.
+var uploadsPageSize = pageSize{fallback: youtube.PageSize, most: youtube.PageSize}
 
 // maxVideoDetails is the most ids one read of video details names.
 const maxVideoDetails = 500
@@ -235,7 +266,7 @@ func (h *Handlers) listLiveItems(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := callDataAPI(h, r, youtube.MethodPlaylistItemsList, 1, func(ctx context.Context, api DataAPI) ([]youtube.Item, error) {
+	items, err := callDataAPI(h, r, youtube.ItemsEstimate(), func(ctx context.Context, api DataAPI) ([]youtube.Item, error) {
 		return api.Items(ctx, youtube.PlaylistID(id))
 	})
 	if h.refuseDataAPI(w, r, err, "playlist "+id) {
@@ -263,7 +294,7 @@ func (h *Handlers) addLiveItem(w http.ResponseWriter, r *http.Request) {
 		wire.RefuseVideos(w, http.StatusUnprocessableEntity, wire.CodeInvalidVideoID, []string{body.VideoID}, "%q is not a YouTube video id", body.VideoID)
 		return
 	}
-	item, err := callDataAPI(h, r, youtube.MethodPlaylistItemsInsert, youtube.WriteUnits, func(ctx context.Context, api DataAPI) (youtube.ItemID, error) {
+	item, err := callDataAPI(h, r, youtube.AppendEstimate(), func(ctx context.Context, api DataAPI) (youtube.ItemID, error) {
 		return api.AppendItem(ctx, youtube.PlaylistID(id), youtube.VideoID(body.VideoID))
 	})
 	if h.refuseDataAPI(w, r, err, "playlist "+id) {
@@ -284,7 +315,7 @@ func (h *Handlers) deleteLiveItem(w http.ResponseWriter, r *http.Request) {
 		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "%q is not a playlist item id", item)
 		return
 	}
-	_, err := callDataAPI(h, r, youtube.MethodPlaylistItemsDelete, youtube.WriteUnits, func(ctx context.Context, api DataAPI) (struct{}, error) {
+	_, err := callDataAPI(h, r, youtube.DeleteItemEstimate(), func(ctx context.Context, api DataAPI) (struct{}, error) {
 		return struct{}{}, api.DeleteItem(ctx, youtube.ItemID(item))
 	})
 	if errors.Is(err, youtube.ErrItemNotFound) {
@@ -299,7 +330,7 @@ func (h *Handlers) deleteLiveItem(w http.ResponseWriter, r *http.Request) {
 // listUploads answers a page of a channel's uploads, newest first. The path
 // names the channel by its id or its handle.
 func (h *Handlers) listUploads(w http.ResponseWriter, r *http.Request) {
-	if h.dataAPIUnavailable(w) {
+	if h.dataAPIUnavailable(w, r) {
 		return
 	}
 	channel := r.PathValue("id")
@@ -315,7 +346,7 @@ func (h *Handlers) listUploads(w http.ResponseWriter, r *http.Request) {
 		items []youtube.Item
 		next  string
 	}
-	got, err := callDataAPI(h, r, youtube.MethodPlaylistItemsList, 2, func(ctx context.Context, api DataAPI) (read, error) {
+	got, err := callDataAPI(h, r, youtube.UploadsEstimate(), func(ctx context.Context, api DataAPI) (read, error) {
 		items, next, err := api.Uploads(ctx, channel, r.URL.Query().Get("page_token"), limit)
 		return read{items: items, next: next}, err
 	})
@@ -333,7 +364,7 @@ func (h *Handlers) listUploads(w http.ResponseWriter, r *http.Request) {
 // YouTube returns them. YouTube leaves out a deleted video, a private one and
 // an id that no video has.
 func (h *Handlers) listLiveVideos(w http.ResponseWriter, r *http.Request) {
-	if h.dataAPIUnavailable(w) {
+	if h.dataAPIUnavailable(w, r) {
 		return
 	}
 	var ids []youtube.VideoID
@@ -358,8 +389,7 @@ func (h *Handlers) listLiveVideos(w http.ResponseWriter, r *http.Request) {
 		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeTooManyVideos, "ids names %d videos, and one read names at most %d", len(ids), maxVideoDetails)
 		return
 	}
-	units := int64((len(ids) + 49) / 50)
-	details, err := callDataAPI(h, r, youtube.MethodVideosList, units, func(ctx context.Context, api DataAPI) ([]youtube.VideoDetails, error) {
+	details, err := callDataAPI(h, r, youtube.VideoDetailsEstimate(len(ids)), func(ctx context.Context, api DataAPI) ([]youtube.VideoDetails, error) {
 		return api.VideoDetails(ctx, ids)
 	})
 	if h.refuseDataAPI(w, r, err, "the videos") {
@@ -388,7 +418,7 @@ func (h *Handlers) listLiveVideos(w http.ResponseWriter, r *http.Request) {
 // listComments answers up to 100 of the video's top-level comments, those
 // YouTube ranks most relevant first.
 func (h *Handlers) listComments(w http.ResponseWriter, r *http.Request) {
-	if h.dataAPIUnavailable(w) {
+	if h.dataAPIUnavailable(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -396,7 +426,7 @@ func (h *Handlers) listComments(w http.ResponseWriter, r *http.Request) {
 		wire.RefuseVideos(w, http.StatusUnprocessableEntity, wire.CodeInvalidVideoID, []string{id}, "%q is not a YouTube video id", id)
 		return
 	}
-	comments, err := callDataAPI(h, r, youtube.MethodCommentThreadsList, 1, func(ctx context.Context, api DataAPI) ([]youtube.Comment, error) {
+	comments, err := callDataAPI(h, r, youtube.TopCommentsEstimate(), func(ctx context.Context, api DataAPI) ([]youtube.Comment, error) {
 		return api.TopComments(ctx, youtube.VideoID(id))
 	})
 	answer := videoComments{VideoID: id, Comments: []videoComment{}}
@@ -421,7 +451,7 @@ func (h *Handlers) listComments(w http.ResponseWriter, r *http.Request) {
 // the stored one's id, and otherwise it is the path itself. ok is false once
 // it has answered.
 func (h *Handlers) livePlaylistID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if h.dataAPIUnavailable(w) {
+	if h.dataAPIUnavailable(w, r) {
 		return "", false
 	}
 	ref := r.PathValue("id")
@@ -439,13 +469,14 @@ func (h *Handlers) livePlaylistID(w http.ResponseWriter, r *http.Request) (strin
 	return "", false
 }
 
-// dataAPIUnavailable answers 503 where the server has no channel to call the
-// Data API through, and reports whether it answered.
-func (h *Handlers) dataAPIUnavailable(w http.ResponseWriter) bool {
+// dataAPIUnavailable answers 500 where the server was started with no channel
+// to call the Data API through, and reports whether it answered. The server's
+// own start always sets one.
+func (h *Handlers) dataAPIUnavailable(w http.ResponseWriter, r *http.Request) bool {
 	if h.dataAPI != nil {
 		return false
 	}
-	wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsUnavailable, "this server calls no Data API for its clients")
+	h.writeInternalError(w, r, errNoDataAPI)
 	return true
 }
 
@@ -465,6 +496,23 @@ func (h *Handlers) refuseDataAPI(w http.ResponseWriter, r *http.Request, err err
 	case errors.Is(err, errDraining):
 		h.refuseAndLog(w, r, slog.LevelInfo, http.StatusServiceUnavailable, wire.CodeShuttingDown, err,
 			"the server is shutting down, so it made no call to YouTube; send the request again")
+	case errors.Is(err, errDataAPIBusy):
+		retryAfter(w, dataAPIMostWait)
+		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeDataAPIBusy,
+			"the server's Data API calls stayed busy with another caller's, so it made no call; send the request again")
+	case r.Context().Err() != nil && errors.Is(err, r.Context().Err()):
+		h.log.InfoContext(r.Context(), "the caller left before its Data API call was sent", "path", r.URL.Path)
+	case errors.Is(err, youtube.ErrThrottled):
+		retryAfter(w, throttledWait)
+		h.refuseAndLog(w, r, slog.LevelWarn, http.StatusServiceUnavailable, wire.CodeYouTubeRateLimited, err,
+			"YouTube is limiting how fast this server calls it, so the call to %s went nowhere; send the request again later", what)
+	case errors.Is(err, youtube.ErrCredentialRefused):
+		code := wire.CodeYouTubeReadFailed
+		if r.Method != http.MethodGet {
+			code = wire.CodeYouTubeWriteFailed
+		}
+		h.refuseAndLog(w, r, slog.LevelError, http.StatusBadGateway, code, err,
+			"YouTube refused the server's own credential or its Cloud project, so the call to %s went nowhere", what)
 	case errors.Is(err, youtube.ErrPlaylistNotFound), errors.Is(err, youtube.ErrChannelNotFound), errors.Is(err, youtube.ErrVideoNotFound):
 		wire.Refuse(w, http.StatusNotFound, wire.CodeNotFound, "%s not found: YouTube has no record of it", what)
 	case errors.Is(err, youtube.ErrRefused):

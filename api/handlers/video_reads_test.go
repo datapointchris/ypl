@@ -14,18 +14,24 @@ import (
 
 // fakeDoor answers reads through the door with transcript, or with err, and
 // records each read's class and the most audio it allowed. Its audio is the
-// file audio names.
+// file audio names. Under slow, a read of captions runs until its context
+// ends.
 type fakeDoor struct {
 	transcript ytdlp.Transcript
 	audio      string
 	err        error
 	pause      ytdlp.Pause
+	slow       bool
 	classes    []ytdlp.Class
 	most       []int64
 }
 
-func (f *fakeDoor) Captions(_ context.Context, class ytdlp.Class, id string) (ytdlp.Captions, error) {
+func (f *fakeDoor) Captions(ctx context.Context, class ytdlp.Class, id string) (ytdlp.Captions, error) {
 	f.classes = append(f.classes, class)
+	if f.slow {
+		<-ctx.Done()
+		return ytdlp.Captions{}, ctx.Err()
+	}
 	return ytdlp.Captions{VideoID: id, Segments: []ytdlp.Segment{}}, f.err
 }
 
@@ -95,5 +101,38 @@ func TestAudioIsCappedOnlyThroughThePublicAddress(t *testing.T) {
 	}
 	if len(door.most) != 2 || door.most[0] != 0 || door.most[1] != maxPublicAudio {
 		t.Fatalf("the reads allowed %v bytes, want no bound and then %d", door.most, maxPublicAudio)
+	}
+}
+
+// ypl transcript <id> english, or a service sending lang=pt_BR, is told its
+// language is no language, before any read of YouTube.
+func TestATranscriptInAMalformedLanguageIsTheCallersMistake(t *testing.T) {
+	f := newFixture(t)
+	door := &fakeDoor{}
+	f.h.ReadVideosWith(door, "ypl.example.com")
+	for _, lang := range []string{"english", "pt_BR"} {
+		refused(t, f.doAs(ingestion, http.MethodGet, "/api/v1/youtube/videos/Wr1tt3nVid0/transcript?lang="+lang, ""), http.StatusBadRequest, "invalid_parameter")
+	}
+	if len(door.classes) != 0 {
+		t.Fatalf("the door saw %d reads, want none", len(door.classes))
+	}
+}
+
+// A read through the public address whose wait at the door and read run past
+// the budget answers the server's own 503 with a Retry-After, before the proxy
+// in front of that address gives up on it.
+func TestAReadThroughThePublicAddressPastItsBudgetAnswersBusy(t *testing.T) {
+	f := newFixture(t)
+	f.h.ReadVideosWith(&fakeDoor{slow: true}, "ypl.example.com")
+	f.h.videos.budget = 50 * time.Millisecond
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://ypl.example.com/api/v1/youtube/videos/Wr1tt3nVid0/captions", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	f.mux.ServeHTTP(rec, req)
+	refused(t, rec, http.StatusServiceUnavailable, "youtube_reads_busy")
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("the read past its budget carries no Retry-After")
 	}
 }

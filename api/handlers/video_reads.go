@@ -31,24 +31,52 @@ type VideoReader interface {
 }
 
 // videoReads is the door the caption, transcript and audio routes read
-// through, and the host a request names when it reaches the server through
-// its public address.
+// through, the host a request names when it reaches the server through its
+// public address, and how long a read for such a request may take.
 type videoReads struct {
 	door       VideoReader
 	publicHost string
+	budget     time.Duration
 }
 
-// maxPublicAudio is the most audio the audio route sends to a request that
-// reached the server through its public address. The proxy in front of that
-// address refuses an answer of more than 100 MB.
-const maxPublicAudio = 100_000_000
+// The limits of the reverse proxy in front of PUBLIC_URL, which a request
+// through the public address meets.
+const (
+	// maxPublicAudio is the most audio the audio route sends to such a request:
+	// the largest answer the proxy passes, as Cloudflare's does by default.
+	maxPublicAudio = 100_000_000
+	// publicReadBudget is the longest a caption, transcript or audio read
+	// takes for such a request, its wait at the door included. The proxy
+	// drops a request whose answer has not begun within its read timeout,
+	// which on Cloudflare is longer than this, so the server answers first.
+	publicReadBudget = 90 * time.Second
+)
+
+// errPastPublicBudget ends a read for a request through the public address
+// once publicReadBudget has passed.
+var errPastPublicBudget = errors.New("the read ran past the time a request through the public address may take")
 
 // ReadVideosWith sets the door the caption, transcript and audio routes read
 // through. publicHost is the host of the server's public address, such as
-// ypl.example.com, and an audio answer to a request naming it is capped at
-// maxPublicAudio. Without a door those routes answer 503.
+// ypl.example.com. A request naming it gets at most maxPublicAudio of audio,
+// and a read for it ends at publicReadBudget. Without a door those routes
+// answer 503.
 func (h *Handlers) ReadVideosWith(door VideoReader, publicHost string) {
-	h.videos = &videoReads{door: door, publicHost: strings.ToLower(publicHost)}
+	h.videos = &videoReads{door: door, publicHost: strings.ToLower(publicHost), budget: publicReadBudget}
+}
+
+// public is whether r reached the server through its public address.
+func (v *videoReads) public(r *http.Request) bool {
+	return v.publicHost != "" && requestHost(r) == v.publicHost
+}
+
+// readContext is what a read for r runs on: r's context, ended at the budget
+// where r came through the public address.
+func (v *videoReads) readContext(r *http.Request) (context.Context, context.CancelFunc) {
+	if !v.public(r) {
+		return context.WithCancel(r.Context())
+	}
+	return context.WithTimeoutCause(r.Context(), v.budget, errPastPublicBudget)
 }
 
 // captionsAnswer is the body of GET /api/v1/youtube/videos/{id}/captions.
@@ -101,8 +129,10 @@ func (h *Handlers) showCaptions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	read, err := h.videos.door.Captions(r.Context(), classOf(r), id)
-	if h.refuseVideoRead(w, r, err) {
+	ctx, cancel := h.videos.readContext(r)
+	defer cancel()
+	read, err := h.videos.door.Captions(ctx, classOf(r), id)
+	if h.refuseVideoRead(ctx, w, r, err) {
 		return
 	}
 	answer := captionsAnswer{
@@ -129,7 +159,8 @@ func (h *Handlers) showCaptions(w http.ResponseWriter, r *http.Request) {
 }
 
 // showTranscript answers the video's captions in lang, en when absent, as one
-// line: its manual track, else its automatic one.
+// line: its manual track, else its automatic one. A lang that is no language
+// is refused before the door.
 func (h *Handlers) showTranscript(w http.ResponseWriter, r *http.Request) {
 	id, ok := h.videoToRead(w, r)
 	if !ok {
@@ -139,8 +170,14 @@ func (h *Handlers) showTranscript(w http.ResponseWriter, r *http.Request) {
 	if lang == "" {
 		lang = "en"
 	}
-	read, err := h.videos.door.Transcript(r.Context(), classOf(r), id, lang)
-	if h.refuseVideoRead(w, r, err) {
+	if !ytdlp.ValidLanguage(lang) {
+		wire.Refuse(w, http.StatusBadRequest, wire.CodeInvalidParameter, "lang %q is not a language, such as en or pt-BR", lang)
+		return
+	}
+	ctx, cancel := h.videos.readContext(r)
+	defer cancel()
+	read, err := h.videos.door.Transcript(ctx, classOf(r), id, lang)
+	if h.refuseVideoRead(ctx, w, r, err) {
 		return
 	}
 	wire.JSON(w, http.StatusOK, transcriptAnswer{VideoID: read.VideoID, Language: read.Track.Language, Kind: string(read.Track.Kind), Text: read.Text})
@@ -156,11 +193,13 @@ func (h *Handlers) streamAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var most int64
-	if h.videos.publicHost != "" && requestHost(r) == h.videos.publicHost {
+	if h.videos.public(r) {
 		most = maxPublicAudio
 	}
-	audio, err := h.videos.door.Audio(r.Context(), classOf(r), id, most)
-	if h.refuseVideoRead(w, r, err) {
+	ctx, cancel := h.videos.readContext(r)
+	defer cancel()
+	audio, err := h.videos.door.Audio(ctx, classOf(r), id, most)
+	if h.refuseVideoRead(ctx, w, r, err) {
 		return
 	}
 	defer func() { _ = audio.Close() }()
@@ -227,13 +266,19 @@ func (h *Handlers) videoToRead(w http.ResponseWriter, r *http.Request) (string, 
 	return id, true
 }
 
-// refuseVideoRead answers a read through the door that failed with err, and
-// reports whether it answered.
-func (h *Handlers) refuseVideoRead(w http.ResponseWriter, r *http.Request, err error) bool {
+// refuseVideoRead answers a read through the door on ctx that failed with
+// err, and reports whether it answered.
+func (h *Handlers) refuseVideoRead(ctx context.Context, w http.ResponseWriter, r *http.Request, err error) bool {
 	switch {
 	case err == nil:
 		return false
 	case h.refuseAtTheDoor(w, r, err):
+	case errors.Is(context.Cause(ctx), errPastPublicBudget):
+		retryAfter(w, ytdlp.Gap+ytdlp.Jitter)
+		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsBusy,
+			"the read did not finish within the %v a request through the public address may take; send it again, or ask the server's own address", h.videos.budget)
+	case errors.Is(err, ytdlp.ErrNotStarted):
+		wire.RefuseVideos(w, http.StatusConflict, wire.CodeVideoNotStarted, []string{r.PathValue("id")}, "the video is a premiere or a live stream that has not begun")
 	case errors.Is(err, ytdlp.ErrNoCaptions):
 		wire.Refuse(w, http.StatusNotFound, wire.CodeNoCaptions, "the video has no caption track in that language")
 	case errors.Is(err, ytdlp.ErrTooLarge):
@@ -250,24 +295,22 @@ func (h *Handlers) refuseVideoRead(w http.ResponseWriter, r *http.Request, err e
 }
 
 // refuseAtTheDoor answers with a 503 where the door turned the read away or
-// YouTube refused the address. Its Retry-After says when to ask again. It
-// reports whether it answered.
+// YouTube refused the address. Its Retry-After says when to ask again. A read
+// that YouTube refused answers as every read after it does, with the pause
+// it began. It reports whether it answered.
 func (h *Handlers) refuseAtTheDoor(w http.ResponseWriter, r *http.Request, err error) bool {
-	var paused *ytdlp.PausedError
+	pause, paused := ytdlp.PauseOf(err)
 	switch {
-	case errors.As(err, &paused):
-		retryAfter(w, paused.Pause.Until.Sub(h.now()))
+	case paused:
+		retryAfter(w, pause.Until.Sub(h.now()))
 		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsPaused,
-			"the server makes no read of YouTube until %s, after %s reads", store.Timestamp(paused.Pause.Until), paused.Pause.Cause)
-	case errors.Is(err, ytdlp.ErrRateLimited):
-		retryAfter(w, ytdlp.RefusedPause)
-		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeRateLimited, "YouTube refused the server's read, so it makes none for a day")
+			"the server makes no read of YouTube until %s, after %s reads", store.Timestamp(pause.Until), pause.Cause)
 	case errors.Is(err, ytdlp.ErrBusy):
 		retryAfter(w, ytdlp.Gap+ytdlp.Jitter)
 		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsBusy, "the server's yt-dlp stayed busy with other reads; send the request again")
 	case errors.Is(err, ytdlp.ErrClosed):
 		h.refuseAndLog(w, r, slog.LevelInfo, http.StatusServiceUnavailable, wire.CodeShuttingDown, err,
-			"the server is shutting down, so it made no read; send the request again")
+			"the server is shutting down, so it stopped or made no read; send the request again")
 	default:
 		return false
 	}

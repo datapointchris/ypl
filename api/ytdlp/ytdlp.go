@@ -32,6 +32,10 @@ var ErrRateLimited = errors.New("YouTube is refusing reads from this address for
 // country, or age-restricted.
 var ErrUnreadable = errors.New("YouTube will not let a signed-out session read this video")
 
+// ErrNotStarted is YouTube answering that the video has not begun: a premiere
+// or a live stream still to come. It can be read once it begins.
+var ErrNotStarted = errors.New("the video is a premiere or a live stream that has not begun")
+
 // MaxComments is how many of a video's top comments a read returns. A
 // tracklist someone posted is among the top few when there is one.
 const MaxComments = 20
@@ -101,14 +105,14 @@ var videoID = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
 const videoLimit = 2 * time.Minute
 
 // Video reads the video id for enrichment: its details, chapters and top
-// comments. The error wraps ErrRateLimited or ErrUnreadable when YouTube's
-// answer is one of those, ErrPaused while the door is paused, and ctx's error
-// when ctx ended first.
+// comments. The error wraps ErrRateLimited, ErrUnreadable or ErrNotStarted when
+// YouTube's answer is one of those, ErrPaused while the door is paused, and
+// ctx's error when ctx ended first.
 func (d *Door) Video(ctx context.Context, id string) (Video, error) {
 	if !videoID.MatchString(id) {
 		return Video{}, fmt.Errorf("read video %q: not a YouTube video id", id)
 	}
-	video, err := through(ctx, d, Enrichment, videoLimit, func(ctx context.Context) (Video, error) {
+	video, err := through(ctx, d, readTerms{class: Enrichment, subject: id, limit: videoLimit}, func(ctx context.Context) (Video, error) {
 		output, err := d.binary.run(ctx, "", arguments(id), refusal)
 		if err != nil {
 			return Video{}, err
@@ -190,6 +194,14 @@ var unreadableMarkers = []string{
 	"inappropriate for some users",
 }
 
+// notStartedMarkers are what YouTube's reason says, through yt-dlp's error,
+// for a premiere or a scheduled live stream that has not begun.
+var notStartedMarkers = []string{
+	"premieres in ",
+	"premiere will begin",
+	"live event will begin",
+}
+
 // Unreadable is whether yt-dlp's error message says YouTube will never let a
 // signed-out session read the video, and not that it refuses reads from this
 // address for now.
@@ -199,8 +211,8 @@ func Unreadable(message string) bool {
 }
 
 // refusal is yt-dlp's failure as an error naming its last error line, wrapping
-// ErrRateLimited or ErrUnreadable when the error lines carry one of their
-// markers. Only error lines are classified, since a warning about a request
+// ErrRateLimited, ErrUnreadable or ErrNotStarted when the error lines carry one
+// of their markers. Only error lines are classified, since a warning about a request
 // yt-dlp retried says nothing about how the read ended. A failure yt-dlp wrote
 // no error line for is named by its last line of output instead, which is where
 // it writes a fault in the arguments it was passed.
@@ -230,6 +242,8 @@ func refusal(stderr string, exit error) error {
 		return fmt.Errorf("%w: %s", ErrRateLimited, message)
 	case Unreadable(said):
 		return fmt.Errorf("%w: %s", ErrUnreadable, message)
+	case containsAny(normalized(said), notStartedMarkers):
+		return fmt.Errorf("%w: %s", ErrNotStarted, message)
 	default:
 		return fmt.Errorf("yt-dlp: %s", message)
 	}

@@ -107,19 +107,19 @@ func (run *run) held(m merged) (bool, error) {
 // back.
 func (run *run) allows(priority Priority, units int64) (bool, error) {
 	now := run.now()
-	spent, err := store.Spent(run.ctx, run.store.Queries, youtube.QuotaDate(now))
-	if err != nil {
-		return false, err
-	}
+	var unrecorded int64
 	if youtube.QuotaDate(now) == run.date {
-		spent += run.channel.Units() - run.units0 - run.report.WriteUnits
+		unrecorded = run.channel.Units() - run.units0 - run.report.WriteUnits
 	}
 	if run.perTick == 0 {
+		var err error
 		if run.perTick, err = store.ReadsPerTick(run.ctx, run.store.Queries); err != nil {
 			return false, err
 		}
 	}
-	return spent+units+store.Reserved(now, run.interval, run.perTick, priority == PriorityEdit) <= youtube.DailyQuota, nil
+	return store.Admits(run.ctx, run.store.Queries, now, store.QuotaAsk{
+		Units: units, Unrecorded: unrecorded, Interval: run.interval, PerTick: run.perTick, Edit: priority == PriorityEdit,
+	})
 }
 
 // write records w as pending and as the playlist's unanswered write, sends it,

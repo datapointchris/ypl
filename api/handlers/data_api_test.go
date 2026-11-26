@@ -3,25 +3,31 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/datapointchris/goapiauth"
 
 	"github.com/datapointchris/ypl/api/store"
 	"github.com/datapointchris/ypl/api/store/generated"
+	"github.com/datapointchris/ypl/api/wire"
 	"github.com/datapointchris/ypl/api/youtube"
 )
 
 // fakeDataAPI answers the Data API routes' calls, counting each request at the
-// price the Data API's quota calculator gives its method.
+// price the Data API's quota calculator gives its method. A read of items waits
+// on hold where it is set, and answers refused where that is set.
 type fakeDataAPI struct {
 	requests, units atomic.Int64
 	deleted         []youtube.ItemID
+	hold            chan struct{}
+	refused         error
 }
 
 func (f *fakeDataAPI) spend(units int64) {
@@ -30,13 +36,16 @@ func (f *fakeDataAPI) spend(units int64) {
 }
 
 func (f *fakeDataAPI) Items(context.Context, youtube.PlaylistID) ([]youtube.Item, error) {
+	if f.hold != nil {
+		<-f.hold
+	}
 	f.spend(1)
-	return nil, nil
+	return nil, f.refused
 }
 
 func (f *fakeDataAPI) AppendItem(context.Context, youtube.PlaylistID, youtube.VideoID) (youtube.ItemID, error) {
 	f.spend(youtube.WriteUnits)
-	return "item-new", nil
+	return "item-new", f.refused
 }
 
 func (f *fakeDataAPI) DeleteItem(_ context.Context, id youtube.ItemID) error {
@@ -51,7 +60,7 @@ func (f *fakeDataAPI) Uploads(context.Context, string, string, int64) ([]youtube
 }
 
 func (f *fakeDataAPI) VideoDetails(_ context.Context, ids []youtube.VideoID) ([]youtube.VideoDetails, error) {
-	f.spend(int64((len(ids) + 49) / 50))
+	f.spend(youtube.VideoDetailsEstimate(len(ids)).Units)
 	details := make([]youtube.VideoDetails, len(ids))
 	for i, id := range ids {
 		details[i] = youtube.VideoDetails{Video: youtube.Video{ID: id, Title: "Video " + string(id), Privacy: "public"}, LiveBroadcastContent: "none"}
@@ -140,5 +149,70 @@ func TestADeleteTheDayCannotAffordWaitsForThePacificReset(t *testing.T) {
 	f.now = youtube.QuotaReset(arrival)
 	if rec := f.doAs(ingestion, http.MethodDelete, "/api/v1/youtube/playlists/PLX/items/itemX", ""); rec.Code != http.StatusNoContent || len(api.deleted) != 1 {
 		t.Fatalf("the delete after the reset answered %d with %d deletes sent: %s", rec.Code, len(api.deleted), rec.Body)
+	}
+}
+
+// A slow read holds the Data API's one turn, and a service's append queued
+// behind it times out. Its caller has left, so the append is never sent and
+// costs nothing.
+func TestAnAppendWhoseCallerLeftWhileQueuedIsNeverSent(t *testing.T) {
+	f := newFixture(t)
+	api := &fakeDataAPI{hold: make(chan struct{})}
+	f.h.CallDataAPIWith(api)
+	read := make(chan int, 1)
+	go func() { read <- f.doAs(ingestion, http.MethodGet, "/api/v1/youtube/playlists/PLX/items", "").Code }()
+	for deadline := time.Now().Add(time.Second); len(f.h.dataAPI.turn) == 0; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the read did not take the Data API's turn within a second")
+		}
+	}
+
+	ctx, leave := context.WithCancel(goapiauth.WithIdentity(context.Background(), ingestion))
+	appended := make(chan struct{})
+	go func() {
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/youtube/playlists/PLX/items", strings.NewReader(`{"video_id": "Wr1tt3nVid0"}`))
+		f.mux.ServeHTTP(httptest.NewRecorder(), req)
+		close(appended)
+	}()
+	leave()
+	<-appended
+	close(api.hold)
+	if code := <-read; code != http.StatusOK {
+		t.Fatalf("the read holding the turn answered %d, want 200", code)
+	}
+	if units := api.Units(); units != 1 {
+		t.Fatalf("YouTube was charged %d units, want the read's 1 and no append", units)
+	}
+}
+
+// YouTube limiting the server's rate, or refusing its own credential, is not
+// the caller's mistake. Only a refusal of what the call asked answers 422.
+func TestARateLimitOrARefusedServerCredentialIsNotTheCallersMistake(t *testing.T) {
+	f := newFixture(t)
+	api := &fakeDataAPI{}
+	f.h.CallDataAPIWith(api)
+	items := "/api/v1/youtube/playlists/PLX/items"
+	cases := []struct {
+		refused        error
+		method, body   string
+		status         int
+		code           wire.Code
+		wantRetryAfter bool
+	}{
+		{youtube.ErrThrottled, http.MethodGet, "", http.StatusServiceUnavailable, "youtube_rate_limited", true},
+		{youtube.ErrCredentialRefused, http.MethodGet, "", http.StatusBadGateway, "youtube_read_failed", false},
+		{youtube.ErrCredentialRefused, http.MethodPost, `{"video_id": "Wr1tt3nVid0"}`, http.StatusBadGateway, "youtube_write_failed", false},
+		{nil, http.MethodPost, `{"video_id": "Wr1tt3nVid0"}`, http.StatusUnprocessableEntity, "youtube_refused", false},
+	}
+	for _, c := range cases {
+		api.refused = youtube.ErrRefused
+		if c.refused != nil {
+			api.refused = errors.Join(youtube.ErrRefused, c.refused)
+		}
+		rec := f.doAs(ingestion, c.method, items, c.body)
+		refused(t, rec, c.status, c.code)
+		if got := rec.Header().Get("Retry-After") != ""; got != c.wantRetryAfter {
+			t.Errorf("%s refused with %v carries a Retry-After: %v, want %v", c.method, c.refused, got, c.wantRetryAfter)
+		}
 	}
 }

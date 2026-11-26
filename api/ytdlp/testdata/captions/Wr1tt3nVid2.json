@@ -1,0 +1,21 @@
+{
+  "id": "Wr1tt3nVid2",
+  "title": "A written talk captioned in British English",
+  "description": "A third written description.",
+  "duration": 120,
+  "language": "en",
+  "chapters": null,
+  "subtitles": {
+    "en-GB": [
+      {"ext": "json3", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid2&lang=en-GB&fmt=json3", "name": "English (United Kingdom)"}
+    ]
+  },
+  "automatic_captions": {
+    "en-orig": [
+      {"ext": "json3", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid2&lang=en&kind=asr&fmt=json3", "name": "English (Original)"}
+    ],
+    "en": [
+      {"ext": "json3", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid2&lang=en&kind=asr&fmt=json3&tlang=en", "name": "English"}
+    ]
+  }
+}

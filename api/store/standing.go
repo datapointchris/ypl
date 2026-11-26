@@ -43,6 +43,30 @@ func Reserved(now time.Time, interval time.Duration, perTick int64, edit bool) i
 	return reserved
 }
 
+// QuotaAsk is one spender asking the day's quota for Units more. Unrecorded is
+// what the asker has spent and not yet recorded. The sync keeps back the reads
+// of every tick of Interval left, PerTick each, and an Edit is the one asker
+// that may spend EditReserve.
+type QuotaAsk struct {
+	Units      int64
+	Unrecorded int64
+	Interval   time.Duration
+	PerTick    int64
+	Edit       bool
+}
+
+// Admits is whether the day's quota has room at now for what ask asks, beside
+// what the day has recorded and what Reserved keeps back. Every spender asks
+// it. The reads a sync tick has sent and not yet recorded are within the tick
+// that Reserved keeps back, so no other asker counts them twice.
+func Admits(ctx context.Context, q *generated.Queries, now time.Time, ask QuotaAsk) (bool, error) {
+	spent, err := Spent(ctx, q, youtube.QuotaDate(now))
+	if err != nil {
+		return false, err
+	}
+	return spent+ask.Unrecorded+ask.Units+Reserved(now, ask.Interval, ask.PerTick, ask.Edit) <= youtube.DailyQuota, nil
+}
+
 // ReadsPerTick is what one tick of the sync reads: the listing, and a sweep of
 // a playlist of the library's average number of pages.
 func ReadsPerTick(ctx context.Context, q *generated.Queries) (int64, error) {

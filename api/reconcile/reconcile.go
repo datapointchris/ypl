@@ -458,7 +458,7 @@ func (run *run) lengths() error {
 	if err != nil || len(stored) == 0 {
 		return err
 	}
-	room, err := run.allows(PriorityLengths, int64(len(stored)+49)/50)
+	room, err := run.allows(PriorityLengths, youtube.VideoDetailsEstimate(len(stored)).Units)
 	if err != nil || !room {
 		return err
 	}

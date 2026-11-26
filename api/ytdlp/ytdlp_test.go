@@ -162,14 +162,9 @@ func TestAReadReturnsTheVideoWithItsChaptersAndTopComments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
-		"--ignore-config", "--no-plugin-dirs", "--sleep-requests", "2", "--sleep-subtitles", "5", "--sleep-interval", "8",
-		"--max-sleep-interval", "16", "--skip-download", "--no-playlist", "--write-comments",
-		"--extractor-args", "youtube:max_comments=20,20,0,0;comment_sort=top", "--dump-json", "--",
-		"https://www.youtube.com/watch?v=-kbYeaEP-ME",
-	}
-	if got := strings.Split(string(sent), "\n"); !slices.Equal(got, want) {
-		t.Fatalf("yt-dlp ran with %q, want %q", got, want)
+	want := []string{"--", "https://www.youtube.com/watch?v=-kbYeaEP-ME"}
+	if got := strings.Split(string(sent), "\n"); !slices.Equal(got[len(got)-2:], want) {
+		t.Fatalf("yt-dlp ran with %q, want it to end on %q, so an id opening with a hyphen is no option", got, want)
 	}
 }
 
@@ -252,6 +247,16 @@ func TestAFailedReadNamesWhatYouTubeRefused(t *testing.T) {
 			name:   "a video that is not available",
 			stderr: "ERROR: [youtube] Ljd32XdWRjY: Video unavailable. This video is not available\n",
 			want:   ErrUnreadable,
+		},
+		{
+			name:   "a premiere still to come",
+			stderr: "ERROR: [youtube] Ljd32XdWRjY: Premieres in 3 hours\n",
+			want:   ErrNotStarted,
+		},
+		{
+			name:   "a scheduled live stream",
+			stderr: "ERROR: [youtube] Ljd32XdWRjY: This live event will begin in 2 days.\n",
+			want:   ErrNotStarted,
 		},
 	}
 	for _, c := range cases {

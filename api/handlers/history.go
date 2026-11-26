@@ -148,7 +148,7 @@ func (h *Handlers) historyUnavailable(w http.ResponseWriter) bool {
 	if h.history != nil {
 		return false
 	}
-	wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeHistoryUnavailable, "this server reads no watch history: it has no yt-dlp")
+	wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsUnavailable, "this server reads no watch history: it has no yt-dlp")
 	return true
 }
 
