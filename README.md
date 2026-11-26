@@ -130,6 +130,7 @@ delete then needs `--yes`. An edit then needs its buffer piped in.
 | What a playlist holds, and in what order | `playlists list`, `playlists show` | the server's mirror |
 | Make, retitle, delete or reorder a playlist | `playlists create`, `rename`, `delete`, `edit` | the server, which writes to YouTube |
 | Which mixes run three hours, or name an artist | `videos` | the server's tracklists and lengths |
+| What any video says, in its captions | `transcript` | YouTube's captions, which the server reads when asked |
 | What have I heard lately | `plays` | the server's listening history |
 | What I said about a mix, wherever it is playing | `rate`, `ratings`, `tags`, `videos show` | the account's watch history, then the server's ratings |
 | Is the mirror keeping up with YouTube | `server` | the server's syncs and the day's quota |
@@ -240,6 +241,7 @@ that applies it. By then the editor has closed, so that file is the only copy of
 ypl videos list --min-minutes 180       # three hours or more; a video of unknown length is left out
 ypl videos list --artist bjork          # every mix whose tracklist names Björk
 ypl videos show 'robot heart link up'   # one mix's tracklist, by its link, its id or part of its title
+ypl transcript https://youtu.be/<id>    # any public video's captions as one line; a language may follow
 ```
 
 A tracklist is the video's chapters, or failing those the timestamped lines of its description, or
@@ -247,6 +249,10 @@ failing that one of its top comments that reads as a whole tracklist. The server
 [`api/README.md`](api/README.md) gives the rule. An artist matches ignoring case and accents. A
 video's length is known before its tracklist is read, so a filter by length reaches a mix the server
 has not read yet. A video YouTube will not serve is left out.
+
+`ypl transcript` reads any public video, in the library or not. The server reads its captions from
+YouTube when asked, one read at a time behind every other caller's, so a read can wait, or answer
+that the server is busy and when to try again.
 
 ## `server` — whether the mirror is keeping up, and an exit code that means look
 
@@ -281,6 +287,18 @@ client_id = "ypl-cli-laptop"
 ```
 
 `--api` is the only thing that outranks the file. No environment variable does.
+
+A server reachable by more than one name can list the others under `api_tried_first`, tried in
+order before `api`:
+
+```toml
+api_tried_first = ["http://ypl.lan"]
+```
+
+A command moves to the next address only when it cannot open a connection to one. So a server's
+address on a home network is used at home and skipped elsewhere. Each address is sent the token
+`api` is sent, so the list names only that server. An address over plain HTTP belongs on a network
+you trust. `--api` replaces the list with itself.
 
 `ypl auth login <url>` fills in only what the file lacks: `api` from the URL, `issuer` from the
 server's RFC 9728 metadata, and `client_id` from `--client-id` or `ypl-cli-<short hostname>`. It
@@ -317,7 +335,8 @@ not reach.
 
 The server in `api/` keeps the channel's playlists mirrored through the Data API, signed in as the
 channel with an OAuth refresh token. It reads each mix's tracklist with yt-dlp, signed in as nobody,
-because the Data API reports neither a video's chapters nor its comments. It answers the HTTP API
+because the Data API reports neither a video's chapters nor its comments. A video's captions and
+audio come through the same yt-dlp, one read at a time, for a person or a service that asks. It answers the HTTP API
 the client speaks. The client holds no database and reads nothing from YouTube, so every answer on
 every machine is the server's.
 

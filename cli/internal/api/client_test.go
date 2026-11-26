@@ -19,7 +19,7 @@ func answering(t *testing.T, status int, body string) *Client {
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(server.Close)
-	return New(server.URL, server.Client())
+	return New([]string{server.URL}, server.Client())
 }
 
 // This is what the package exists for: a CLI older than the server it is
@@ -150,7 +150,7 @@ func TestTheFilterBecomesTheServersOwnParametersOnEveryPage(t *testing.T) {
 
 	bound := int64(60)
 	filter := VideoFilter{Playlist: "alpha", Artist: "moby", MinSeconds: &bound, Sort: "longest"}
-	videos, err := New(server.URL, server.Client()).ListVideos(context.Background(), filter)
+	videos, err := New([]string{server.URL}, server.Client()).ListVideos(context.Background(), filter)
 	if err != nil || len(videos) != 2 || videos[0].ID != "a" || videos[1].ID != "b" {
 		t.Fatalf("videos = %+v, %v, want a then b, the second page followed", videos, err)
 	}
@@ -160,5 +160,43 @@ func TestTheFilterBecomesTheServersOwnParametersOnEveryPage(t *testing.T) {
 	}
 	if !slices.Equal(asked, want) {
 		t.Fatalf("asked %q, want %q", asked, want)
+	}
+}
+
+// An address that takes no connection is passed over for the next, and every
+// later request starts at the one that answered. An answer of any kind, a
+// refusal included, is the server's, so the address that gave it is kept.
+func TestAnAddressThatTakesNoConnectionIsPassedOverForTheNext(t *testing.T) {
+	var served []string
+	answer := func(name string, status int) *httptest.Server {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			served = append(served, name+" "+r.Method)
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"version": "v1"}`))
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	refusing, public := answer("refusing", http.StatusServiceUnavailable), answer("public", http.StatusOK)
+	transport := &http.Client{Transport: MarkConnectFailures(http.DefaultTransport)}
+
+	client := New([]string{closed.URL, public.URL}, transport)
+	for range 2 {
+		if err := client.Get(context.Background(), "/api/v1/version", &Version{}); err != nil {
+			t.Fatalf("a request past the closed address failed: %v", err)
+		}
+	}
+	if !slices.Equal(served, []string{"public GET", "public GET"}) || client.reached.Load() != 1 {
+		t.Fatalf("served %v from address %d, want both requests from the public address", served, client.reached.Load())
+	}
+
+	served = nil
+	if err := New([]string{refusing.URL, public.URL}, transport).Get(context.Background(), "/api/v1/version", &Version{}); !errors.As(err, new(*Refusal)) {
+		t.Fatalf("a refusal from the first address answered %v, want that refusal", err)
+	}
+	if !slices.Equal(served, []string{"refusing GET"}) {
+		t.Fatalf("served %v, want the refusal alone", served)
 	}
 }

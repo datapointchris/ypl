@@ -5,6 +5,7 @@ go 1.26.8
 toolchain go1.26.11
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/huh v1.0.0
 	github.com/datapointchris/goclikit v0.7.0
 	github.com/datapointchris/goclilogin v0.7.0
@@ -20,7 +21,6 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/catppuccin/go v0.3.0 // indirect

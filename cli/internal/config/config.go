@@ -1,7 +1,8 @@
 // Package config says where the ypl CLI is pointed and how it authenticates
 // there. Where it is pointed is one file, $XDG_CONFIG_HOME/ypl/config.toml,
 // read through goclilogin's config-file contract: its api, issuer and
-// client_id keys, with --api the only thing that outranks them.
+// client_id keys, with --api the only thing that outranks them. ypl's own
+// api_tried_first sits beside them.
 //
 // None of the three is compiled in. Each names one installation, so a value
 // shipped in the binary would point somebody else's copy at this one.
@@ -11,9 +12,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"net/url"
 	"os"
+	"slices"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/datapointchris/goclilogin"
 )
 
@@ -66,6 +71,44 @@ func Load(ctx context.Context, api string) (goclilogin.Deployment, error) {
 // with whatever it lacks filled in from api, the API's metadata and clientID.
 func ForLogin(ctx context.Context, api, clientID string) (goclilogin.Deployment, error) {
 	return goclilogin.DeploymentForLogin(ctx, product, api, clientID)
+}
+
+// TriedFirstKey is the config file's list of other addresses of the server
+// api names, each tried in order before api. goclilogin owns the file's other
+// keys and keeps this one as it is.
+const TriedFirstKey = "api_tried_first"
+
+// TriedFirst is the file's api_tried_first. A command moves to the next
+// address only when it cannot open a connection to one. So the server's
+// address on a home network, listed here, is reached at home and skipped
+// elsewhere. Each address is sent the token api is sent, so the list names no
+// other server. --api replaces the list with itself, so the list is not read
+// then.
+func TriedFirst(d goclilogin.Deployment) ([]string, error) {
+	if d.API.Source == goclilogin.SourceCommandLine || d.Path == "" {
+		return nil, nil
+	}
+	var file struct {
+		TriedFirst []string `toml:"api_tried_first"`
+	}
+	if _, err := toml.DecodeFile(d.Path, &file); errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("read %s: %w", d.Path, err)
+	}
+	var addresses []string
+	for _, raw := range file.TriedFirst {
+		parsed, err := url.Parse(raw)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return nil, fmt.Errorf("%s sets %s to %q, which is not an http or https URL, such as http://ypl.lan",
+				d.Path, TriedFirstKey, raw)
+		}
+		address := strings.TrimRight(raw, "/")
+		if address != d.API.Value && !slices.Contains(addresses, address) {
+			addresses = append(addresses, address)
+		}
+	}
+	return addresses, nil
 }
 
 // Path is the config file, whether or not one is there, and "" where no home

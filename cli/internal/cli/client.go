@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/datapointchris/goclilogin"
@@ -22,7 +23,8 @@ var errNeedsLogin = errors.New("not logged in")
 // newAPIClient is a client for the configured server, signed in as this
 // machine or as the service client YPL_CLIENT_SECRET selects. The oauth2 client
 // adds the bearer token to every request and renews it when it expires, so no
-// command here holds one.
+// command here holds one. It tries the file's api_tried_first in order before
+// api, and moves on only where a connection could not be opened.
 //
 // Each request also carries the trace and baggage the CLI was started under,
 // in TRACEPARENT, TRACESTATE and BAGGAGE, so the server's span for it sits
@@ -40,9 +42,15 @@ func newAPIClient(ctx context.Context) (*api.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prepare the API client: %w", err)
 	}
-	httpClient := oauth2.NewClient(ctx, source)
-	httpClient.Transport = goclikit.TraceForwardingTransport(httpClient.Transport)
-	return api.New(deployment.API.Value, httpClient), nil
+	triedFirst, err := config.TriedFirst(deployment)
+	if err != nil {
+		return nil, err
+	}
+	httpClient := &http.Client{Transport: goclikit.TraceForwardingTransport(&oauth2.Transport{
+		Source: oauth2.ReuseTokenSource(nil, source),
+		Base:   api.MarkConnectFailures(http.DefaultTransport),
+	})}
+	return api.New(append(triedFirst, deployment.API.Value), httpClient), nil
 }
 
 // tokenSource is the config file's token_command where it names one, the

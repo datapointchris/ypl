@@ -132,6 +132,7 @@ func newRootCommand(a *app) *cobra.Command {
 		withAPIFlag(a.nextCommand()),
 		withAPIFlag(a.playlistsCommand()),
 		withAPIFlag(a.videosCommand()),
+		withAPIFlag(a.transcriptCommand()),
 		withAPIFlag(a.playsCommand()),
 		withAPIFlag(a.rateCommand()),
 		withAPIFlag(a.ratingsCommand()),

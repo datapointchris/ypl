@@ -89,7 +89,7 @@ func newFixture(t *testing.T, answer http.HandlerFunc) *fixture {
 
 	f.app = &app{
 		client: func(context.Context) (*api.Client, error) {
-			return api.New(server.URL, server.Client()), nil
+			return api.New([]string{server.URL}, server.Client()), nil
 		},
 		tokens: func(login goclilogin.Config) *goclilogin.TokenStore {
 			if f.store == nil {
