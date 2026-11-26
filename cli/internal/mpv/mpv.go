@@ -57,6 +57,14 @@ type Arguments []string
 // WatchURLs are the addresses mpv is asked to play, in the order to play them.
 type WatchURLs []string
 
+// Resolver is what mpv runs in yt-dlp's place to turn a watch URL into a
+// stream: the program, and what is added to the environment mpv starts it in.
+// A Path of "" leaves mpv to find yt-dlp itself.
+type Resolver struct {
+	Path string
+	Env  []string
+}
+
 // ErrNotPlaying is nothing playing: nothing listening on the socket, or an mpv
 // that is running with no file loaded. It is distinct from mpv being missing,
 // and distinct from a socket that could not be read.
@@ -147,9 +155,14 @@ type State struct {
 // A socketPath of "" plays without the IPC socket, which costs everything that
 // reads it: no play is recorded, and `ypl now` sees nothing.
 //
+// The resolver is handed to mpv's ytdl_hook after the caller's own arguments,
+// so a ytdl_path the caller passed does not replace it. It is appended to the
+// script options rather than setting them, so every other one the person's
+// config sets is kept.
+//
 // started is handed the player's process id once it is running, so a reader of
 // the socket can tell this player from another that took the same path.
-func Play(ctx context.Context, socketPath string, extra Arguments, urls WatchURLs, started func(pid int)) (Outcome, error) {
+func Play(ctx context.Context, socketPath string, extra Arguments, urls WatchURLs, resolver Resolver, started func(pid int)) (Outcome, error) {
 	found, err := exec.LookPath(binary)
 	if err != nil {
 		return Outcome{}, unavailable(err)
@@ -162,6 +175,9 @@ func Play(ctx context.Context, socketPath string, extra Arguments, urls WatchURL
 		arguments = append(arguments, "--input-ipc-server="+socketPath)
 	}
 	arguments = append(arguments, extra...)
+	if resolver.Path != "" {
+		arguments = append(arguments, "--script-opts-append=ytdl_hook-ytdl_path="+resolver.Path)
+	}
 	arguments = append(arguments, urls...)
 
 	// mpv inherits this process's terminal. It draws a status line and takes
@@ -170,6 +186,7 @@ func Play(ctx context.Context, socketPath string, extra Arguments, urls WatchURL
 	player := exec.CommandContext(ctx, found, arguments...)
 	player.Stdin, player.Stdout, player.Stderr = os.Stdin, os.Stdout, os.Stderr
 	player.WaitDelay = stopDelay
+	player.Env = append(os.Environ(), resolver.Env...)
 	if err := player.Start(); err != nil {
 		return ended(ctx, err)
 	}

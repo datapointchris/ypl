@@ -15,7 +15,7 @@ The server, on the machine it is deployed to:
 | Door | Package | Reaches | Costs |
 | --- | --- | --- | --- |
 | The Data API | `api/youtube` | YouTube, over HTTPS, signed in as the channel with an OAuth refresh token: for the sync, and live for each `/api/v1/youtube/` route that calls it | Quota units, 10,000 a day, each route's call charged to the client that made it |
-| yt-dlp | `api/ytdlp` | YouTube, over HTTPS, through a subprocess, one at a time through the door: signed in as nobody for a video's tracklist, captions, transcript or audio, and with the stored cookie jar for the watch history | Nothing, the address's standing with YouTube, and the account's for history reads |
+| yt-dlp | `api/ytdlp` | YouTube, over HTTPS, through a subprocess, one at a time through the door: signed in as nobody for a video's tracklist, captions, transcript or audio and for a person's own command line, and with the stored cookie jar for the watch history | Nothing, the address's standing with YouTube, and the account's for history reads |
 | The trace exporter | `api/tracing` | The OTLP/HTTP endpoint `OTEL_EXPORTER_OTLP_ENDPOINT` names, only where it is set | Nothing |
 
 A request's span is what crosses to the trace exporter. It holds the method, the route, the status,
@@ -36,24 +36,35 @@ The CLI, on every workstation:
 | An editor | `cli/internal/editbuffer` | Whatever `$VISUAL` or `$EDITOR` names, holding the terminal, during `ypl playlists edit` | A subprocess, and the terminal until it exits |
 | mpv | `cli/internal/mpv` | mpv on `PATH`, holding the terminal, during `ypl play`; and its IPC socket at `$XDG_STATE_HOME/ypl/mpv.sock` during `ypl play` itself and `ypl now` | A subprocess, the terminal until it exits, and whatever mpv itself reaches |
 | fzf | `cli/internal/cli` | fzf on `PATH`, drawing on the terminal, during `ypl rate` with no video named | A subprocess, and the terminal until a mix is picked |
+| yt-dlp | `cli/internal/cli` | The first yt-dlp on `PATH` that is neither this binary nor a script running `ypl ytdlp`, started by the stand-in each time mpv resolves a stream during `ypl play` | A subprocess of mpv's, whatever yt-dlp itself reaches, and this machine's standing with YouTube |
 
 mpv makes its own network requests, as yt-dlp does. What crosses to it is the watch URLs, the
-socket path, `--no-video` under `--audio`, and whatever `--mpv` was given — no credential, no token,
-no part of the store. mpv opens the socket itself, from the flag `ypl play` passes it. `ypl play`
+socket path, `--no-video` under `--audio`, the stand-in's path, and whatever `--mpv` was given. Its
+environment adds the real yt-dlp's path and any `--api`. No credential, no token and no part of the
+store crosses. mpv opens the socket itself, from the flag `ypl play` passes it. `ypl play`
 reads it while mpv runs, which is how `cli/internal/cli/listen.go` records a play, and `ypl now`
 reads it when asked. The only thing any of them writes there is `get_property`,
 which is how mpv's IPC is asked anything and changes nothing about what is playing. A play is
 posted through the server door while mpv is still running, under an id made once, so a retry is
 stored once.
 
+The stand-in is this binary, linked as `mpv-yt-dlp` beside the socket, and handed to mpv's
+ytdl_hook as `ytdl_path`. This machine and the server often reach YouTube from one address, so mpv
+resolves no stream before the server's door has leased it a turn.
+`ypl play` takes the first stream's turn before mpv starts, and leaves it in a file that the first
+resolve removes. Each later resolve takes its own. The stand-in then runs the real yt-dlp with
+mpv's arguments. It passes over a yt-dlp that runs `ypl ytdlp`, because the server's address is
+the only one a stream that the server resolved plays at.
+
 In the server, only `api/ytdlp` starts a process, and anything that needs more of what yt-dlp
 knows extends that package rather than running the binary somewhere else. In the CLI there are
-four, `ypl auth login`, `ypl playlists edit`, `ypl play` and `ypl rate`, and each child gets the
-streams its interface needs. The browser launcher is given `os.DevNull`, because a pipe would keep
+five: `ypl auth login`, `ypl playlists edit`, `ypl play`, `ypl rate` and the stand-in. Each child
+gets the streams its interface needs. The browser launcher is given `os.DevNull`, because a pipe would keep
 the login blocked until the browser exits. The editor and mpv are given this process's own
 streams, because each draws an interface and takes keys, and a captured stream turns that
 interface into a string. fzf, which `ypl rate` picks a mix with, draws on the terminal itself, so
-its stdin carries the rows and its stdout the one chosen.
+its stdin carries the rows and its stdout the one chosen. The stand-in gives yt-dlp mpv's own
+streams, since mpv reads the stream's address from yt-dlp's stdout.
 
 The CLI is given no credential of the server's and no part of the store. What it holds is a token
 for one machine, revocable on its own without touching any other. A service running the CLI holds
@@ -76,9 +87,10 @@ therefore treated as untrusted input and given as little of the host as possible
   document, so nothing is written to disk and no media is fetched. A caption read writes the one
   track it picks, and an audio read the one file, each to a directory removed when the answer ends.
 - **One process at a time, through the door.** `api/ytdlp.Door` starts the next read at least
-  `Gap`, plus up to `Jitter` at random, after the last ended: a person's first, then a service's,
-  then enrichment's. Inside a read, the sleep arguments `paced()` passes pace yt-dlp's own
-  requests. One refusal of the address pauses every class for `RefusedPause`, and failures of
+  `YTDLP_GAP`, plus up to `YTDLP_JITTER` at random, after the last ended: a person's first, then
+  a service's, then enrichment's. Inside a read, the sleeps `YTDLP_SLEEPS` gives pace yt-dlp's own
+  requests, passed by `paced()`. A lease holds the door for `LeaseHold` while a desk's own yt-dlp
+  reads, and counts as neither a success nor a failure. One refusal of the address pauses every class for `RefusedPause`, and failures of
   `MaxFailuresInARow` different videos in a row pause it for `FailingPause`. The store keeps the
   pause, so a restart does not reopen the door. `Close` stops every read under way but the
   history's, because cutting that one short loses the cookies rotated during it.
@@ -95,6 +107,18 @@ If yt-dlp egressed something it should not during a video read, what it holds is
 server is reading and the address it reads from. A video read is given no credential, no cookie and
 no part of the store.
 
+A person's run, `POST /api/v1/ytdlp/runs`, hands yt-dlp a command line that the person wrote, so
+`api/ytdlp.ReadRunArguments` reads it as yt-dlp would before anything runs. It passes only the
+options `passedOptions` lists, each in its one long spelling. It refuses the rest, naming why:
+every sign-in, every option that runs or reads something on the server, an output template that
+leaves the run's directory, an abbreviation, and an input that is not YouTube's. yt-dlp is then
+handed `--ignore-config`, `--no-plugin-dirs` and `--use-extractors=youtube.*`, the door's sleeps
+or the person's where those are longer, and the inputs after `--`. The run writes in a directory
+of its own, removed once the answer is sent, and is given no credential, cookie or part of the
+store. Adding an option to `passedOptions` is a judgment that it reaches nothing on the server,
+and `TestEveryPassedOptionIsOneTheRealYtdlpTakesWithItsValue` holds the list to the installed
+yt-dlp's help.
+
 A watch-history read is the exception, and the only one. It is given the channel account's cookie
 jar, because the history exists only for a signed-in session. So a compromised yt-dlp could carry
 that session away. The jar is written to a mode-600 file in a directory removed when the read
@@ -110,7 +134,8 @@ backup of the store carries no usable session.
 
 The server needs yt-dlp only when it is configured to read videos. `ENRICH_PACE=off` is a
 supported configuration and starts without one. The server looks for yt-dlp at start whatever
-`ENRICH_PACE` says, and the history and video-read routes answer 503 when it found none.
+`ENRICH_PACE` says, and the history, video-read, run and lease routes answer 503 when it found
+none. `ypl play` reads that 503 from a lease as a server with no door, and plays without one.
 
 ## Classifying another program's prose is the fragile part
 

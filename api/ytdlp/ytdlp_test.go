@@ -77,6 +77,12 @@ func fake(mode string, args []string) int {
 		}
 		fmt.Println(strings.ReplaceAll(string(recording), "\n", " "))
 		return 0
+	case "run":
+		return run(args)
+	case "refused mid-run":
+		fmt.Fprintln(os.Stderr, "ERROR: [youtube] Wr1tt3nVid0: Sign in to confirm you're not a bot")
+		time.Sleep(30 * time.Second)
+		return 1
 	case "another":
 		fmt.Println(`{"id": "zzzzzzzzzzz", "title": "Another"}`)
 		return 0
@@ -107,7 +113,7 @@ func reader(t *testing.T, mode string) *Door {
 // pauses, with no gap between reads.
 func openDoor(t *testing.T, pauses Pauses) *Door {
 	t.Helper()
-	d, err := NewDoor(context.Background(), Binary{path: os.Args[0]}, pauses, slog.New(slog.DiscardHandler))
+	d, err := NewDoor(context.Background(), Binary{path: os.Args[0]}, DefaultPace, pauses, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("open the door: %v", err)
 	}
@@ -382,19 +388,30 @@ func TestTheRealYtdlpTakesEveryArgumentAReadPasses(t *testing.T) {
 	}
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.json")
+	passed, err := ReadRunArguments([]string{"--skip-download", "--write-auto-subs", "-o", "x.%(ext)s", "--", "-kbYeaEP-ME"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	reads := map[string][]string{
-		"enrichment": arguments("-kbYeaEP-ME"),
-		"captions":   infoArguments("-kbYeaEP-ME"),
-		"audio":      audioArguments(dir, "-kbYeaEP-ME", 1000),
-		"history":    historyArguments(filepath.Join(dir, "cookies.txt"), 5),
-		"track":      trackArguments(missing, dir, Track{Language: "en", Kind: Automatic}),
+		"enrichment": arguments(DefaultPace.Sleeps, "-kbYeaEP-ME"),
+		"captions":   infoArguments(DefaultPace.Sleeps, "-kbYeaEP-ME"),
+		"audio":      audioArguments(DefaultPace.Sleeps, dir, "-kbYeaEP-ME", 1000),
+		"history":    historyArguments(DefaultPace.Sleeps, filepath.Join(dir, "cookies.txt"), 5),
+		"track":      trackArguments(DefaultPace.Sleeps, missing, dir, Track{Language: "en", Kind: Automatic}),
+		"run":        passed.argv(DefaultPace.Sleeps, 1000),
 	}
 	for name, args := range reads {
 		t.Run(name, func(t *testing.T) {
 			refusal := "file:// URLs are disabled"
-			if name == "track" {
+			switch name {
+			case "track":
 				refusal = "missing.json"
-			} else {
+			case "run":
+				// A run reads with YouTube's extractors alone, none of which
+				// takes a file URL.
+				refusal = "No suitable extractor found"
+				args[len(args)-1] = "file:///dev/null"
+			default:
 				args[len(args)-1] = "file:///dev/null"
 			}
 			cmd := exec.CommandContext(t.Context(), path, args...)

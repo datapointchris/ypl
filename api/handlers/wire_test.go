@@ -87,6 +87,13 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		pinned(t, doc.name, doc.target, body)
 	}
 
+	// A lease of the door, which `ypl play` takes before each stream.
+	leased := f.do(http.MethodPost, "/api/v1/ytdlp/leases", "")
+	if leased.Code != http.StatusCreated {
+		t.Fatalf("a lease answered %d: %s", leased.Code, leased.Body)
+	}
+	pinned(t, "ytdlp-lease", "/api/v1/ytdlp/leases", leased.Body.Bytes())
+
 	// The slug a playlist is reached by. The CLI offers these on Tab and has to
 	// derive the same one from a title the server does, hyphens included, or it
 	// offers a reference the server answers with a 404. The titles are the

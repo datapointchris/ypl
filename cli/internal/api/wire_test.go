@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -90,6 +91,7 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 		{"history", func() any { return &[]HistoryEntry{} }},
 		{"transcript", func() any { return &Transcript{} }},
 		{"version", func() any { return &Version{} }},
+		{"ytdlp-lease", func() any { return &Lease{} }},
 		// The order's revision is a header rather than a field, so it is marked
 		// as no part of the body and this walk sees only what the document
 		// carries.
@@ -124,6 +126,22 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 	}
 	if bytes.Contains(sentOrder, []byte("revision")) {
 		t.Errorf("an edit sends %s, and the revision is only ever a header", sentOrder)
+	}
+}
+
+// A run's answer is read entry by entry, each expected by name in the order
+// the server writes them, so a renamed or moved entry fails every run.
+func TestARunsEntriesAreTheServers(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(wireDir, "ytdlp-run.json"))
+	if err != nil {
+		t.Fatalf("read a run's entries — run `go test ./handlers -update` in the api module: %v", err)
+	}
+	var entries []string
+	if err := json.Unmarshal(body, &entries); err != nil {
+		t.Fatalf("decode a run's entries: %v", err)
+	}
+	if len(entries) < 4 || !slices.Equal(entries[:3], []string{runStdout, runStderr, runExitCode}) || !strings.HasPrefix(entries[3], runFiles) {
+		t.Errorf("the server answers a run as %v, and the client reads %s, %s, %s, then %s<path>", entries, runStdout, runStderr, runExitCode, runFiles)
 	}
 }
 

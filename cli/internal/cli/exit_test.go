@@ -511,7 +511,7 @@ func TestEverySuggestedCommandExists(t *testing.T) {
 		"ypl plays add": true, "ypl plays delete": true, "ypl plays show": true,
 		"ypl server status": true, "ypl videos show": true, "ypl videos sorts": true,
 		"ypl rate": true, "ypl ratings delete": true, "ypl server cookies set": true,
-		"ypl transcript": true,
+		"ypl transcript": true, "ypl ytdlp": true,
 	}
 	grown := leaves(root())
 	for _, leaf := range grown {

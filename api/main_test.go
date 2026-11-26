@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -434,6 +435,40 @@ func TestAServiceTokenReachesItsScopesRoutesAndNoOther(t *testing.T) {
 				h.ServeHTTP(rec, req)
 				if reached := rec.Code != http.StatusForbidden; reached != (listing == scope) {
 					t.Errorf("a %s token at %s answered %d, want 403 only where %s lists no such route", scope, pattern, rec.Code, scope)
+				}
+			}
+		}
+	}
+}
+
+// A service token is refused a person's routes, a run of yt-dlp and a lease,
+// whatever scopes it holds, the person's own scope included.
+func TestAServiceTokenIsRefusedEveryPersonsRoute(t *testing.T) {
+	scopes := []string{}
+	for scope := range handlers.ServiceRoutes {
+		scopes = append(scopes, scope)
+	}
+	for scope := range handlers.PersonRoutes {
+		scopes = append(scopes, scope)
+	}
+	h := apiHandler(t, acceptOnly{"every": goapiauth.Identity{ClientID: "ypl-svc-every", Service: true, Scopes: scopes}})
+	for _, patterns := range handlers.PersonRoutes {
+		for _, pattern := range patterns {
+			method, path, _ := strings.Cut(pattern, " ")
+			req := httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(`{"args": ["--version"]}`))
+			req.Header.Set("Authorization", "Bearer every")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("a service token at %s answered %d, want 403", pattern, rec.Code)
+			}
+		}
+	}
+	for scope, patterns := range handlers.ServiceRoutes {
+		for _, pattern := range patterns {
+			for _, personal := range handlers.PersonRoutes {
+				if slices.Contains(personal, pattern) {
+					t.Errorf("%s lists %s, which is a person's alone", scope, pattern)
 				}
 			}
 		}

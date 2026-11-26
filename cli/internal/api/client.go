@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -121,6 +122,9 @@ type Refusal struct {
 	// read only for a refusal coded CodeUnknownField, and is "" where it could
 	// not be read.
 	ServerVersion string
+	// RetryAfter is when the server said to ask again, and 0 where it said
+	// nothing.
+	RetryAfter time.Duration
 }
 
 // CodeUnknownField is the server refusing a field of the body it was sent
@@ -262,6 +266,9 @@ const maxRefusalBody = 8 << 10
 // part a caller can always act on.
 func refusalFrom(resp *http.Response) *Refusal {
 	refusal := &Refusal{Status: resp.StatusCode}
+	if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && seconds > 0 {
+		refusal.RetryAfter = time.Duration(seconds) * time.Second
+	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefusalBody))
 	var envelope struct {
 		Message  string   `json:"message"`

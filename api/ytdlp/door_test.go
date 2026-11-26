@@ -230,7 +230,7 @@ func TestARefusalPausesEveryClassForADayAcrossARestart(t *testing.T) {
 	if len(pauses.recorded) != 1 || !pauses.recorded[0].Until.Equal(until) {
 		t.Fatalf("pauses recorded %+v, want the one until %v", pauses.recorded, until)
 	}
-	reopened, err := NewDoor(context.Background(), Binary{}, pauses, nil)
+	reopened, err := NewDoor(context.Background(), Binary{}, DefaultPace, pauses, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

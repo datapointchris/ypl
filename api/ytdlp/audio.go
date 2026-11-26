@@ -67,7 +67,7 @@ func (b Binary) audio(ctx context.Context, id string, maxBytes int64) (*Audio, e
 // larger than --max-filesize with no error, so a read that wrote nothing under
 // a bound found the audio too large.
 func (b Binary) fetchAudio(ctx context.Context, dir, id string, maxBytes int64) (*Audio, error) {
-	if _, err := b.run(ctx, dir, audioArguments(dir, id, maxBytes), refusal); err != nil {
+	if _, err := b.run(ctx, dir, audioArguments(b.sleeps, dir, id, maxBytes), refusal); err != nil {
 		return nil, err
 	}
 	written, err := filepath.Glob(filepath.Join(dir, "audio.*"))
@@ -93,8 +93,8 @@ func (b Binary) fetchAudio(ctx context.Context, dir, id string, maxBytes int64) 
 // best audio-only format, written whole to dir with no part file, and under
 // maxBytes where it is not 0. yt-dlp otherwise skips a fragment it cannot
 // fetch and exits 0 with a shorter file, so a missing fragment fails the read.
-func audioArguments(dir, id string, maxBytes int64) []string {
-	args := append(paced(),
+func audioArguments(sleeps Sleeps, dir, id string, maxBytes int64) []string {
+	args := append(paced(sleeps),
 		"--no-playlist",
 		"--no-part",
 		"--no-mtime",

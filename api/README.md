@@ -99,12 +99,17 @@ chapters nor comments, so these reads go through `yt-dlp`, signed in as nobody, 
 on `PATH`.
 
 Every `yt-dlp` read the server makes passes through one door in `api/ytdlp`, which runs one process
-at a time. The next read starts at least 8 seconds after the last one ended (the door's `Gap`), plus
-up to 8 more at random (its `Jitter`). A person's read goes first, then a service's read of captions
-or audio, then enrichment's. Reads of one kind go in the order they arrived. A person's or a
-service's read that waits 2 minutes for its turn answers 503 `youtube_reads_busy`, with a
-`Retry-After`. Inside one read, `yt-dlp` waits 2 seconds between requests, 5 before each subtitle,
-and 8 to 16 before each download, as `paced()` in `api/ytdlp` passes it.
+at a time. The next read starts at least `YTDLP_GAP` after the last one ended, 8 seconds when unset,
+plus up to `YTDLP_JITTER` more at random, also 8 seconds when unset. A person's read goes first,
+then a service's read of captions or audio, then enrichment's. Reads of one kind go in the order they
+arrived. A person's or a service's read that waits 2 minutes for its turn answers 503
+`youtube_reads_busy`, with a `Retry-After`.
+
+Inside one read, `yt-dlp` sleeps as `YTDLP_SLEEPS` says, written as `yt-dlp`'s own options:
+`--sleep-requests`, `--sleep-subtitles`, `--sleep-interval` and `--max-sleep-interval`, in seconds.
+Each one it leaves out keeps its default, which is 2 seconds between requests, 5 before each
+subtitle, and 8 to 16 before each download. The server refuses to start on a value it cannot read,
+and logs the gap, jitter and sleeps it uses.
 
 Enrichment keeps its own pace on top of the door's. Its reads come at least `ENRICH_PACE` apart, 90
 seconds when unset, and up to twice that at random, so they never arrive in a burst. The store keeps
@@ -181,6 +186,11 @@ reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire t
 | `ypl.transcripts.read` | `GET /api/v1/youtube/videos/{id}/captions`, `GET /api/v1/youtube/videos/{id}/transcript` |
 | `ypl.audio.read` | `GET /api/v1/youtube/videos/{id}/audio` |
 
+One scope belongs to a person alone. `ypl.ytdlp.run` reaches `POST /api/v1/ytdlp/runs` and
+`POST /api/v1/ytdlp/leases`, which `PersonRoutes` in `handlers/ytdlp_runs.go` lists. No service
+client is granted them, and a service token sent to either is refused with 403 and
+`outside_service_scope`.
+
 | Request | Answers with |
 | --- | --- |
 | `GET /api/v1/playlists` | Playlists by title, with how many items each holds and how many of their videos are unavailable or enriched, a page at a time |
@@ -211,6 +221,8 @@ reach. The list is `ServiceRoutes` in `api/handlers/handlers.go`, and the wire t
 | `GET /api/v1/youtube/videos/{id}/captions` | A video's details, chapters, and the segments of the caption track the read picks |
 | `GET /api/v1/youtube/videos/{id}/transcript` | The segments of the track in `lang`, `en` when absent, as one line of text |
 | `GET /api/v1/youtube/videos/{id}/audio` | The video's best audio as a file |
+| `POST /api/v1/ytdlp/runs` | One tar of what `yt-dlp` printed, the code it exited with and the files it wrote, from `{"args"}` |
+| `POST /api/v1/ytdlp/leases` | `{"held_until"}`, once the door has given a person's own read its turn |
 | `GET /api/v1/suggestions` | What to play next: never-played videos first, then the least recently played |
 | `GET /api/v1/sync/runs` | Sync runs newest first with their failures, a page at a time |
 | `GET /api/v1/status` | What the store holds, the latest run, the latest run that ended ok, the day's quota and its units by caller, each playlist waiting to be pushed, and any pause of the reads through `yt-dlp` |
@@ -320,6 +332,43 @@ whose `Host` is `PUBLIC_URL`'s host gets at most 100 MB, and longer audio answer
 `audio_too_large` before any of it is fetched. A request that reaches the server by any other name,
 such as a caller on the same network, gets the whole file. An audio read holds the door for as long
 as the download takes, so reads waiting behind it are the ones that turn busy.
+
+`POST /api/v1/ytdlp/runs` runs a person's own `yt-dlp` command line through the door, so a desk
+gets what `yt-dlp` would give it at the door's pace. The body's `args` are the arguments after
+`yt-dlp`. The server reads them as `yt-dlp` does, abbreviations aside, and passes only the options it
+lists in `passedOptions` in `api/ytdlp/run_arguments.go`. Every other argument answers 422
+`ytdlp_argument_refused`, with the argument as `field` and why in the message, and `yt-dlp` never
+runs. These are refused:
+
+- Every sign-in: `--cookies`, `--cookies-from-browser`, `--username`, `--password`, `--netrc`,
+  `--netrc-location`, `--netrc-cmd`, `--video-password`, `--ap-mso`, `--ap-username`,
+  `--ap-password` and `--client-certificate`. A run is signed in as nobody, as every video read is.
+- Everything that runs or reads something on the server: `--exec`, `--config-locations`,
+  `--plugin-dirs`, `--batch-file`, `--load-info-json`, `--downloader`, `--downloader-args`,
+  `--postprocessor-args`, `--ffmpeg-location`, `--cache-dir`, `--paths` and `--update`.
+- An output template that is absolute, starts with `~`, names a `$` variable, or holds `..`.
+- An abbreviated option, and an input that is not a YouTube address, a video id or a `ytsearch:`.
+
+`yt-dlp` is handed each option in its one long spelling, then `--ignore-config`,
+`--no-plugin-dirs` and `--use-extractors=youtube.*`, then the door's sleeps, then the inputs after
+`--`. Where the person asked for a longer sleep than the door's, theirs is kept. The run writes in a
+directory of its own, which is removed once the answer is sent. The answer is one
+`application/x-tar` holding `stdout`, `stderr`, `exit-code`, then each file under `files/`, as
+`testdata/wire/ytdlp-run.json` lists. A non-zero exit is still a 200, since the code is part of the
+answer. YouTube refusing the address stops the run at once, pauses the door as any read does, and
+answers 503 `youtube_reads_paused`. A run takes at most 2 hours, and holds the door for as long as
+it runs.
+
+Through `PUBLIC_URL`'s host, `yt-dlp` is handed `--max-filesize` of 100 MB, and an answer larger
+than that answers 422 `answer_too_large` rather than being sent. A request by any other name has no
+cap. A URL that a run prints, such as a stream's, is bound to the server's address, so it plays
+nowhere else.
+
+`POST /api/v1/ytdlp/leases` gives a desk's own `yt-dlp` a turn at the door without running it on the
+server. It waits as a person's read waits, answers 201 with when the turn ends, and holds the door
+for 15 seconds. A lease counts as neither a success nor a failure, since the read it stands for is
+made elsewhere. While the door's pause holds, it answers 503 `youtube_reads_paused` as a read does.
+`ypl play` takes one before mpv resolves each stream.
 
 A proxy in front of a public address drops a request whose answer has not begun within its read
 timeout. So a caption, transcript or audio read for a request through `PUBLIC_URL`'s host takes at

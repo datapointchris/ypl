@@ -156,7 +156,7 @@ type captionsWithText struct {
 // rather than reading the watch page again. The info and the track are written
 // to a directory removed when the read ends.
 func (b Binary) captions(ctx context.Context, id string, pick func(captionInfo) (Track, bool)) (captionsWithText, error) {
-	output, err := b.run(ctx, "", infoArguments(id), refusal)
+	output, err := b.run(ctx, "", infoArguments(b.sleeps, id), refusal)
 	if err != nil {
 		return captionsWithText{}, err
 	}
@@ -192,7 +192,7 @@ func (b Binary) captions(ctx context.Context, id string, pick func(captionInfo) 
 	if err := os.WriteFile(infoPath, output, 0o600); err != nil {
 		return captionsWithText{}, err
 	}
-	if _, err := b.run(ctx, dir, trackArguments(infoPath, dir, track), refusal); err != nil {
+	if _, err := b.run(ctx, dir, trackArguments(b.sleeps, infoPath, dir, track), refusal); err != nil {
 		return captionsWithText{}, err
 	}
 	written, err := filepath.Glob(filepath.Join(dir, "*."+track.Language+".json3"))
@@ -215,20 +215,20 @@ func (b Binary) captions(ctx context.Context, id string, pick func(captionInfo) 
 
 // infoArguments is what the read of a video's details and caption tracks
 // passes yt-dlp.
-func infoArguments(id string) []string {
-	return append(paced(), "--skip-download", "--no-playlist", "--dump-json", "--", watchURL(id))
+func infoArguments(sleeps Sleeps, id string) []string {
+	return append(paced(sleeps), "--skip-download", "--no-playlist", "--dump-json", "--", watchURL(id))
 }
 
 // trackArguments is what the read of one caption track passes yt-dlp: the info
 // written by the first read, the track by its language and kind, and json3, which
 // carries each event once rather than the rolling repeats of an automatic
 // track's VTT.
-func trackArguments(info, dir string, track Track) []string {
+func trackArguments(sleeps Sleeps, info, dir string, track Track) []string {
 	write := "--write-subs"
 	if track.Kind == Automatic {
 		write = "--write-auto-subs"
 	}
-	return append(paced(),
+	return append(paced(sleeps),
 		"--load-info-json", info,
 		"--skip-download",
 		write,

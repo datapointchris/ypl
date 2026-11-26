@@ -70,7 +70,7 @@ func (d *Door) History(ctx context.Context, jar string, entries int) ([]HistoryE
 		if err := os.WriteFile(path, []byte(jar), 0o600); err != nil {
 			return read{}, err
 		}
-		output, err := d.binary.run(ctx, dir, historyArguments(path, entries), historyRefusal)
+		output, err := d.binary.run(ctx, dir, historyArguments(d.binary.sleeps, path, entries), historyRefusal)
 		if err != nil {
 			return read{}, err
 		}
@@ -103,8 +103,8 @@ func (d *Door) History(ctx context.Context, jar string, entries int) ([]HistoryE
 // every read passes, no cache, and only the list of entries rather than each
 // video's page. --write-pages leaves the history page it read in the
 // working directory, which is where the resume points are.
-func historyArguments(cookies string, entries int) []string {
-	return append(paced(),
+func historyArguments(sleeps Sleeps, cookies string, entries int) []string {
+	return append(paced(sleeps),
 		"--no-cache-dir",
 		"--cookies", cookies,
 		"--write-pages",

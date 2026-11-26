@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"slices"
 	"sync"
 	"time"
@@ -40,10 +39,6 @@ func (c Class) String() string {
 }
 
 const (
-	// Gap is the least time between one read ending and the next starting.
-	// Each gap adds up to Jitter more at random, so reads keep no rhythm.
-	Gap    = 8 * time.Second
-	Jitter = 8 * time.Second
 	// RefusedPause is how long the door opens to nothing after YouTube refuses
 	// the address. YouTube's rate limit can outlast an hour, and a read sent
 	// into a refusal is what turns it into a block.
@@ -141,16 +136,19 @@ type Pauses interface {
 const recordLimit = 5 * time.Second
 
 // Door is the one way this server runs yt-dlp. It runs one process at a time,
-// and starts each read at least Gap, plus up to Jitter, after the last ended.
-// A refusal of the address, or failures in a row of MaxFailuresInARow
-// different subjects, pause it for every Class.
+// and starts each read at least its pace's Gap, plus up to its Jitter, after
+// the last ended. A refusal of the address, or failures in a row of
+// MaxFailuresInARow different subjects, pause it for every Class.
 type Door struct {
 	binary   Binary
+	pace     Pace
 	pauses   Pauses
 	log      *slog.Logger
 	now      func() time.Time
 	gap      func() time.Duration
 	mostWait time.Duration
+	// leaseHold is how long a lease holds the door, LeaseHold outside a test.
+	leaseHold time.Duration
 	// stopped is done once Close is called, which cuts short every read that
 	// does not outlive it.
 	stopped context.Context
@@ -198,12 +196,13 @@ type turn struct {
 	refused error
 }
 
-// NewDoor is a door running binary, taking up the latest pause pauses holds and
-// recording each new one there, and logging each pause to log. The first read
-// waits a gap, since the last read before a restart may have ended a moment
-// ago.
-func NewDoor(ctx context.Context, binary Binary, pauses Pauses, log *slog.Logger) (*Door, error) {
-	d := &Door{binary: binary, pauses: pauses, log: log, now: time.Now, gap: gap, mostWait: MostWait}
+// NewDoor is a door running binary at pace, taking up the latest pause pauses
+// holds and recording each new one there, and logging each pause to log. The
+// first read waits a gap, since the last read before a restart may have ended
+// a moment ago.
+func NewDoor(ctx context.Context, binary Binary, pace Pace, pauses Pauses, log *slog.Logger) (*Door, error) {
+	binary.sleeps = pace.Sleeps
+	d := &Door{binary: binary, pace: pace, pauses: pauses, log: log, now: time.Now, gap: pace.next, mostWait: MostWait, leaseHold: LeaseHold}
 	d.stopped, d.stop = context.WithCancel(context.Background())
 	d.nextStart = d.now().Add(d.gap())
 	latest, ok, err := pauses.LatestPause(ctx)
@@ -216,10 +215,8 @@ func NewDoor(ctx context.Context, binary Binary, pauses Pauses, log *slog.Logger
 	return d, nil
 }
 
-// gap is Gap and up to Jitter more at random.
-func gap() time.Duration {
-	return Gap + time.Duration(rand.Int64N(int64(Jitter)+1))
-}
+// Pace is how far apart the door starts reads, and the sleeps each passes.
+func (d *Door) Pace() Pace { return d.pace }
 
 // PausedUntil is the pause holding now, and false when none does.
 func (d *Door) PausedUntil() (Pause, bool) {
@@ -355,13 +352,14 @@ func (d *Door) leave(class Class, subject string, outcome error) (Pause, bool) {
 
 // counts is how outcome moves the failures in a row: -1 clears them, since
 // YouTube answered; 0 leaves them, since the read ended for its caller rather
-// than for YouTube; and 1 adds one.
+// than for YouTube, or ended saying nothing of YouTube's answer; and 1 adds
+// one.
 func counts(outcome error) int {
 	switch {
 	case outcome == nil, errors.Is(outcome, ErrUnreadable), errors.Is(outcome, ErrNotStarted),
 		errors.Is(outcome, ErrSignedOut), errors.Is(outcome, ErrTooLarge):
 		return -1
-	case errors.Is(outcome, errCallerLeft):
+	case errors.Is(outcome, errCallerLeft), errors.Is(outcome, errNoVerdict):
 		return 0
 	}
 	return 1
@@ -370,6 +368,11 @@ func counts(outcome error) int {
 // errCallerLeft is a read cut short because its caller's context ended, which
 // says nothing about YouTube.
 var errCallerLeft = errors.New("the caller stopped waiting for the read")
+
+// errNoVerdict is a turn at the door that says nothing of how YouTube
+// answered: a lease, whose read the desk makes itself, and a run yt-dlp
+// refused for its arguments before it asked YouTube anything.
+var errNoVerdict = errors.New("the turn says nothing of YouTube's answer")
 
 // pausedLocked is the refusal of a read while a pause holds, and nil when none
 // does.
