@@ -47,6 +47,7 @@ const (
 	CodePlayConflict          Code = "play_conflict"
 	CodeYouTubeSessionMissing Code = "youtube_session_missing"
 	CodeVideoNotStarted       Code = "video_not_started"
+	CodeDiskLow               Code = "disk_low"
 
 	// 410
 	CodePlayDeleted Code = "play_deleted"
@@ -80,7 +81,9 @@ const (
 	CodeTooManyTags         Code = "too_many_tags"
 	CodeInvalidCookieJar    Code = "invalid_cookie_jar"
 	CodeCookieJarSignedOut  Code = "cookie_jar_signed_out"
-	CodeAudioTooLarge       Code = "audio_too_large"
+	CodeArgumentRefused     Code = "ytdlp_argument_refused"
+	CodeAnswerTooLarge      Code = "answer_too_large"
+	CodeRunPastPublicBudget Code = "run_past_public_budget"
 
 	// 428
 	CodePreconditionRequired Code = "precondition_required"

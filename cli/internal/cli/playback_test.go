@@ -109,7 +109,8 @@ func answerAsMpv(connection net.Conn, properties map[string]any) {
 }
 
 // stubMpv puts a fake mpv first on PATH and returns the file it writes its
-// argument list to. exit is the status it ends with.
+// argument list to. exit is the status it ends with. A fake yt-dlp sits beside
+// it, since `ypl play` refuses to start without one.
 //
 // A stub rather than the real player, because what `ypl play` is
 // responsible for is the command line it builds — the socket flag, --no-video,
@@ -123,9 +124,15 @@ func stubMpv(t *testing.T, exit int) string {
 	if err := os.WriteFile(filepath.Join(dir, "mpv"), []byte(script), 0o700); err != nil {
 		t.Fatalf("write the stub: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "yt-dlp"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatalf("write the stub: %v", err)
+	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return argv
 }
+
+// leased is the server's answer to a lease, holding the door for a while.
+const leased = `{"id": "LEASE", "held_until": "2099-01-01T00:00:00Z"}`
 
 // playingVideo carries the matrix the tracklist can arrive in: two tracks the
 // store placed with an end, one it placed without, and one it could not place
@@ -542,7 +549,7 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 			{"position": 3, "video": {"id": "ccccccccccc", "title": "C", "channel_title": "One", "duration_seconds": 60, "is_unavailable": false}},
 			{"position": 4, "video": {"id": "ddddddddddd", "title": "D", "channel_title": "One", "duration_seconds": 60, "is_unavailable": true}},
 			{"position": 5, "video": {"id": "eeeeeeeeeee", "title": "E", "channel_title": "One", "duration_seconds": 60, "is_unavailable": false}}]}`
-	serve := serves(map[string]string{"/api/v1/playlists/Sunday Morning": held})
+	serve := serves(map[string]string{"/api/v1/playlists/Sunday Morning": held, "/api/v1/ytdlp/leases": leased})
 
 	f := newFixture(t, serve)
 	shortStateDir(t)
@@ -556,6 +563,8 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 		"--input-ipc-server=" + mpv.SocketPath(),
 		"--start=30",
 		"--no-video",
+		"--script-opts-append=ytdl_hook-ytdl_path=" + standInPath(),
+		"--script-opts-append=ytdl_hook-try_ytdl_first=yes",
 		"https://www.youtube.com/watch?v=aaaaaaaaaaa",
 		"https://www.youtube.com/watch?v=ccccccccccc",
 		"https://www.youtube.com/watch?v=eeeeeeeeeee",
@@ -624,8 +633,10 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	// ends the test binary here.
 	f = newFixture(t, serve)
 	still := t.TempDir()
-	if err := os.WriteFile(filepath.Join(still, "mpv"), []byte("#!/bin/sh\n/bin/sleep 1\n"), 0o700); err != nil {
-		t.Fatalf("write the stub: %v", err)
+	for name, script := range map[string]string{"mpv": "#!/bin/sh\n/bin/sleep 1\n", "yt-dlp": "#!/bin/sh\n"} {
+		if err := os.WriteFile(filepath.Join(still, name), []byte(script), 0o700); err != nil {
+			t.Fatalf("write the stub: %v", err)
+		}
 	}
 	t.Setenv("PATH", still+string(os.PathListSeparator)+os.Getenv("PATH"))
 	go func() {
@@ -637,10 +648,14 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	}
 
 	// With no playlist the library plays in the order the server draws it,
-	// asked for as much as one draw holds.
-	f = newFixture(t, serves(map[string]string{"/api/v1/suggestions": `[
+	// asked for as much as one draw holds. This server is older than the
+	// lease route, which answers 404, so it has no door and the draw plays
+	// without a lease.
+	f = newFixture(t, serves(map[string]string{
+		"/api/v1/suggestions": `[
 		{"id": "ccccccccccc", "title": "C", "channel_title": "One", "duration_seconds": 60, "play_count": 0, "last_played_ts": null},
-		{"id": "aaaaaaaaaaa", "title": "A", "channel_title": "One", "duration_seconds": 60, "play_count": 1, "last_played_ts": "2026-01-01T00:00:00Z"}]`}))
+		{"id": "aaaaaaaaaaa", "title": "A", "channel_title": "One", "duration_seconds": 60, "play_count": 1, "last_played_ts": "2026-01-01T00:00:00Z"}]`,
+	}))
 	argv = stubMpv(t, 0)
 	if got := f.run("play"); got.code != 0 {
 		t.Fatalf("bare, exited %d: %s%s", got.code, got.out, got.err)
@@ -652,7 +667,7 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	}) {
 		t.Errorf("bare played %v, want the draw in the server's order", played)
 	}
-	if asked := f.lastAsked().Query().Get("limit"); asked != strconv.Itoa(api.MaxSuggestions) {
+	if asked := f.asked[0].Query().Get("limit"); f.asked[0].Path != "/api/v1/suggestions" || asked != strconv.Itoa(api.MaxSuggestions) {
 		t.Errorf("drew %s, want as much as one draw holds", asked)
 	}
 }
@@ -665,4 +680,132 @@ func argvOf(t *testing.T, path string) []string {
 		t.Fatalf("the stub wrote no arguments: %v", err)
 	}
 	return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+}
+
+// The first stream's turn is taken before mpv starts. A paused door is waited
+// out rather than refused, and the wait is said once. mpv is handed the
+// stand-in, which names the real yt-dlp in its environment and finds the
+// lease left for the first stream.
+func TestPlayTakesALeaseBeforeMpvStartsAndWaitsOutThePause(t *testing.T) {
+	dir := t.TempDir()
+	ran := filepath.Join(dir, "ran")
+	var leases atomic.Int32
+	playerRanFirst := false
+	draw := serves(map[string]string{"/api/v1/suggestions": `[{"id": "ccccccccccc", "title": "C",
+		"channel_title": "One", "duration_seconds": 60, "play_count": 0, "last_played_ts": null}]`})
+	f := newFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/ytdlp/leases" {
+			draw(w, r)
+			return
+		}
+		if _, err := os.Stat(ran); err == nil {
+			playerRanFirst = true
+		}
+		if leases.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			refuses(http.StatusServiceUnavailable, "youtube_reads_paused",
+				"the server makes no read of YouTube until 2099-01-01T00:00:00Z, after refused reads")(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(leased))
+	})
+	shortStateDir(t)
+	player := "#!/bin/sh\nprintf '%s\\n' \"$@\" \"$YPL_MPV_YTDLP\" > " + ran + "\ncat " + handedLeasePath() + " >> " + ran + "\n"
+	for name, script := range map[string]string{"mpv": player, "yt-dlp": "#!/bin/sh\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got := f.run("play")
+	if got.code != 0 {
+		t.Fatalf("exited %d: %s", got.code, got.err)
+	}
+	if leases.Load() != 2 || playerRanFirst {
+		t.Errorf("asked for %d leases, mpv first: %v; want the pause waited out before mpv started", leases.Load(), playerRanFirst)
+	}
+	if strings.Count(got.err, "2099-01-01") != 1 {
+		t.Errorf("said %q, want the wait said once with when it ends", got.err)
+	}
+	handed := argvOf(t, ran)
+	want := []string{
+		"--input-ipc-server=" + mpv.SocketPath(), "--script-opts-append=ytdl_hook-ytdl_path=" + standInPath(),
+		"--script-opts-append=ytdl_hook-try_ytdl_first=yes",
+		"https://www.youtube.com/watch?v=ccccccccccc", filepath.Join(dir, "yt-dlp"), `{"id":"LEASE","held_until":"2099-01-01T00:00:00Z"}`,
+	}
+	if !slices.Equal(handed, want) {
+		t.Errorf("mpv was started with %q,\nwant %q", handed, want)
+	}
+	if _, err := os.Stat(handedLeasePath()); err == nil {
+		t.Error("the lease for the first stream outlived the playback")
+	}
+}
+
+// mpv resolves each stream through the stand-in. The first resolve uses the
+// lease `ypl play` left it, and each one after takes its own turn. Then the
+// real yt-dlp runs with mpv's arguments, and the stand-in exits as it exits.
+// A resolve that failed is told to the door against its lease, so a refusal of
+// the address that the desk met pauses the server's reads too.
+func TestTheStandInTakesATurnForEachStreamAfterTheFirst(t *testing.T) {
+	f := newFixture(t, answers(map[string]answer{
+		"POST /api/v1/ytdlp/leases":              {status: http.StatusCreated, body: leased},
+		"PUT /api/v1/ytdlp/leases/LEASE/outcome": {status: http.StatusNoContent},
+	}))
+	shortStateDir(t)
+	dir := t.TempDir()
+	argv := filepath.Join(dir, "argv")
+	ytdlp := filepath.Join(dir, "yt-dlp")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argv + "\necho '{\"url\": \"stream\"}'\necho 'ERROR: a refusal' >&2\nexit 3\n"
+	if err := os.WriteFile(ytdlp, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(realYtdlpEnv, ytdlp)
+	if _, err := streamResolver(api.Lease{ID: "LEASE", HeldUntil: time.Now().Add(time.Minute)}, ytdlp); err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := []string{"--no-warnings", "-J", "--", "https://www.youtube.com/watch?v=ccccccccccc"}
+	for resolves, leasesAfter := range []int{0, 1} {
+		var out, errOut bytes.Buffer
+		code := f.app.standIn(context.Background(), resolve, &out, &errOut)
+		if code != 3 || out.String() != "{\"url\": \"stream\"}\n" {
+			t.Fatalf("the stand-in exited %d printing %q (%s), want yt-dlp's 3 and its JSON", code, out.String(), errOut.String())
+		}
+		var leases, outcomes []request
+		for _, write := range f.writes() {
+			if write.Method == http.MethodPost {
+				leases = append(leases, write)
+			} else {
+				outcomes = append(outcomes, write)
+			}
+		}
+		if len(leases) != leasesAfter || len(outcomes) != resolves+1 {
+			t.Errorf("after the resolve, %d leases were taken and %d outcomes told, want %d and %d", len(leases), len(outcomes), leasesAfter, resolves+1)
+		}
+		if told := outcomes[len(outcomes)-1].Body; !strings.Contains(told, `"exit_code":3`) || !strings.Contains(told, "a refusal") {
+			t.Errorf("the door was told %s, want yt-dlp's 3 and what it wrote to stderr", told)
+		}
+		if handed := argvOf(t, argv); !slices.Equal(handed, resolve) {
+			t.Errorf("yt-dlp was handed %q, want mpv's %q", handed, resolve)
+		}
+	}
+}
+
+// While the server restarts, a resolve goes ahead without a turn, as every
+// resolve did before the door, rather than fail each video until it is back.
+func TestTheStandInResolvesWithoutATurnWhileTheServerRestarts(t *testing.T) {
+	f := newFixture(t, refuses(http.StatusServiceUnavailable, "shutting_down", "the server is shutting down"))
+	shortStateDir(t)
+	ytdlp := filepath.Join(t.TempDir(), "yt-dlp")
+	if err := os.WriteFile(ytdlp, []byte("#!/bin/sh\necho '{\"url\": \"stream\"}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(realYtdlpEnv, ytdlp)
+	var out, errOut bytes.Buffer
+	code := f.app.standIn(context.Background(), []string{"-J", "--", "https://www.youtube.com/watch?v=ccccccccccc"}, &out, &errOut)
+	if code != 0 || out.String() != "{\"url\": \"stream\"}\n" {
+		t.Fatalf("the stand-in exited %d printing %q (%s), want the resolve made", code, out.String(), errOut.String())
+	}
 }

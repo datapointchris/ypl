@@ -30,7 +30,12 @@ func (a *app) playCommand() *cobra.Command {
 		Long: "A playlist plays in its order, skipping videos YouTube will not serve. With no\n" +
 			fmt.Sprintf("playlist, up to %d videos play: never-played first, then the least recently\n", api.MaxSuggestions) +
 			fmt.Sprintf("heard. A video counts as played after %d minutes, or half its length if that\n", int(heardAfter.Minutes())) +
-			"is shorter.",
+			"is shorter.\n\n" +
+			"Each video is streamed by the yt-dlp on this machine, once the server's door\n" +
+			"gives it a turn, so its reads and the server's own never come close together.\n" +
+			"While the door is paused, playback waits for it to open before it starts, and\n" +
+			"stops where the pause begins after it started. Where the server cannot be\n" +
+			"reached, videos play without a turn.",
 		Example: "  ypl play sunday-morning             the whole playlist, in its order\n" +
 			"  ypl play                            what you have heard least lately\n" +
 			"  ypl play sunday-morning --audio     no video window\n" +
@@ -62,6 +67,10 @@ func (a *app) playCommand() *cobra.Command {
 			if err := mpv.Available(); err != nil {
 				return reported(err)
 			}
+			ytdlp, err := realYtdlp()
+			if err != nil {
+				return reported(err)
+			}
 			client, err := a.client(cmd.Context())
 			if err != nil {
 				return reported(err)
@@ -75,6 +84,22 @@ func (a *app) playCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			// The first stream's turn is taken here rather than by mpv, so a
+			// wait is said on the terminal before mpv draws on it.
+			lease, err := leaseTheDoor(cmd.Context(), client, true, func(waiting string) { nothing(cmd, waiting) },
+				func(err error) {
+					nothing(cmd, fmt.Sprintf("Playing without a turn at the server's door: %v.", reported(err)))
+				})
+			if err != nil {
+				return reported(err)
+			}
+			resolver, err := streamResolver(lease, ytdlp)
+			if err != nil {
+				return reported(err)
+			}
+			_ = os.Remove(stoppedPath())
+			defer func() { _ = os.Remove(handedLeasePath()) }()
 
 			arguments := append(mpv.Arguments{}, extra...)
 			if audio {
@@ -112,9 +137,14 @@ func (a *app) playCommand() *cobra.Command {
 			} else {
 				result <- delivered{}
 			}
-			outcome, err := mpv.Play(cmd.Context(), socket, arguments, urls, func(pid int) { player.Store(int64(pid)) })
+			outcome, err := mpv.Play(cmd.Context(), socket, arguments, urls, resolver, func(pid int) { player.Store(int64(pid)) })
 			stopRecording()
 			reportPlays(cmd, <-result)
+			if why, read := os.ReadFile(stoppedPath()); read == nil {
+				_ = os.Remove(stoppedPath())
+				nothing(cmd, fmt.Sprintf("Playback stopped: %s.", strings.TrimSpace(string(why))))
+				return exitCode(1)
+			}
 			if err != nil {
 				return reported(err)
 			}

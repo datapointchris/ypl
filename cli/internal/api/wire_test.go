@@ -3,10 +3,15 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -90,6 +95,7 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 		{"history", func() any { return &[]HistoryEntry{} }},
 		{"transcript", func() any { return &Transcript{} }},
 		{"version", func() any { return &Version{} }},
+		{"ytdlp-lease", func() any { return &Lease{} }},
 		// The order's revision is a header rather than a field, so it is marked
 		// as no part of the body and this walk sees only what the document
 		// carries.
@@ -125,6 +131,84 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 	if bytes.Contains(sentOrder, []byte("revision")) {
 		t.Errorf("an edit sends %s, and the revision is only ever a header", sentOrder)
 	}
+}
+
+// A run's answer is read entry by entry, each expected by name in the order
+// the server writes them, so a renamed or moved entry fails every run.
+func TestARunsEntriesAreTheServers(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(wireDir, "ytdlp-run.json"))
+	if err != nil {
+		t.Fatalf("read a run's entries — run `go test ./handlers -update` in the api module: %v", err)
+	}
+	var entries []string
+	if err := json.Unmarshal(body, &entries); err != nil {
+		t.Fatalf("decode a run's entries: %v", err)
+	}
+	if len(entries) < 5 || !slices.Equal(entries[:3], []string{runStdout, runStderr, runExitCode}) ||
+		!strings.HasPrefix(entries[3], runFiles) || entries[len(entries)-1] != runEnd {
+		t.Errorf("the server answers a run as %v, and the client reads %s, %s, %s, %s<path> for each file, then %s",
+			entries, runStdout, runStderr, runExitCode, runFiles, runEnd)
+	}
+}
+
+// Every refusal code this client branches on is one the server answers with,
+// so a code the server renames fails here rather than turning a wait into a
+// failure.
+func TestTheRefusalCodesAreTheServers(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(wireDir, "refusal-codes.json"))
+	if err != nil {
+		t.Fatalf("read the server's refusal codes — run `go test ./handlers -update` in the api module: %v", err)
+	}
+	var served []string
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode the refusal codes: %v", err)
+	}
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := 0
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			spec, ok := node.(*ast.ValueSpec)
+			if !ok {
+				return true
+			}
+			for i, name := range spec.Names {
+				literal, ok := valueAt(spec, i).(*ast.BasicLit)
+				if !strings.HasPrefix(name.Name, "Code") || !ok || literal.Kind != token.STRING {
+					continue
+				}
+				code, err := strconv.Unquote(literal.Value)
+				if err != nil {
+					t.Fatalf("%s is %s: %v", name.Name, literal.Value, err)
+				}
+				held++
+				if !slices.Contains(served, code) {
+					t.Errorf("%s is %q, which the server does not answer with", name.Name, code)
+				}
+			}
+			return true
+		})
+	}
+	if held == 0 {
+		t.Fatal("found no Code constant in this package")
+	}
+}
+
+// valueAt is the value spec gives its ith name, and nil where it gives none.
+func valueAt(spec *ast.ValueSpec, i int) ast.Expr {
+	if i < len(spec.Values) {
+		return spec.Values[i]
+	}
+	return nil
 }
 
 func TestTheLanguageShapeIsTheServers(t *testing.T) {

@@ -65,9 +65,11 @@ type Video struct {
 	CommentsCapped  bool
 }
 
-// Binary is the yt-dlp binary the door runs.
+// Binary is the yt-dlp binary the door runs. The door sets its sleeps from its
+// pace, and every read passes them to yt-dlp.
 type Binary struct {
-	path string
+	path   string
+	sleeps Sleeps
 }
 
 // Find is the yt-dlp binary name, found on PATH when it holds no separator.
@@ -113,7 +115,7 @@ func (d *Door) Video(ctx context.Context, id string) (Video, error) {
 		return Video{}, fmt.Errorf("read video %q: not a YouTube video id", id)
 	}
 	video, err := through(ctx, d, readTerms{class: Enrichment, subject: id, limit: videoLimit}, func(ctx context.Context) (Video, error) {
-		output, err := d.binary.run(ctx, "", arguments(id), refusal)
+		output, err := d.binary.run(ctx, "", arguments(d.binary.sleeps, id), refusal)
 		if err != nil {
 			return Video{}, err
 		}
@@ -129,30 +131,14 @@ func (d *Door) Video(ctx context.Context, id string) (Video, error) {
 	return video, nil
 }
 
-// paced is what every read passes yt-dlp ahead of what it reads. It reads no
-// config file and loads no plugin, which are separate settings and either of
-// which would let the host change what a read does. The sleeps pace the
-// requests inside one read, which the door's gap does not reach: 2 seconds
-// between requests, 5 before each subtitle, and 8 to 16 before each download.
-func paced() []string {
-	return []string{
-		"--ignore-config",
-		"--no-plugin-dirs",
-		"--sleep-requests", "2",
-		"--sleep-subtitles", "5",
-		"--sleep-interval", "8",
-		"--max-sleep-interval", "16",
-	}
-}
-
 // watchURL is the address of the video id that a read hands yt-dlp.
 func watchURL(id string) string {
 	return "https://www.youtube.com/watch?v=" + id
 }
 
 // arguments is what a read of the video id for enrichment passes yt-dlp.
-func arguments(id string) []string {
-	return append(paced(),
+func arguments(sleeps Sleeps, id string) []string {
+	return append(paced(sleeps),
 		"--skip-download",
 		"--no-playlist",
 		"--write-comments",

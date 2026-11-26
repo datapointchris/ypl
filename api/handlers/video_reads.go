@@ -21,30 +21,38 @@ import (
 	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
-// VideoReader reads a video through the server's one yt-dlp door, as
-// *ytdlp.Door does.
+// VideoReader reads YouTube through the server's one yt-dlp door, as
+// *ytdlp.Door does: a video's captions, transcript and audio, a person's own
+// run of yt-dlp, and a lease for a read that a desk makes itself.
 type VideoReader interface {
 	Captions(ctx context.Context, class ytdlp.Class, id string) (ytdlp.Captions, error)
 	Transcript(ctx context.Context, class ytdlp.Class, id, lang string) (ytdlp.Transcript, error)
 	Audio(ctx context.Context, class ytdlp.Class, id string, maxBytes int64) (*ytdlp.Audio, error)
+	Run(ctx context.Context, class ytdlp.Class, args ytdlp.RunArguments, maxBytes int64) (*ytdlp.Run, error)
+	Lease(ctx context.Context, class ytdlp.Class) (ytdlp.Lease, error)
+	EndLease(id string, exitCode int, stderr string)
 	PausedUntil() (ytdlp.Pause, bool)
+	Pace() ytdlp.Pace
 }
 
 // videoReads is the door the caption, transcript and audio routes read
 // through, the host a request names when it reaches the server through its
-// public address, and how long a read for such a request may take.
+// public address, how long a read for such a request may take, and the most a
+// file read answers it with.
 type videoReads struct {
 	door       VideoReader
 	publicHost string
 	budget     time.Duration
+	maxPublic  int64
 }
 
 // The limits of the reverse proxy in front of PUBLIC_URL, which a request
 // through the public address meets.
 const (
-	// maxPublicAudio is the most audio the audio route sends to such a request:
-	// the largest answer the proxy passes, as Cloudflare's does by default.
-	maxPublicAudio = 100_000_000
+	// maxPublicAnswer is the most a file read sends to such a request, the
+	// audio route's file and a run's streams and files alike: the largest
+	// answer the proxy passes, as Cloudflare's does by default.
+	maxPublicAnswer = 100_000_000
 	// publicReadBudget is the longest a caption, transcript or audio read
 	// takes for such a request, its wait at the door included. The proxy
 	// drops a request whose answer has not begun within its read timeout,
@@ -58,16 +66,23 @@ var errPastPublicBudget = errors.New("the read ran past the time a request throu
 
 // ReadVideosWith sets the door the caption, transcript and audio routes read
 // through. publicHost is the host of the server's public address, such as
-// ypl.example.com. A request naming it gets at most maxPublicAudio of audio,
+// ypl.example.com. A request naming it gets at most maxPublicAnswer of audio,
 // and a read for it ends at publicReadBudget. Without a door those routes
 // answer 503.
 func (h *Handlers) ReadVideosWith(door VideoReader, publicHost string) {
-	h.videos = &videoReads{door: door, publicHost: strings.ToLower(publicHost), budget: publicReadBudget}
+	h.videos = &videoReads{door: door, publicHost: strings.ToLower(publicHost), budget: publicReadBudget, maxPublic: maxPublicAnswer}
 }
 
 // public is whether r reached the server through its public address.
 func (v *videoReads) public(r *http.Request) bool {
 	return v.publicHost != "" && requestHost(r) == v.publicHost
+}
+
+// turnAfter is the longest gap the door leaves after a read, which is when to
+// ask again for a turn that did not come.
+func (v *videoReads) turnAfter() time.Duration {
+	pace := v.door.Pace()
+	return pace.Gap + pace.Jitter
 }
 
 // readContext is what a read for r runs on: r's context, ended at the budget
@@ -185,7 +200,7 @@ func (h *Handlers) showTranscript(w http.ResponseWriter, r *http.Request) {
 
 // streamAudio answers the video's best audio, from a file removed once the
 // answer is sent. A request that reached the server through its public
-// address gets at most maxPublicAudio bytes, and audio larger than that is
+// address gets at most maxPublicAnswer bytes, and audio larger than that is
 // refused before any of it is fetched.
 func (h *Handlers) streamAudio(w http.ResponseWriter, r *http.Request) {
 	id, ok := h.videoToRead(w, r)
@@ -194,7 +209,7 @@ func (h *Handlers) streamAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	var most int64
 	if h.videos.public(r) {
-		most = maxPublicAudio
+		most = h.videos.maxPublic
 	}
 	ctx, cancel := h.videos.readContext(r)
 	defer cancel()
@@ -274,7 +289,7 @@ func (h *Handlers) refuseVideoRead(ctx context.Context, w http.ResponseWriter, r
 		return false
 	case h.refuseAtTheDoor(w, r, err):
 	case errors.Is(context.Cause(ctx), errPastPublicBudget):
-		retryAfter(w, ytdlp.Gap+ytdlp.Jitter)
+		retryAfter(w, h.videos.turnAfter())
 		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsBusy,
 			"the read did not finish within the %v a request through the public address may take; send it again, or ask the server's own address", h.videos.budget)
 	case errors.Is(err, ytdlp.ErrNotStarted):
@@ -282,8 +297,8 @@ func (h *Handlers) refuseVideoRead(ctx context.Context, w http.ResponseWriter, r
 	case errors.Is(err, ytdlp.ErrNoCaptions):
 		wire.Refuse(w, http.StatusNotFound, wire.CodeNoCaptions, "the video has no caption track in that language")
 	case errors.Is(err, ytdlp.ErrTooLarge):
-		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeAudioTooLarge,
-			"the video's audio is larger than %d bytes, the most this server sends through its public address; ask its own address instead", maxPublicAudio)
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeAnswerTooLarge,
+			"the video's audio is larger than %d bytes, the most this server sends through its public address; ask its own address instead", h.videos.maxPublic)
 	case errors.Is(err, ytdlp.ErrUnreadable):
 		wire.RefuseVideos(w, http.StatusUnprocessableEntity, wire.CodeVideoUnavailable, []string{r.PathValue("id")}, "YouTube lets no signed-out read reach this video")
 	case r.Context().Err() != nil:
@@ -301,12 +316,16 @@ func (h *Handlers) refuseVideoRead(ctx context.Context, w http.ResponseWriter, r
 func (h *Handlers) refuseAtTheDoor(w http.ResponseWriter, r *http.Request, err error) bool {
 	pause, paused := ytdlp.PauseOf(err)
 	switch {
+	case paused && pause.Cause == ytdlp.PausedRunsFailing:
+		retryAfter(w, pause.Until.Sub(h.now()))
+		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsPaused,
+			"the server runs no one's yt-dlp until %s, after runs failed in a row; its own reads go on", store.Timestamp(pause.Until))
 	case paused:
 		retryAfter(w, pause.Until.Sub(h.now()))
 		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsPaused,
 			"the server makes no read of YouTube until %s, after %s reads", store.Timestamp(pause.Until), pause.Cause)
 	case errors.Is(err, ytdlp.ErrBusy):
-		retryAfter(w, ytdlp.Gap+ytdlp.Jitter)
+		retryAfter(w, h.videos.turnAfter())
 		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsBusy, "the server's yt-dlp stayed busy with other reads; send the request again")
 	case errors.Is(err, ytdlp.ErrClosed):
 		h.refuseAndLog(w, r, slog.LevelInfo, http.StatusServiceUnavailable, wire.CodeShuttingDown, err,

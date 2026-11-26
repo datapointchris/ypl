@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/datapointchris/goclilogin"
@@ -67,7 +68,13 @@ func splitReadingFromChanging(cmd *cobra.Command) {
 
 // NewRootCommand returns the ypl command tree.
 func NewRootCommand() *cobra.Command {
-	return newRootCommand(&app{client: newAPIClient, tokens: goclilogin.NewTokenStore, terminal: isTerminal, width: widthOf})
+	return newRootCommand(binaryApp())
+}
+
+// binaryApp is the app the binary runs with: the configured server, this
+// machine's keychain, and its own terminal.
+func binaryApp() *app {
+	return &app{client: newAPIClient, tokens: goclilogin.NewTokenStore, terminal: isTerminal, width: widthOf}
 }
 
 func newRootCommand(a *app) *cobra.Command {
@@ -133,6 +140,7 @@ func newRootCommand(a *app) *cobra.Command {
 		withAPIFlag(a.playlistsCommand()),
 		withAPIFlag(a.videosCommand()),
 		withAPIFlag(a.transcriptCommand()),
+		withAPIFlag(a.ytdlpCommand()),
 		withAPIFlag(a.playsCommand()),
 		withAPIFlag(a.rateCommand()),
 		withAPIFlag(a.ratingsCommand()),
@@ -201,8 +209,12 @@ func dashedVideoID(err error) (string, bool) {
 }
 
 // Execute runs the command tree and returns the process exit code, writing
-// anything that failed to stderr.
+// anything that failed to stderr. Started under the stand-in's name, it is the
+// stand-in instead, and takes no update check.
 func Execute() int {
+	if filepath.Base(os.Args[0]) == standInName {
+		return binaryApp().standIn(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	}
 	err := executeTree(context.Background(), NewRootCommand(), AutoUpdateConfig())
 	report(os.Stderr, err)
 	return exitCodeFor(err)

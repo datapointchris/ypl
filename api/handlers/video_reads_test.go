@@ -56,6 +56,21 @@ func (f *fakeDoor) PausedUntil() (ytdlp.Pause, bool) {
 	return f.pause, !f.pause.Until.IsZero()
 }
 
+func (f *fakeDoor) Run(_ context.Context, class ytdlp.Class, _ ytdlp.RunArguments, _ int64) (*ytdlp.Run, error) {
+	f.classes = append(f.classes, class)
+	return nil, f.err
+}
+
+// Lease is held for LeaseHold from arrival.
+func (f *fakeDoor) Lease(_ context.Context, class ytdlp.Class) (ytdlp.Lease, error) {
+	f.classes = append(f.classes, class)
+	return ytdlp.Lease{ID: "LEASE", HeldUntil: arrival.Add(ytdlp.LeaseHold)}, f.err
+}
+
+func (f *fakeDoor) EndLease(string, int, string) {}
+
+func (f *fakeDoor) Pace() ytdlp.Pace { return ytdlp.DefaultPace }
+
 // While the door's pause holds, a person's read and a service's are each
 // answered 503 with a Retry-After of when the pause ends.
 func TestEveryClassIsTurnedAwayWithARetryAfterWhileTheDoorIsPaused(t *testing.T) {
@@ -99,8 +114,8 @@ func TestAudioIsCappedOnlyThroughThePublicAddress(t *testing.T) {
 			t.Fatalf("audio through %s answered %d %q as %q, want the file as audio/webm", host, rec.Code, rec.Body, rec.Header().Get("Content-Type"))
 		}
 	}
-	if len(door.most) != 2 || door.most[0] != 0 || door.most[1] != maxPublicAudio {
-		t.Fatalf("the reads allowed %v bytes, want no bound and then %d", door.most, maxPublicAudio)
+	if len(door.most) != 2 || door.most[0] != 0 || door.most[1] != maxPublicAnswer {
+		t.Fatalf("the reads allowed %v bytes, want no bound and then %d", door.most, maxPublicAnswer)
 	}
 }
 

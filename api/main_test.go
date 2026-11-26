@@ -440,6 +440,26 @@ func TestAServiceTokenReachesItsScopesRoutesAndNoOther(t *testing.T) {
 	}
 }
 
+// A service token is refused a run of yt-dlp, a lease and a lease's outcome,
+// whatever scopes it holds, since no service scope lists them.
+func TestAServiceTokenIsRefusedEveryPersonsRoute(t *testing.T) {
+	scopes := []string{}
+	for scope := range handlers.ServiceRoutes {
+		scopes = append(scopes, scope)
+	}
+	h := apiHandler(t, acceptOnly{"every": goapiauth.Identity{ClientID: "ypl-svc-every", Service: true, Scopes: scopes}})
+	for _, pattern := range []string{"POST /api/v1/ytdlp/runs", "POST /api/v1/ytdlp/leases", "PUT /api/v1/ytdlp/leases/a/outcome"} {
+		method, path, _ := strings.Cut(pattern, " ")
+		req := httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(`{"args": ["--version"]}`))
+		req.Header.Set("Authorization", "Bearer every")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("a service token at %s answered %d, want 403", pattern, rec.Code)
+		}
+	}
+}
+
 // A pattern in handlers.ServiceRoutes that no route registers matches nothing,
 // so the scope it was written for reaches nothing and every call answers 403.
 func TestEveryServiceRouteIsARegisteredRoute(t *testing.T) {

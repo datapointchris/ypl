@@ -10,7 +10,11 @@
 //
 // Every read it makes with the yt-dlp binary YTDLP_PATH names (yt-dlp on PATH
 // when unset) waits at one door, which runs one at a time with a gap between
-// them. Beside the sync it reads tracklists through the door, at least
+// them: YTDLP_GAP, 8s when unset, and up to YTDLP_JITTER more at random, 8s
+// when unset. YTDLP_SLEEPS sets yt-dlp's own sleeps inside each read, written
+// as its options, and each it leaves out keeps ytdlp.DefaultPace's. The door
+// also runs a person's own yt-dlp, and leases its turn to a read a person's
+// desk makes. Beside the sync it reads tracklists through the door, at least
 // ENRICH_PACE apart (90s when unset) and up to twice that at random.
 // ENRICH_PACE=off reads no tracklist, and reading none needs no yt-dlp. The
 // door also serves a video's captions, transcript and audio when asked, and
@@ -28,7 +32,7 @@
 // 9728 metadata naming that address and OIDC_ISSUER without a token, which is
 // how `ypl auth login <url>` finds the provider. A request naming PUBLIC_URL's
 // host meets the limits of the proxy in front of it: an audio answer is capped
-// at handlers.maxPublicAudio, and a read ends at handlers.publicReadBudget.
+// at handlers.maxPublicAnswer, and a read ends at handlers.publicReadBudget.
 //
 // With OTEL_EXPORTER_OTLP_ENDPOINT set, it exports a span for each request
 // over OTLP/HTTP, as a child of the traceparent the request carries, with the
@@ -128,6 +132,10 @@ func start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	pace, err := doorPace()
+	if err != nil {
+		return err
+	}
 	// Only a configuration that reads tracklists cannot start without yt-dlp.
 	// Without it, every other read through the door answers 503.
 	binary, missing := ytdlp.Find(envOr("YTDLP_PATH", "yt-dlp"))
@@ -136,6 +144,8 @@ func start(ctx context.Context) error {
 		return fmt.Errorf("%w: install yt-dlp or set YTDLP_PATH to it", missing)
 	case missing != nil:
 		slog.Warn("no yt-dlp, so the server reads no caption, audio or watch history", "err", missing)
+	default:
+		slog.Info("yt-dlp door pace", "gap", pace.Gap.String(), "jitter", pace.Jitter.String(), "sleeps", pace.Sleeps.String())
 	}
 	issuer, clientIDPrefix, serviceClientIDPrefix, err := identityProvider()
 	if err != nil {
@@ -220,7 +230,7 @@ func start(ctx context.Context) error {
 		// from it.
 		var door *ytdlp.Door
 		if missing == nil {
-			if door, err = ytdlp.NewDoor(ctx, binary, doorPauses{st: st}, slog.Default()); err != nil {
+			if door, err = ytdlp.NewDoor(ctx, binary, pace, doorPauses{st: st}, slog.Default()); err != nil {
 				if ctx.Err() == nil {
 					fail(err)
 				}
@@ -335,6 +345,39 @@ func enrichment() (enrich.Limits, bool, error) {
 		return enrich.Limits{}, false, fmt.Errorf("ENRICH_PACE %q is not a positive duration, such as 90s, or off to read no video", raw)
 	}
 	return enrich.Limits{Pace: pace}, true, nil
+}
+
+// doorPace is the door's pace from YTDLP_GAP, YTDLP_JITTER and YTDLP_SLEEPS,
+// each falling back to ytdlp.DefaultPace's where it is unset. A gap of no
+// time would read as fast as YouTube answers, so it is refused.
+func doorPace() (ytdlp.Pace, error) {
+	pace := ytdlp.DefaultPace
+	for _, setting := range []struct {
+		name  string
+		into  *time.Duration
+		least time.Duration
+	}{
+		{"YTDLP_GAP", &pace.Gap, time.Second},
+		{"YTDLP_JITTER", &pace.Jitter, 0},
+	} {
+		raw := os.Getenv(setting.name)
+		if raw == "" {
+			continue
+		}
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed < setting.least {
+			return ytdlp.Pace{}, fmt.Errorf("%s %q is not a duration of at least %v, such as 8s", setting.name, raw, setting.least)
+		}
+		*setting.into = parsed
+	}
+	if raw := os.Getenv("YTDLP_SLEEPS"); raw != "" {
+		sleeps, err := ytdlp.ParseSleeps(raw)
+		if err != nil {
+			return ytdlp.Pace{}, fmt.Errorf("YTDLP_SLEEPS: %w", err)
+		}
+		pace.Sleeps = sleeps
+	}
+	return pace, nil
 }
 
 // run binds addr and serves h on it, doing work beside the server. A port that

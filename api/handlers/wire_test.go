@@ -6,10 +6,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/datapointchris/ypl/api/ytdlp"
@@ -87,6 +92,13 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		pinned(t, doc.name, doc.target, body)
 	}
 
+	// A lease of the door, which `ypl play` takes before each stream.
+	leased := f.do(http.MethodPost, "/api/v1/ytdlp/leases", "")
+	if leased.Code != http.StatusCreated {
+		t.Fatalf("a lease answered %d: %s", leased.Code, leased.Body)
+	}
+	pinned(t, "ytdlp-lease", "/api/v1/ytdlp/leases", leased.Body.Bytes())
+
 	// The slug a playlist is reached by. The CLI offers these on Tab and has to
 	// derive the same one from a title the server does, hyphens included, or it
 	// offers a reference the server answers with a 404. The titles are the
@@ -152,6 +164,48 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		t.Fatalf("encode the language pattern: %v", err)
 	}
 	pinned(t, "language_pattern", "ytdlp.LanguagePattern", body)
+
+	// Every refusal code wire.go spells out. The CLI waits, fails or plays on
+	// by some of them, and renaming one here would change what it does with
+	// both suites green. The codes goapiauth names are its own, and are left
+	// out.
+	body, err = json.Marshal(spelledCodes(t, filepath.Join("..", "wire", "wire.go")))
+	if err != nil {
+		t.Fatalf("encode the refusal codes: %v", err)
+	}
+	pinned(t, "refusal-codes", "the codes wire.go spells", body)
+}
+
+// spelledCodes is the value of every constant named Code... that the file at
+// path gives as a string, sorted.
+func spelledCodes(t *testing.T, path string) []string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var codes []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for i, name := range spec.Names {
+			if !strings.HasPrefix(name.Name, "Code") || i >= len(spec.Values) {
+				continue
+			}
+			if literal, ok := spec.Values[i].(*ast.BasicLit); ok && literal.Kind == token.STRING {
+				code, err := strconv.Unquote(literal.Value)
+				if err != nil {
+					t.Fatalf("%s spells %s as %s: %v", path, name.Name, literal.Value, err)
+				}
+				codes = append(codes, code)
+			}
+		}
+		return true
+	})
+	slices.Sort(codes)
+	return codes
 }
 
 // pinned writes body as the wire document name under -update, and otherwise
