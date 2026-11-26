@@ -224,11 +224,7 @@ var hiddenOptions = []string{
 // otherwise fail every run that names it, and a value read wrongly would turn
 // an input into an option's value.
 func TestEveryPassedOptionIsOneTheRealYtdlpTakesWithItsValue(t *testing.T) {
-	path, err := exec.LookPath("yt-dlp")
-	if err != nil {
-		t.Skipf("yt-dlp is not installed: %v", err)
-	}
-	help, err := exec.CommandContext(t.Context(), path, "--help").Output()
+	help, err := exec.CommandContext(t.Context(), realYtdlp(t), "--help").Output()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -21,9 +22,39 @@ import (
 // fakeMode names what this test binary does when a test runs it as yt-dlp:
 // answer with a recording, fail with an error text, hang, or answer as another
 // video. The process a hanging fake starts sleeps. Only
-// TestTheRealYtdlpTakesEveryArgumentAReadPasses runs yt-dlp itself, and it
-// makes no request.
+// TestTheRealYtdlpTakesEveryArgumentAReadPasses and
+// TestEveryPassedOptionIsOneTheRealYtdlpTakesWithItsValue run yt-dlp itself,
+// through realYtdlp, and neither makes a request.
 const fakeMode = "YPL_FAKE_YTDLP"
+
+// realYtdlp is the first yt-dlp on PATH that is yt-dlp itself. It passes over
+// a script that hands its arguments to `ypl ytdlp`, as a desk's yt-dlp may,
+// because that script answers with the server's refusals rather than yt-dlp's.
+// It skips t where there is no other.
+func realYtdlp(t *testing.T) string {
+	t.Helper()
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		found, err := exec.LookPath(filepath.Join(dir, "yt-dlp"))
+		if err != nil {
+			continue
+		}
+		script, err := os.Open(found)
+		if err != nil {
+			continue
+		}
+		head := make([]byte, 4<<10)
+		n, _ := io.ReadFull(script, head)
+		_ = script.Close()
+		if !bytes.Contains(head[:n], []byte("ypl ytdlp")) {
+			return found
+		}
+	}
+	t.Skip("yt-dlp is not installed, apart from a script that runs `ypl ytdlp`")
+	return ""
+}
 
 // fakeArgs is the file the fake writes its arguments to, and fakeError the
 // error text it fails with.
@@ -382,10 +413,7 @@ func TestFindFindsTheBinaryOrSaysWhichItCouldNot(t *testing.T) {
 // extractor-arg key, which yt-dlp takes in silence, leaving the extractor's own
 // default in place.
 func TestTheRealYtdlpTakesEveryArgumentAReadPasses(t *testing.T) {
-	path, err := exec.LookPath("yt-dlp")
-	if err != nil {
-		t.Skipf("yt-dlp is not installed: %v", err)
-	}
+	path := realYtdlp(t)
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.json")
 	passed, err := ReadRunArguments([]string{"--skip-download", "--write-auto-subs", "-o", "x.%(ext)s", "--", "-kbYeaEP-ME"})
