@@ -204,3 +204,8 @@ are pinned:
 `PageSize` and `VideoSorts` are unpinned copies of a number and words the server owns, with no door
 to read them through. So are `leaseAnswerWithin` and `runAnswerWithin`, each chosen longer than the
 server's own bound on the same wait.
+
+A client of the `/api/v1/youtube/` routes in another repo copies the documents it holds into its
+own suite. Two are written for such a client alone. `video_details_limit.json` holds the most ids
+that one read of video details names. `youtube_id_pattern.json` holds the shape of a channel or
+playlist item id in a path.

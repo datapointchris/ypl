@@ -138,6 +138,24 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 	}
 	pinned(t, "service-scopes", "ServiceRoutes", body)
 
+	// The most ids one read of video details names. A client that batches its
+	// reads by more is refused with too_many_videos on every read that long.
+	body, err = json.Marshal(maxVideoDetails)
+	if err != nil {
+		t.Fatalf("encode the video details limit: %v", err)
+	}
+	pinned(t, "video_details_limit", "maxVideoDetails", body)
+
+	// The shape of a channel id or @handle, and of a playlist item id, that a
+	// /api/v1/youtube/ route takes in its path. A client that checks a name
+	// before it sends one, and holds another shape, is refused with a 400 at
+	// every call.
+	body, err = json.Marshal(youtubeID.String())
+	if err != nil {
+		t.Fatalf("encode the YouTube id pattern: %v", err)
+	}
+	pinned(t, "youtube_id_pattern", "youtubeID", body)
+
 	// The shape of a transcript's language. The CLI refuses a language of any
 	// other shape as a usage error, and one the server refuses that the CLI
 	// sends is reported as a failure of the request.
