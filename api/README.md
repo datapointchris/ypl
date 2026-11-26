@@ -98,6 +98,11 @@ newest in a playlist first, which `api/enrich` queues and paces. The Data API re
 chapters nor comments, so these reads go through `yt-dlp`, signed in as nobody, at `YTDLP_PATH` or
 on `PATH`.
 
+The image carries `yt-dlp`, the deno it answers YouTube's player challenges with, and ffmpeg and
+ffprobe, which it merges formats and runs postprocessors with. A server run outside the image needs
+ffmpeg and ffprobe on `PATH` too. Without them, a person's run falls back to one pre-merged format,
+and `-x` fails.
+
 Every `yt-dlp` read the server makes passes through one door in `api/ytdlp`, which runs one process
 at a time. The next read starts at least `YTDLP_GAP` after the last one ended, 8 seconds when unset,
 plus up to `YTDLP_JITTER` more at random, also 8 seconds when unset. A person's read goes first,

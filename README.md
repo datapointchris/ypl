@@ -268,8 +268,10 @@ that the server is busy and when to try again.
 sleeps added. What yt-dlp prints is printed here, the files it writes land where `-o` names them
 under this directory. Only YouTube links, video ids and `ytsearch:` are read. Cookies, logins, any
 option that runs or reads something on the server, and any option not yet weighed are refused,
-naming the option and why. A URL the run prints, such as a stream's from `-g`, is bound to the
-server's address, so it plays nowhere else. Through the server's public address, a run stops after
+naming the option and why. The server's image carries yt-dlp, deno, ffmpeg and ffprobe, so a run
+merges the best video and audio and runs `-x`, `--remux-video` and the other postprocessors as
+yt-dlp does on a desk with ffmpeg. A URL the run prints, such as a stream's from `-g`, is bound to
+the server's address, so it plays nowhere else. Through the server's public address, a run stops after
 90 seconds, and its answer may hold 100 MB.
 
 The command exits 0 where yt-dlp succeeded or stopped at `--max-downloads`. It exits 1 where yt-dlp

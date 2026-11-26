@@ -15,7 +15,7 @@ The server, on the machine it is deployed to:
 | Door | Package | Reaches | Costs |
 | --- | --- | --- | --- |
 | The Data API | `api/youtube` | YouTube, over HTTPS, signed in as the channel with an OAuth refresh token: for the sync, and live for each `/api/v1/youtube/` route that calls it | Quota units, 10,000 a day, each route's call charged to the client that made it |
-| yt-dlp | `api/ytdlp` | YouTube, over HTTPS, through a subprocess, one at a time through the door: signed in as nobody for a video's tracklist, captions, transcript or audio and for a person's own command line, and with the stored cookie jar for the watch history | Nothing, the address's standing with YouTube, and the account's for history reads |
+| yt-dlp | `api/ytdlp` | YouTube, over HTTPS, through a subprocess, one at a time through the door: signed in as nobody for a video's tracklist, captions, transcript or audio and for a person's own command line, and with the stored cookie jar for the watch history. yt-dlp starts deno, ffmpeg and ffprobe, and ffmpeg reads a stream itself for a person's `--download-sections` | Nothing, the address's standing with YouTube, and the account's for history reads |
 | The trace exporter | `api/tracing` | The OTLP/HTTP endpoint `OTEL_EXPORTER_OTLP_ENDPOINT` names, only where it is set | Nothing |
 
 A request's span is what crosses to the trace exporter. It holds the method, the route, the status,
@@ -104,8 +104,15 @@ therefore treated as untrusted input and given as little of the host as possible
   alone. The store keeps the door's pause, so a restart does not reopen the door. `Close` stops every read under way but the
   history's, because cutting that one short loses the cookies rotated during it.
 - **yt-dlp starts deno.** yt-dlp's release executable bundles yt-dlp-ejs. That script answers
-  YouTube's player challenges by running YouTube's own script in deno. The image pins yt-dlp and deno, and
-  its build check fails on any other version of either, or of yt-dlp-ejs.
+  YouTube's player challenges by running YouTube's own script in deno.
+- **yt-dlp starts ffmpeg and ffprobe.** It merges a video's best video and audio with them, and
+  runs a person's postprocessors through them, such as `-x`. Each works on a file in the read's own
+  directory. A person's `--download-sections` is the one case where ffmpeg fetches a stream itself,
+  from the same address and inside the read's turn. No option passes that hands ffmpeg arguments of
+  the person's or names another binary, so `--postprocessor-args` and `--ffmpeg-location` are
+  refused.
+- **The image pins yt-dlp, deno and ffmpeg.** A checksum fixes each download. The build check fails
+  on any other version of deno, ffmpeg, ffprobe or yt-dlp-ejs.
 - **Each process is bounded by the caller's context, with `WaitDelay` set.** A process yt-dlp
   itself starts can hold the output pipe open after yt-dlp is gone, so the deadline alone does not
   end a read.
