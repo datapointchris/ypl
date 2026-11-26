@@ -153,7 +153,7 @@ func TestARunAnswersItsStreamsExitCodeAndFilesAsOneTar(t *testing.T) {
 
 // A cookie jar is refused before the door, naming the option, and yt-dlp never
 // runs.
-func TestARunWithACookieJarIsRefusedNamingItAndWhy(t *testing.T) {
+func TestARunWithACookieJarIsRefusedNamingIt(t *testing.T) {
 	f := newFixture(t)
 	door, argv := scriptDoor(t, writesCaptions)
 	f.h.ReadVideosWith(door, "ypl.example.com")

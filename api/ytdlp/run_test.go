@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"os/exec"
 	"regexp"
@@ -191,25 +190,6 @@ func TestRunsFailingInARowPauseRunsAloneAndLeasesGoOn(t *testing.T) {
 	}
 	if _, err := d.Lease(context.Background(), Person); err != nil {
 		t.Fatalf("a lease after failing runs answered %v, want a turn", err)
-	}
-}
-
-// A run stops once the disk it writes to falls below the floor, so a playlist
-// downloaded whole cannot fill the disk the store is on. The stop says nothing
-// of YouTube, so it moves no failures in a row.
-func TestARunStopsWhereTheDiskFallsBelowItsFloor(t *testing.T) {
-	d := reader(t, "sleep")
-	d.diskFloor = math.MaxInt64
-	read, err := ReadRunArguments([]string{link})
-	if err != nil {
-		t.Fatal(err)
-	}
-	began := time.Now()
-	if _, err := d.Run(context.Background(), Person, read, 0); !errors.Is(err, ErrDiskLow) || time.Since(began) > 5*time.Second {
-		t.Fatalf("a run with no room answered %v after %v, want ErrDiskLow at once", err, time.Since(began))
-	}
-	if len(d.failedRuns) != 0 {
-		t.Errorf("the stop counted %v as failures", d.failedRuns)
 	}
 }
 

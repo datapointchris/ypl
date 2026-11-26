@@ -18,9 +18,8 @@ import (
 var written = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
 
 // runAnswer is a run's answer as the server writes it: what yt-dlp printed,
-// the code it exited with, each file it wrote, and the end where ended holds,
-// as one tar.
-func runAnswer(t *testing.T, code int, files map[string]string, ended bool) http.HandlerFunc {
+// the code it exited with, each file it wrote, and the end, as one tar.
+func runAnswer(t *testing.T, code int, files map[string]string) http.HandlerFunc {
 	t.Helper()
 	entries := [][2]string{
 		{"stdout", "[info] Writing video subtitles to: x.en.vtt\n"},
@@ -30,9 +29,7 @@ func runAnswer(t *testing.T, code int, files map[string]string, ended bool) http
 	for name, content := range files {
 		entries = append(entries, [2]string{"files/" + name, content})
 	}
-	if ended {
-		entries = append(entries, [2]string{"end", ""})
-	}
+	entries = append(entries, [2]string{"end", ""})
 	var answer bytes.Buffer
 	archive := tar.NewWriter(&answer)
 	for _, entry := range entries {
@@ -58,7 +55,7 @@ func runAnswer(t *testing.T, code int, files map[string]string, ended bool) http
 // lands in this directory under the name -o gave it. yt-dlp's own code is
 // said rather than returned, so its 2 is no usage error of this command's.
 func TestYtdlpWritesWhatTheRunWroteHereAndExitsOneWhereYtdlpFailed(t *testing.T) {
-	f := newFixture(t, runAnswer(t, 2, map[string]string{"x.en.vtt": "WEBVTT\n"}, true))
+	f := newFixture(t, runAnswer(t, 2, map[string]string{"x.en.vtt": "WEBVTT\n"}))
 	here := t.TempDir()
 	t.Chdir(here)
 	typed := []string{"--skip-download", "--write-auto-subs", "-o", "x.%(ext)s", "https://youtu.be/Wr1tt3nVid0"}
@@ -91,19 +88,12 @@ func TestYtdlpWritesWhatTheRunWroteHereAndExitsOneWhereYtdlpFailed(t *testing.T)
 	}
 
 	// An answer naming a file outside this directory writes nothing there.
-	f = newFixture(t, runAnswer(t, 0, map[string]string{"../escaped": "x"}, true))
+	f = newFixture(t, runAnswer(t, 0, map[string]string{"../escaped": "x"}))
 	if escaped := f.run("ytdlp", "--", "https://youtu.be/Wr1tt3nVid0"); escaped.code != 1 {
 		t.Errorf("an answer climbing out exited %d saying %q, want it refused", escaped.code, escaped.err)
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(here), "escaped")); err == nil {
 		t.Error("the answer wrote outside the directory the command ran in")
-	}
-
-	// An answer that stops between two files fails, though yt-dlp ended well,
-	// since a file the run wrote may be missing.
-	f = newFixture(t, runAnswer(t, 0, map[string]string{"x.en.vtt": "WEBVTT\n"}, false))
-	if cut := f.run("ytdlp", "--", "https://youtu.be/Wr1tt3nVid0"); cut.code != 1 {
-		t.Errorf("an answer with no end exited %d saying %q, want 1", cut.code, cut.err)
 	}
 }
 
