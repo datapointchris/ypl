@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // Client reaches one ypl server, through the first of its addresses that
@@ -73,6 +74,34 @@ func (m markConnectFailures) RoundTrip(req *http.Request) (*http.Response, error
 // the server.
 func MarkConnectFailures(next http.RoundTripper) http.RoundTripper {
 	return markConnectFailures{next: next}
+}
+
+// triedFirstDial bounds the dial of every address but a Client's last. Such an
+// address is reached on some networks only, and on another its packets may be
+// dropped rather than refused, which would hold the dial for the transport's
+// own 30 seconds. The last address keeps those 30 seconds.
+const triedFirstDial = time.Second
+
+// triedFirstKey marks the context of a request to an address that is not a
+// Client's last.
+type triedFirstKey struct{}
+
+// ServerTransport is what the server's requests go out on, beneath whatever
+// adds the token. It is http.DefaultTransport, with an address that is not a
+// Client's last dialed for at most triedFirstDial, and with each request that
+// never reached a connection marked, as MarkConnectFailures marks it.
+func ServerTransport() http.RoundTripper {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if ctx.Value(triedFirstKey{}) != nil {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, triedFirstDial)
+			defer cancel()
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+	return MarkConnectFailures(transport)
 }
 
 // Refusal is an answer the server refused, carrying the code it refused with.
@@ -195,7 +224,11 @@ func (c *Client) do(ctx context.Context, method, path string, header http.Header
 		if encoded != nil {
 			reader = bytes.NewReader(encoded)
 		}
-		req, err := http.NewRequestWithContext(ctx, method, c.bases[i]+path, reader)
+		attempt := ctx
+		if i+1 < len(c.bases) {
+			attempt = context.WithValue(ctx, triedFirstKey{}, true)
+		}
+		req, err := http.NewRequestWithContext(attempt, method, c.bases[i]+path, reader)
 		if err != nil {
 			return nil, err
 		}

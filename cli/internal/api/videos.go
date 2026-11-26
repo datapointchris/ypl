@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"regexp"
 	"strconv"
 )
 
@@ -146,6 +147,19 @@ type Transcript struct {
 	Language string `json:"language"`
 	Kind     string `json:"kind"`
 	Text     string `json:"text"`
+}
+
+// LanguagePattern is the shape of a transcript's language, as the server
+// checks it. The server owns it, and the wire test holds this copy to the
+// server's.
+const LanguagePattern = `^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$`
+
+var language = regexp.MustCompile(LanguagePattern)
+
+// ValidLanguage is whether lang has the shape of a language, such as en or
+// pt-BR, as the server checks it.
+func ValidLanguage(lang string) bool {
+	return language.MatchString(lang)
 }
 
 // ReadTranscript is the video id's captions in lang, which the server reads

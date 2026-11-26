@@ -24,7 +24,8 @@ var errNeedsLogin = errors.New("not logged in")
 // machine or as the service client YPL_CLIENT_SECRET selects. The oauth2 client
 // adds the bearer token to every request and renews it when it expires, so no
 // command here holds one. It tries the file's api_tried_first in order before
-// api, and moves on only where a connection could not be opened.
+// api, and moves on only where a connection could not be opened. Each address
+// tried first gets a second to open one.
 //
 // Each request also carries the trace and baggage the CLI was started under,
 // in TRACEPARENT, TRACESTATE and BAGGAGE, so the server's span for it sits
@@ -48,7 +49,7 @@ func newAPIClient(ctx context.Context) (*api.Client, error) {
 	}
 	httpClient := &http.Client{Transport: goclikit.TraceForwardingTransport(&oauth2.Transport{
 		Source: oauth2.ReuseTokenSource(nil, source),
-		Base:   api.MarkConnectFailures(http.DefaultTransport),
+		Base:   api.ServerTransport(),
 	})}
 	return api.New(append(triedFirst, deployment.API.Value), httpClient), nil
 }

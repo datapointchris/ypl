@@ -6,6 +6,7 @@ import (
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
 
+	"github.com/datapointchris/ypl/cli/internal/api"
 	"github.com/datapointchris/ypl/cli/internal/youtube"
 )
 
@@ -31,6 +32,9 @@ func (a *app) transcriptCommand() *cobra.Command {
 			var lang string
 			if len(args) == 2 {
 				lang = args[1]
+				if !api.ValidLanguage(lang) {
+					return goclikit.UsageError(fmt.Errorf("%q is not a language code, such as en or pt-BR", lang))
+				}
 			}
 			client, err := a.client(cmd.Context())
 			if err != nil {

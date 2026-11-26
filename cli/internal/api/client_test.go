@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 )
 
 // answering is a client talking to a server that answers every request with
@@ -198,5 +199,25 @@ func TestAnAddressThatTakesNoConnectionIsPassedOverForTheNext(t *testing.T) {
 	}
 	if !slices.Equal(served, []string{"refusing GET"}) {
 		t.Fatalf("served %v, want the refusal alone", served)
+	}
+}
+
+// api_tried_first lists a LAN address, and on this network its packets are
+// dropped rather than refused. The request reaches the next address within a
+// few seconds rather than after the dial's own 30.
+func TestAnAddressThatDropsPacketsIsPassedOverWithinASecond(t *testing.T) {
+	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version": "v1"}`))
+	}))
+	t.Cleanup(public.Close)
+	// 10.255.255.1 is a private address that no network here routes to.
+	client := New([]string{"http://10.255.255.1", public.URL}, &http.Client{Transport: ServerTransport()})
+
+	began := time.Now()
+	if err := client.Get(context.Background(), "/api/v1/version", &Version{}); err != nil {
+		t.Fatalf("a request past the address that drops packets failed: %v", err)
+	}
+	if took := time.Since(began); took > 5*triedFirstDial || client.reached.Load() != 1 {
+		t.Fatalf("the request took %v and reached address %d, want the second address within %v", took, client.reached.Load(), 5*triedFirstDial)
 	}
 }

@@ -127,6 +127,20 @@ func TestEveryDeclaredFieldArrivesFromTheServer(t *testing.T) {
 	}
 }
 
+func TestTheLanguageShapeIsTheServers(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(wireDir, "language_pattern.json"))
+	if err != nil {
+		t.Fatalf("read the server's language pattern — run `go test ./handlers -update` in the api module: %v", err)
+	}
+	var pattern string
+	if err := json.Unmarshal(body, &pattern); err != nil {
+		t.Fatalf("decode the language pattern: %v", err)
+	}
+	if pattern != LanguagePattern {
+		t.Errorf("LanguagePattern is %q, and the server checks %q", LanguagePattern, pattern)
+	}
+}
+
 func TestTheRatingKindsAreTheServers(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join(wireDir, "rating_kinds.json"))
 	if err != nil {
