@@ -98,6 +98,9 @@ type fakeAPI struct {
 	// videos is every video an insert can name, by id. An id absent from it is
 	// a video YouTube has no record of.
 	videos map[string]fakeVideo
+	// channels is the uploads playlist of each channel a read can name, by its
+	// id or handle.
+	channels map[string]string
 	// deletedPlaylists and deletedItems hold the id of each playlist and item a
 	// delete removed. orphanedItems holds the items a playlist delete took.
 	deletedPlaylists map[string]bool
@@ -117,6 +120,8 @@ type fakeAPI struct {
 	beforeRequest func(request int64)
 
 	requests atomic.Int64
+	// served is the resource of each request, such as channels, in order.
+	served []string
 	// pauses is each wait the channel made between attempts.
 	pauses []time.Duration
 }
@@ -168,7 +173,11 @@ var fakeResources = map[string]fakeResource{
 	},
 	"/youtube/v3/videos": {
 		listKind: "youtube#videoListResponse",
-		parts:    []string{"contentDetails", "id", "snippet", "status"},
+		parts:    []string{"contentDetails", "id", "snippet", "statistics", "status"},
+	},
+	"/youtube/v3/channels": {
+		listKind: "youtube#channelListResponse",
+		parts:    []string{"contentDetails"},
 	},
 }
 
@@ -194,6 +203,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		items:            map[string][]map[string]any{},
 		itemsTotal:       map[string]int{},
 		videos:           map[string]fakeVideo{},
+		channels:         map[string]string{},
 		deletedPlaylists: map[string]bool{},
 		deletedItems:     map[string]bool{},
 		orphanedItems:    map[string]bool{},
@@ -223,6 +233,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	request := f.requests.Add(1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.served = append(f.served, strings.TrimPrefix(r.URL.Path, "/youtube/v3/"))
 	if f.beforeRequest != nil {
 		f.beforeRequest(request)
 	}
@@ -248,6 +259,8 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.list(w, r, resource, parts)
 	case "GET videos":
 		f.listVideos(w, r, resource, parts)
+	case "GET channels":
+		f.listChannels(w, r, resource, parts)
 	case "POST playlists":
 		f.insertPlaylist(w, r, parts)
 	case "PUT playlists":
@@ -374,13 +387,17 @@ func (f *fakeAPI) list(w http.ResponseWriter, r *http.Request, resource fakeReso
 }
 
 // listVideos answers a read of videos by id in the one form measured: parts
-// snippet and status, the ids as one comma-separated value, and no maxResults.
-// A public video is returned, and a private video another channel owns, or an
-// id the fake has no video for, is left out.
+// snippet, status and contentDetails, and statistics where a read names it,
+// the ids as one comma-separated value, and no maxResults. A public video is
+// returned, and a private video another channel owns, or an id the fake has
+// no video for, is left out. Statistics carry the counts as strings, as the
+// Data API writes a 64-bit count.
 func (f *fakeAPI) listVideos(w http.ResponseWriter, r *http.Request, resource fakeResource, parts []string) {
 	query := r.URL.Query()
 	ids := strings.Split(query.Get("id"), ",")
-	if !slices.Equal(slices.Sorted(slices.Values(parts)), []string{"contentDetails", "snippet", "status"}) || len(query["id"]) != 1 || query.Has("maxResults") || len(ids) > 50 {
+	sorted := slices.Sorted(slices.Values(parts))
+	measured := slices.Equal(sorted, []string{"contentDetails", "snippet", "status"}) || slices.Equal(sorted, []string{"contentDetails", "snippet", "statistics", "status"})
+	if !measured || len(query["id"]) != 1 || query.Has("maxResults") || len(ids) > 50 {
 		f.unmodeled(w, "a read of videos %s", r.URL.RawQuery)
 		return
 	}
@@ -397,6 +414,7 @@ func (f *fakeAPI) listVideos(w http.ResponseWriter, r *http.Request, resource fa
 			snippet["localized"].(map[string]any)["title"] = video.title
 			served["status"].(map[string]any)["privacyStatus"] = video.privacy
 			served["contentDetails"] = map[string]any{"duration": video.duration, "dimension": "2d", "definition": "hd", "caption": "false"}
+			served["statistics"] = map[string]any{"viewCount": "1200", "likeCount": "34", "favoriteCount": "0", "commentCount": "5"}
 			found = append(found, withParts(served, parts))
 		default:
 			f.unmodeled(w, "a read of video %s, whose privacy is %q", id, video.privacy)
@@ -409,6 +427,36 @@ func (f *fakeAPI) listVideos(w http.ResponseWriter, r *http.Request, resource fa
 		"items":    found,
 		"pageInfo": map[string]any{"totalResults": len(found), "resultsPerPage": len(found)},
 	})
+}
+
+// listChannels answers a read of one channel's content details by id or by
+// handle, in the shape the Data API reference shows. A channel the fake does
+// not hold gets a response with no items, as YouTube answers an id no channel
+// has.
+func (f *fakeAPI) listChannels(w http.ResponseWriter, r *http.Request, resource fakeResource, parts []string) {
+	query := r.URL.Query()
+	name := query.Get("id") + query.Get("forHandle")
+	if !slices.Equal(parts, resource.parts) || name == "" || query.Has("id") == query.Has("forHandle") || strings.Contains(name, ",") {
+		f.unmodeled(w, "a read of channels %s", r.URL.RawQuery)
+		return
+	}
+	response := map[string]any{
+		"kind":     resource.listKind,
+		"etag":     "fakePageEtag",
+		"pageInfo": map[string]any{"totalResults": 0, "resultsPerPage": 5},
+	}
+	if uploads, ok := f.channels[name]; ok {
+		response["items"] = []any{map[string]any{
+			"kind": "youtube#channel",
+			"etag": "fakeChannelEtag",
+			"id":   "UCx0otherChannel00000000",
+			"contentDetails": map[string]any{
+				"relatedPlaylists": map[string]any{"likes": "", "uploads": uploads},
+			},
+		}}
+		response["pageInfo"] = map[string]any{"totalResults": 1, "resultsPerPage": 5}
+	}
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (f *fakeAPI) insertPlaylist(w http.ResponseWriter, r *http.Request, parts []string) {

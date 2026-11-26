@@ -1,0 +1,33 @@
+{
+  "id": "Wr1tt3nVid0",
+  "title": "A written talk about pacing",
+  "description": "A written description.\n0:00 Opening\n5:00 The second part",
+  "duration": 754.2,
+  "language": "en",
+  "chapters": [
+    {"start_time": 0.0, "end_time": 300.0, "title": "Opening"},
+    {"start_time": 300.0, "end_time": 754.2, "title": "The second part"}
+  ],
+  "subtitles": {
+    "en": [
+      {"ext": "json3", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid0&lang=en&fmt=json3", "name": "English"},
+      {"ext": "srv1", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid0&lang=en&fmt=srv1", "name": "English"},
+      {"ext": "vtt", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid0&lang=en&fmt=vtt", "name": "English"}
+    ],
+    "live_chat": [
+      {"ext": "json", "url": "https://www.youtube.com/watch?v=Wr1tt3nVid0", "video_id": "Wr1tt3nVid0", "protocol": "youtube_live_chat_replay"}
+    ]
+  },
+  "automatic_captions": {
+    "en-orig": [
+      {"ext": "json3", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid0&lang=en&kind=asr&fmt=json3", "name": "English (Original)"},
+      {"ext": "vtt", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid0&lang=en&kind=asr&fmt=vtt", "name": "English (Original)"}
+    ],
+    "en": [
+      {"ext": "json3", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid0&lang=en&kind=asr&fmt=json3&tlang=en", "name": "English"}
+    ],
+    "fr": [
+      {"ext": "json3", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid0&lang=en&kind=asr&fmt=json3&tlang=fr", "name": "French"}
+    ]
+  }
+}

@@ -52,3 +52,11 @@ var ErrVideoRefused = errors.New("YouTube refuses to add that video to a playlis
 // playlist not sorted manually. The Data API reference documents it for inserts
 // and moves; no request here has drawn it. An append names no position.
 var ErrManualSortRequired = errors.New("the playlist is not sorted manually, so a write cannot name a position in it")
+
+// ErrChannelNotFound is a read of a channel by id or handle that YouTube
+// answered with no channel.
+var ErrChannelNotFound = errors.New("YouTube has no channel with that id or handle")
+
+// ErrCommentsDisabled is YouTube refusing a read of the comments of a video
+// whose owner turned them off.
+var ErrCommentsDisabled = errors.New("the video's comments are turned off")

@@ -22,21 +22,36 @@ var start = time.Date(2026, 9, 17, 15, 0, 0, 0, time.UTC)
 // carrying a tracklist when it holds none, and records the reads in order. The
 // default carries one because a read that stores none holds its video back the
 // way a failed read does, which is a case a test asks for rather than gets.
+// It pauses as the door does: a refusal begins a day's pause, and a read
+// turned away carries the pause that turned it away.
 type fakeReader struct {
 	answers map[string]error
 	videos  map[string]ytdlp.Video
 	read    []string
+	pause   ytdlp.Pause
+	now     func() time.Time
 }
 
 func (f *fakeReader) Video(ctx context.Context, id string) (ytdlp.Video, error) {
 	f.read = append(f.read, id)
 	if err := f.answers[id]; err != nil {
+		var paused *ytdlp.PausedError
+		switch {
+		case errors.As(err, &paused):
+			f.pause = paused.Pause
+		case errors.Is(err, ytdlp.ErrRateLimited):
+			f.pause = ytdlp.Pause{At: f.now(), Until: f.now().Add(ytdlp.RefusedPause), Cause: ytdlp.PausedRefused}
+		}
 		return ytdlp.Video{}, err
 	}
 	if video, ok := f.videos[id]; ok {
 		return video, nil
 	}
 	return ytdlp.Video{ID: id, Description: listing("Default")}, nil
+}
+
+func (f *fakeReader) PausedUntil() (ytdlp.Pause, bool) {
+	return f.pause, f.now().Before(f.pause.Until)
 }
 
 // withoutTracklist is a video whose read finds nothing to store.
@@ -69,6 +84,7 @@ func newFixture(t *testing.T, videos ...string) *fixture {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	f := &fixture{st: st, reader: &fakeReader{answers: map[string]error{}, videos: map[string]ytdlp.Video{}}, clock: start}
+	f.reader.now = func() time.Time { return f.clock }
 	f.e = New(st, f.reader, testLimits, NewTally())
 	f.e.now = func() time.Time { return f.clock }
 	f.e.wait = func(_ context.Context, d time.Duration) error {
@@ -243,9 +259,9 @@ func TestAReadThatFindsNoTracklistKeepsTheTracksAVideoHolds(t *testing.T) {
 	}
 }
 
-// YouTube refuses the second read, so the run stops there, and a run within a
-// day of a run recording the refusal reads nothing and says why.
-func TestARateLimitStopsTheRunAndPausesReadsForADay(t *testing.T) {
+// YouTube refuses the second read, so the run stops there, and a run while the
+// door's pause holds reads nothing and says why.
+func TestARateLimitStopsTheRunUntilTheDoorsPauseEnds(t *testing.T) {
 	f := newFixture(t, "vc", "vb", "va")
 	f.reader.answers["vb"] = fmt.Errorf("read video vb: %w: ERROR: rate-limited by YouTube", ytdlp.ErrRateLimited)
 
@@ -256,24 +272,37 @@ func TestARateLimitStopsTheRunAndPausesReadsForADay(t *testing.T) {
 	if _, failed := f.failure(t, "vb"); failed {
 		t.Fatal("a rate-limited read recorded a failure of vb, which says nothing about vb")
 	}
-	_, err := f.st.Queries.InsertSyncRun(context.Background(), generated.InsertSyncRunParams{
-		StartedTs: store.Timestamp(start), FinishedTs: store.Timestamp(start), QuotaDate: "2026-09-17", Outcome: store.OutcomePartial, IsRateLimited: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	delete(f.reader.answers, "vb")
 
 	// The pause is what a refusal asks for, so it is recorded on the run rather
 	// than as a failure of it. A run that failed for being paused would make
 	// every run of the day after one refusal partial.
-	f.clock = start.Add(RateLimitPause - time.Second)
+	f.clock = start.Add(ytdlp.RefusedPause - time.Second)
 	if report := f.run(t); report.Reads != 0 || !report.Paused || report.Failures != nil {
 		t.Fatalf("report %+v a second short of a day, want no read, paused, and no failure", report)
 	}
-	f.clock = start.Add(RateLimitPause)
+	f.clock = start.Add(ytdlp.RefusedPause)
 	if report := f.run(t); report.Reads != 2 || report.Paused {
 		t.Fatalf("report %+v a day on, want vb and va read and no pause", report)
+	}
+}
+
+// When a pause begins while enrichment waits at the door, the door turns its
+// read away. No read was made, so the video keeps no failure, the run records
+// none, and enrichment waits out the pause.
+func TestAReadTurnedAwayByTheDoorIsNoReadAndNoFailure(t *testing.T) {
+	f := newFixture(t, "va")
+	pause := ytdlp.Pause{At: start, Until: start.Add(ytdlp.FailingPause), Cause: ytdlp.PausedFailing}
+	f.reader.answers["va"] = fmt.Errorf("read video va: %w", &ytdlp.PausedError{Pause: pause})
+
+	if wait := f.e.step(context.Background()); wait != ytdlp.FailingPause {
+		t.Fatalf("the wait after a read turned away = %v, want the pause's %v", wait, ytdlp.FailingPause)
+	}
+	if report := f.e.tally.Take(); report.Reads != 0 || !report.Paused || report.Failures != nil {
+		t.Fatalf("report %+v, want no read, paused, and no failure", report)
+	}
+	if _, failed := f.failure(t, "va"); failed {
+		t.Fatal("a read the door turned away recorded a failure of va")
 	}
 }
 
@@ -378,46 +407,5 @@ func TestAVideoStopsBeingReadAfterEnoughAttemptsAndCanBePutBack(t *testing.T) {
 	}
 	if report := f.run(t); report.Reads != 1 {
 		t.Fatalf("report %+v once va was put back, want it read again", report)
-	}
-}
-
-// Only a refusal worded the way ytdlp's markers spell it stops a run on its
-// own, so a run also stops when its reads simply keep failing. Reading on into
-// a refusal nobody recognized is what turns a pause into a block.
-func TestARunStopsWhenItsReadsKeepFailing(t *testing.T) {
-	f := newFixture(t, "vf", "ve", "vd", "vc", "vb", "va")
-	cause := errors.New("read failed: ERROR: Unable to extract initial player response")
-	for _, video := range []string{"va", "vb", "vc", "vd", "ve", "vf"} {
-		f.reader.answers[video] = cause
-	}
-
-	report := f.run(t)
-	if report.Reads != MaxConsecutiveFailures {
-		t.Fatalf("report %+v, want the run stopped after %d reads failed", report, MaxConsecutiveFailures)
-	}
-	last := report.Failures[len(report.Failures)-1]
-	if last.VideoID != "" || !errors.Is(last.Err, ErrReadsFailing) {
-		t.Fatalf("the run's last failure = %+v, want the run's own, naming ErrReadsFailing", last)
-	}
-}
-
-// Reads that fail here and there are ordinary, and only reads failing one after
-// another say the reading itself is wrong. So a read that lands clears the
-// count.
-func TestFailedReadsWithReadsBetweenThemDoNotStopARun(t *testing.T) {
-	f := newFixture(t, "vf", "ve", "vd", "vc", "vb", "va")
-	cause := errors.New("read failed: ERROR: Unable to extract initial player response")
-	for _, video := range []string{"va", "vc", "ve"} {
-		f.reader.answers[video] = cause
-	}
-
-	report := f.run(t)
-	if report.Reads != 6 || report.Enriched != 3 || len(report.Failures) != 3 {
-		t.Fatalf("report %+v, want all 6 read with 3 enriched and 3 failures", report)
-	}
-	for _, failure := range report.Failures {
-		if failure.VideoID == "" {
-			t.Fatalf("report %+v carries a failure of the run, want only the three reads'", report)
-		}
 	}
 }

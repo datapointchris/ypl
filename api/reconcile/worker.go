@@ -43,8 +43,6 @@ func (w *Worker) Run(ctx context.Context) {
 			timer.Reset(w.next())
 		case <-w.runner.edits.woken():
 			w.logged(ctx, w.runner.Pass)
-		case <-w.runner.tally.Refused():
-			w.logged(ctx, w.runner.Pass)
 		}
 	}
 }

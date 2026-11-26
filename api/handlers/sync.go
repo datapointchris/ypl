@@ -58,14 +58,23 @@ type syncFailure struct {
 }
 
 // status is where the server stands: what the store holds, the latest run, the
-// latest run that ended ok, what the sync spends and has waiting, and the
-// YouTube session the watch history is read with, null until one is set.
+// latest run that ended ok, what the sync spends and has waiting, the YouTube
+// session the watch history is read with, null until one is set, and the yt-dlp
+// door, null on a server with no yt-dlp.
 type status struct {
 	Library        library         `json:"library"`
 	LastRun        *syncRun        `json:"last_run"`
 	LastOKRun      *syncRun        `json:"last_ok_run"`
 	Sync           syncState       `json:"sync"`
 	YouTubeSession *youtubeSession `json:"youtube_session"`
+	YouTubeReads   *youtubeReads   `json:"youtube_reads"`
+}
+
+// youtubeReads is the yt-dlp door's pause: until when it makes no read and why,
+// refused or failing, both null while no pause holds.
+type youtubeReads struct {
+	PausedUntil *string `json:"paused_until"`
+	PauseCause  *string `json:"pause_cause"`
 }
 
 // syncState is how the sync runs and what it has waiting: the mean wait
@@ -81,12 +90,19 @@ type syncState struct {
 }
 
 // quota is the Pacific day's quota: the units recorded against it, the most it
-// allows, and when it resets.
+// allows, when it resets, and the units by caller. The server's own come first
+// as ypl, then each client that called the Data API through it, by client id.
 type quota struct {
-	Date       string `json:"date"`
-	UnitsSpent int64  `json:"units_spent"`
-	UnitsLimit int64  `json:"units_limit"`
-	ResetsAt   string `json:"resets_at"`
+	Date       string        `json:"date"`
+	UnitsSpent int64         `json:"units_spent"`
+	UnitsLimit int64         `json:"units_limit"`
+	ResetsAt   string        `json:"resets_at"`
+	ByCaller   []callerUnits `json:"by_caller"`
+}
+
+type callerUnits struct {
+	Caller string `json:"caller"`
+	Units  int64  `json:"units"`
 }
 
 // pendingPush is a playlist whose order YouTube does not yet hold, and the
@@ -193,6 +209,7 @@ func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
 		if shown.YouTubeSession, err = sessionState(ctx, q); err != nil {
 			return err
 		}
+		shown.YouTubeReads = h.youtubeReads()
 		latest, err := q.ListNewestSyncRuns(ctx, 1)
 		if err != nil {
 			return err
@@ -219,11 +236,24 @@ func (h *Handlers) showStatus(w http.ResponseWriter, r *http.Request) {
 	wire.JSON(w, http.StatusOK, shown)
 }
 
+// youtubeReads is the door's pause, and nil on a server with no yt-dlp.
+func (h *Handlers) youtubeReads() *youtubeReads {
+	if h.videos == nil {
+		return nil
+	}
+	reads := &youtubeReads{}
+	if pause, held := h.videos.door.PausedUntil(); held {
+		until, cause := store.Timestamp(pause.Until), string(pause.Cause)
+		reads.PausedUntil, reads.PauseCause = &until, &cause
+	}
+	return reads
+}
+
 // syncState is what the sync spends and has waiting, as of now.
 func (h *Handlers) syncState(ctx context.Context, q *generated.Queries) (syncState, error) {
 	now := h.now()
 	date := youtube.QuotaDate(now)
-	spent, err := store.Spent(ctx, q, date)
+	callers, err := store.SpentByCaller(ctx, q, date)
 	if err != nil {
 		return syncState{}, err
 	}
@@ -231,11 +261,14 @@ func (h *Handlers) syncState(ctx context.Context, q *generated.Queries) (syncSta
 		IntervalSeconds: int64(h.sync.Interval / time.Second),
 		Quota: quota{
 			Date:       date,
-			UnitsSpent: spent,
 			UnitsLimit: youtube.DailyQuota,
 			ResetsAt:   store.Timestamp(youtube.QuotaReset(now)),
 		},
 		Pushes: []pendingPush{},
+	}
+	for _, caller := range callers {
+		state.Quota.UnitsSpent += caller.Units
+		state.Quota.ByCaller = append(state.Quota.ByCaller, callerUnits{Caller: caller.Caller, Units: caller.Units})
 	}
 	pending, err := store.PendingPushes(ctx, q, now)
 	if err != nil {

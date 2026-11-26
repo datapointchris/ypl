@@ -1,8 +1,32 @@
 {
+  "ypl.audio.read": [
+    "GET /api/v1/youtube/videos/{id}/audio"
+  ],
+  "ypl.channels.read": [
+    "GET /api/v1/youtube/channels/{id}/uploads"
+  ],
+  "ypl.comments.read": [
+    "GET /api/v1/youtube/videos/{id}/comments"
+  ],
+  "ypl.playlist-items.write": [
+    "POST /api/v1/youtube/playlists/{id}/items",
+    "DELETE /api/v1/youtube/playlists/{id}/items/{item}"
+  ],
+  "ypl.playlists.read": [
+    "GET /api/v1/playlists",
+    "GET /api/v1/youtube/playlists/{id}/items"
+  ],
   "ypl.status.read": [
     "GET /api/v1/status"
   ],
+  "ypl.transcripts.read": [
+    "GET /api/v1/youtube/videos/{id}/captions",
+    "GET /api/v1/youtube/videos/{id}/transcript"
+  ],
   "ypl.version.read": [
     "GET /api/v1/version"
+  ],
+  "ypl.videos.read": [
+    "GET /api/v1/youtube/videos"
   ]
 }

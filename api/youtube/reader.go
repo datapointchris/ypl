@@ -141,13 +141,28 @@ func lengthOf(iso string) *int64 {
 // request. YouTube leaves out an id no video has, a deleted video, and a
 // private video another channel owns, and refuses none of them.
 func (c *Channel) Videos(ctx context.Context, ids []VideoID) ([]Video, error) {
-	var videos []Video
+	resources, err := c.readVideos(ctx, ids, []string{"snippet", "status", "contentDetails"})
+	if err != nil {
+		return nil, err
+	}
+	videos := make([]Video, len(resources))
+	for i, resource := range resources {
+		videos[i] = videoFrom(resource)
+	}
+	return videos, nil
+}
+
+// readVideos is each of ids that YouTube returns a video for, with parts, read
+// 50 ids a request. Each must carry its snippet and its status, and a privacy
+// of public, unlisted or private.
+func (c *Channel) readVideos(ctx context.Context, ids []VideoID, parts []string) ([]*ytapi.Video, error) {
+	var videos []*ytapi.Video
 	for chunk := range slices.Chunk(ids, pageSize) {
 		names := make([]string, len(chunk))
 		for i, id := range chunk {
 			names[i] = string(id)
 		}
-		call := c.service.Videos.List([]string{"snippet", "status", "contentDetails"}).Id(strings.Join(names, ","))
+		call := c.service.Videos.List(parts).Id(strings.Join(names, ","))
 		response, err := send(ctx, c, videosList, call.Context(ctx).Do)
 		if err != nil {
 			return nil, fmt.Errorf("read videos by id: %w", err)
@@ -164,19 +179,24 @@ func (c *Channel) Videos(ctx context.Context, ids []VideoID) ([]Video, error) {
 			if !slices.Contains(chunk, VideoID(resource.Id)) {
 				return nil, fmt.Errorf("%w: a read of videos by id returned %s, which it did not name", ErrUnexpectedResponse, resource.Id)
 			}
-			video := Video{
-				ID:           VideoID(resource.Id),
-				Title:        resource.Snippet.Title,
-				ChannelTitle: resource.Snippet.ChannelTitle,
-				Privacy:      resource.Status.PrivacyStatus,
-			}
-			if resource.ContentDetails != nil {
-				video.DurationSeconds = lengthOf(resource.ContentDetails.Duration)
-			}
-			videos = append(videos, video)
+			videos = append(videos, resource)
 		}
 	}
 	return videos, nil
+}
+
+// videoFrom is a video readVideos returned.
+func videoFrom(resource *ytapi.Video) Video {
+	video := Video{
+		ID:           VideoID(resource.Id),
+		Title:        resource.Snippet.Title,
+		ChannelTitle: resource.Snippet.ChannelTitle,
+		Privacy:      resource.Status.PrivacyStatus,
+	}
+	if resource.ContentDetails != nil {
+		video.DurationSeconds = lengthOf(resource.ContentDetails.Duration)
+	}
+	return video
 }
 
 // ExistingItems is each of ids that YouTube still has a playlist item for, read

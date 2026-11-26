@@ -430,11 +430,34 @@ ON CONFLICT (latest_id) DO UPDATE SET
 -- When enrichment last began a read of a video, and empty when it never has.
 SELECT CAST(coalesce(max(started_ts), '') AS TEXT) AS started_ts FROM latest_video_read;
 
--- name: LatestRateLimitedRunFinished :one
--- When the latest run that had YouTube refuse its reads of videos for now
--- finished, and empty when none has.
-SELECT CAST(coalesce(max(finished_ts), '') AS TEXT) AS finished_ts FROM sync_runs
-WHERE is_rate_limited = 1;
+-- name: LatestYtdlpPause :one
+-- The pause of yt-dlp reads that ends last.
+SELECT
+    paused_ts,
+    until_ts,
+    cause,
+    error
+FROM ytdlp_pauses
+ORDER BY until_ts DESC, pause_id DESC
+LIMIT 1;
+
+-- name: InsertYtdlpPause :exec
+INSERT INTO ytdlp_pauses (paused_ts, until_ts, cause, error)
+VALUES (?, ?, ?, ?);
+
+-- name: InsertServiceCall :exec
+INSERT INTO youtube_service_calls (client_id, method, sent_ts, quota_date, requests, units, error)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+-- name: SumServiceCallUnits :many
+-- The units each service client's calls on quota_date cost.
+SELECT
+    client_id,
+    CAST(sum(units) AS INTEGER) AS units
+FROM youtube_service_calls
+WHERE quota_date = ?
+GROUP BY client_id
+ORDER BY client_id;
 
 -- name: SumRunsSince :one
 -- The tracklist reads and the probe misses of the runs that finished after

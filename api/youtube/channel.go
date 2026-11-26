@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -34,6 +35,9 @@ type Channel struct {
 	// pause waits between attempts at a request YouTube aborted, and returns
 	// early with ctx's error when ctx ends.
 	pause func(ctx context.Context, d time.Duration) error
+	// uploads is each channel's uploads playlist, by the id or handle a read
+	// named the channel with.
+	uploads sync.Map
 }
 
 // ReadLag is how long after YouTube answers a write a read can still return the
@@ -98,6 +102,8 @@ const (
 	MethodPlaylistItemsUpdate = "playlistItems.update"
 	MethodPlaylistItemsDelete = "playlistItems.delete"
 	MethodVideosList          = "videos.list"
+	MethodChannelsList        = "channels.list"
+	MethodCommentThreadsList  = "commentThreads.list"
 )
 
 // WriteUnits is what one request of any write this package makes costs, as the
@@ -146,7 +152,12 @@ var (
 		name: MethodPlaylistItemsDelete, units: WriteUnits,
 		refusals: map[string]error{"playlistItemNotFound": ErrItemNotFound},
 	}
-	videosList = method{name: MethodVideosList, units: 1}
+	videosList         = method{name: MethodVideosList, units: 1}
+	channelsList       = method{name: MethodChannelsList, units: 1}
+	commentThreadsList = method{
+		name: MethodCommentThreadsList, units: 1,
+		refusals: map[string]error{"commentsDisabled": ErrCommentsDisabled, "videoNotFound": ErrVideoNotFound},
+	}
 )
 
 const (

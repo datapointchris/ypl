@@ -1,0 +1,17 @@
+{
+  "id": "Wr1tt3nVid1",
+  "title": "A written talk with no chapters",
+  "description": "Another written description.",
+  "duration": 92,
+  "language": null,
+  "chapters": null,
+  "subtitles": {},
+  "automatic_captions": {
+    "en-orig": [
+      {"ext": "json3", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid1&lang=en&kind=asr&fmt=json3", "name": "English (Original)"}
+    ],
+    "en": [
+      {"ext": "json3", "url": "https://www.youtube.com/api/timedtext?v=Wr1tt3nVid1&lang=en&kind=asr&fmt=json3&tlang=en", "name": "English"}
+    ]
+  }
+}

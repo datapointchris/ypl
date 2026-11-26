@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,9 +32,21 @@ const (
 	fakeError = "YPL_FAKE_YTDLP_ERROR"
 )
 
+// fakeTestdata is this package's testdata directory, which the fake reads
+// from wherever a read runs it.
+const fakeTestdata = "YPL_FAKE_YTDLP_TESTDATA"
+
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(fakeMode); mode != "" {
 		os.Exit(fake(mode, os.Args[1:]))
+	}
+	testdata, err := filepath.Abs("testdata")
+	if err == nil {
+		err = os.Setenv(fakeTestdata, testdata)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 	os.Exit(m.Run())
 }
@@ -49,8 +63,14 @@ func fake(mode string, args []string) int {
 	}
 	id := strings.TrimPrefix(args[len(args)-1], "https://www.youtube.com/watch?v=")
 	switch mode {
+	case "stamp":
+		return stamp(id)
+	case "captions":
+		return captions(args)
+	case "audio":
+		return audio(args)
 	case "answer":
-		recording, err := os.ReadFile(filepath.Join("testdata", id+".json"))
+		recording, err := os.ReadFile(filepath.Join(os.Getenv(fakeTestdata), id+".json"))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: [youtube] %s: no recording\n", id)
 			return 1
@@ -75,11 +95,47 @@ func fake(mode string, args []string) int {
 	return 2
 }
 
-// reader is a Reader running this test binary as yt-dlp in mode.
-func reader(t *testing.T, mode string) *Reader {
+// reader is a door running this test binary as yt-dlp in mode, with no gap
+// between reads.
+func reader(t *testing.T, mode string) *Door {
 	t.Helper()
 	t.Setenv(fakeMode, mode)
-	return &Reader{path: os.Args[0]}
+	return openDoor(t, &memoryPauses{})
+}
+
+// openDoor is a door running this test binary as yt-dlp, keeping its pauses in
+// pauses, with no gap between reads.
+func openDoor(t *testing.T, pauses Pauses) *Door {
+	t.Helper()
+	d, err := NewDoor(context.Background(), Binary{path: os.Args[0]}, pauses, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("open the door: %v", err)
+	}
+	d.gap = func() time.Duration { return 0 }
+	d.nextStart = time.Time{}
+	return d
+}
+
+// memoryPauses keeps a door's pauses in memory.
+type memoryPauses struct {
+	mu       sync.Mutex
+	recorded []Pause
+}
+
+func (m *memoryPauses) LatestPause(context.Context) (Pause, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.recorded) == 0 {
+		return Pause{}, false, nil
+	}
+	return m.recorded[len(m.recorded)-1], true, nil
+}
+
+func (m *memoryPauses) RecordPause(_ context.Context, pause Pause) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recorded = append(m.recorded, pause)
+	return nil
 }
 
 func TestAReadReturnsTheVideoWithItsChaptersAndTopComments(t *testing.T) {
@@ -107,7 +163,8 @@ func TestAReadReturnsTheVideoWithItsChaptersAndTopComments(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"--ignore-config", "--no-plugin-dirs", "--skip-download", "--no-playlist", "--sleep-requests", "1", "--write-comments",
+		"--ignore-config", "--no-plugin-dirs", "--sleep-requests", "2", "--sleep-subtitles", "5", "--sleep-interval", "8",
+		"--max-sleep-interval", "16", "--skip-download", "--no-playlist", "--write-comments",
 		"--extractor-args", "youtube:max_comments=20,20,0,0;comment_sort=top", "--dump-json", "--",
 		"https://www.youtube.com/watch?v=-kbYeaEP-ME",
 	}
@@ -293,21 +350,22 @@ func TestAReadEndsAtItsDeadlineWhenYtdlpsChildHoldsTheOutput(t *testing.T) {
 	}
 }
 
-func TestNewReaderFindsTheBinaryOrSaysWhichItCouldNot(t *testing.T) {
-	if _, err := NewReader(filepath.Join(t.TempDir(), "yt-dlp")); err == nil || !strings.Contains(err.Error(), "yt-dlp") {
-		t.Fatalf("NewReader of a missing binary = %v, want a failure naming it", err)
+func TestFindFindsTheBinaryOrSaysWhichItCouldNot(t *testing.T) {
+	if _, err := Find(filepath.Join(t.TempDir(), "yt-dlp")); err == nil || !strings.Contains(err.Error(), "yt-dlp") {
+		t.Fatalf("Find of a missing binary = %v, want a failure naming it", err)
 	}
-	if r, err := NewReader(os.Args[0]); err != nil || r.path != os.Args[0] {
-		t.Fatalf("NewReader of this binary = %+v, %v", r, err)
+	if b, err := Find(os.Args[0]); err != nil || b.path != os.Args[0] {
+		t.Fatalf("Find of this binary = %+v, %v", b, err)
 	}
 }
 
 // Every other test runs this binary as yt-dlp, so each asserts the arguments a
 // read passes against this package's own copy of them, and an option yt-dlp no
-// longer has passes all of them. This hands the list to the real binary and
-// requires the read to fail at its URL rather than at its options: a file URL
-// is refused once every option is taken, and an option yt-dlp does not know is
-// refused before that.
+// longer has passes all of them. This hands each read's list to the real binary
+// and requires every option taken: a read of a URL fails at the URL, since a
+// file URL is refused once every option is taken and an option yt-dlp does not
+// know is refused before that, and the read of a caption track fails at the
+// info file it is pointed at.
 //
 // It reaches an option renamed or removed. It does not reach a misspelled
 // extractor-arg key, which yt-dlp takes in silence, leaving the extractor's own
@@ -317,18 +375,34 @@ func TestTheRealYtdlpTakesEveryArgumentAReadPasses(t *testing.T) {
 	if err != nil {
 		t.Skipf("yt-dlp is not installed: %v", err)
 	}
-	args := arguments("-kbYeaEP-ME")
-	args[len(args)-1] = "file:///dev/null"
-	cmd := exec.CommandContext(t.Context(), path, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-
-	said := stderr.String()
-	if strings.Contains(said, "no such option") {
-		t.Fatalf("yt-dlp refused an option a read passes, running %q: %s", args, said)
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.json")
+	reads := map[string][]string{
+		"enrichment": arguments("-kbYeaEP-ME"),
+		"captions":   infoArguments("-kbYeaEP-ME"),
+		"audio":      audioArguments(dir, "-kbYeaEP-ME", 1000),
+		"history":    historyArguments(filepath.Join(dir, "cookies.txt"), 5),
+		"track":      trackArguments(missing, dir, Track{Language: "en", Kind: Automatic}),
 	}
-	if !strings.Contains(said, "file:// URLs are disabled") {
-		t.Fatalf("yt-dlp ran %q and said %q (%v), want every option taken and the URL refused", args, said, err)
+	for name, args := range reads {
+		t.Run(name, func(t *testing.T) {
+			refusal := "file:// URLs are disabled"
+			if name == "track" {
+				refusal = "missing.json"
+			} else {
+				args[len(args)-1] = "file:///dev/null"
+			}
+			cmd := exec.CommandContext(t.Context(), path, args...)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+			said := stderr.String()
+			if strings.Contains(said, "no such option") {
+				t.Fatalf("yt-dlp refused an option a read passes, running %q: %s", args, said)
+			}
+			if !strings.Contains(said, refusal) {
+				t.Fatalf("yt-dlp ran %q and said %q (%v), want every option taken and %q", args, said, err, refusal)
+			}
+		})
 	}
 }

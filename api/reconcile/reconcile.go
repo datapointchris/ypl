@@ -67,10 +67,6 @@ var ErrAllowanceSpent = errors.New("the day's quota has no room for another writ
 // changed since, so the same write would be refused again.
 var ErrPushHeld = errors.New("the push waits on a write YouTube refused today")
 
-// EditReserve is the units no job but an edit's push spends, so a long push
-// running in the background leaves room for the next edit.
-const EditReserve = 1_000
-
 // Channel is what a pass reads and writes YouTube through, as youtube.Channel
 // does.
 type Channel interface {
