@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/datapointchris/goclilogin"
@@ -52,26 +54,63 @@ func standInPath() string { return filepath.Join(goclilogin.StateDir("ypl"), sta
 // started. The first stream's resolve uses it rather than take another.
 func handedLeasePath() string { return filepath.Join(goclilogin.StateDir("ypl"), "mpv-lease") }
 
-// leaseTheDoor takes a turn at the server's door for a read that this machine
-// makes. While the door is busy it asks again, and so it does while the door is
-// paused where waitOutPause holds. It says once why it waits. A server that
-// runs no yt-dlp has no door, and neither has one older than the lease route,
-// which answers 404. The read then goes ahead with no lease, and the Lease is
-// zero.
-func leaseTheDoor(ctx context.Context, client *api.Client, waitOutPause bool, waiting func(string)) (api.Lease, error) {
-	said := false
+// stoppedPath is where a stand-in leaves why it stopped the playback, for
+// `ypl play` to say once mpv has gone.
+func stoppedPath() string { return filepath.Join(goclilogin.StateDir("ypl"), "mpv-stopped") }
+
+// stopWithin bounds the stand-in's wait for mpv to quit.
+const stopWithin = 5 * time.Second
+
+// stopPlayback ends the playback of the mpv that started this stand-in, since
+// the door gives no stream a turn. It leaves why for `ypl play`, tells mpv to
+// quit, and waits for it to go. A resolve that only failed would send mpv to
+// open the watch URL itself and then on to the next, each a request to
+// YouTube outside the door.
+func stopPlayback(why error) {
+	player := os.Getppid()
+	_ = os.WriteFile(stoppedPath(), []byte(why.Error()), 0o600)
+	if syscall.Kill(player, syscall.SIGTERM) != nil {
+		return
+	}
+	for deadline := time.Now().Add(stopWithin); os.Getppid() == player && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// doorAttempts is how many times a request for a turn is sent while the
+// server's door answers busy. The server already waits up to 2 minutes for a
+// turn before it answers, so three attempts wait several minutes in all.
+const doorAttempts = 3
+
+// busyWaitCap bounds one wait between attempts while the door is busy. A wait
+// for a pause to end is the pause's own length.
+const busyWaitCap = 30 * time.Second
+
+// atTheDoor sends ask until the server's door answers it. While the door is
+// busy it sends it again after the server's Retry-After, up to doorAttempts in
+// all, and then fails with a noAnswer. While the door is paused it waits for
+// the pause to end where waitOutPause holds, and fails where it does not. It
+// says once why it waits.
+func atTheDoor[T any](ctx context.Context, ask func(context.Context) (T, error), waitOutPause bool, waiting func(string)) (T, error) {
+	var none T
+	said, busy := false, 0
 	for {
-		lease, err := client.TakeLease(ctx)
+		got, err := ask(ctx)
 		var refusal *api.Refusal
 		if !errors.As(err, &refusal) {
-			return lease, err
+			return got, err
 		}
+		wait := max(refusal.RetryAfter, time.Second)
 		switch {
-		case refusal.Code == api.CodeReadsUnavailable, refusal.Status == http.StatusNotFound:
-			return api.Lease{}, nil
-		case refusal.Code == api.CodeReadsBusy, refusal.Code == api.CodeReadsPaused && waitOutPause:
+		case refusal.Code == api.CodeReadsBusy:
+			busy++
+			if busy == doorAttempts {
+				return none, &noAnswer{fmt.Errorf("the server's door stayed busy through %d attempts: %w", doorAttempts, refusal)}
+			}
+			wait = min(wait, busyWaitCap)
+		case refusal.Code == api.CodeReadsPaused && waitOutPause:
 		default:
-			return api.Lease{}, err
+			return got, err
 		}
 		if !said {
 			waiting(fmt.Sprintf("Waiting for a turn at the server's door: %s.", refusal.Message))
@@ -79,10 +118,36 @@ func leaseTheDoor(ctx context.Context, client *api.Client, waitOutPause bool, wa
 		}
 		select {
 		case <-ctx.Done():
-			return api.Lease{}, ctx.Err()
-		case <-time.After(max(refusal.RetryAfter, time.Second)):
+			return none, ctx.Err()
+		case <-time.After(wait):
 		}
 	}
+}
+
+// leaseTheDoor takes a turn at the server's door for a read that this machine
+// makes, as atTheDoor asks for one. A paused door that it does not wait out,
+// and a door busy through every attempt, are errors. Where the server gives
+// neither a turn nor one of those refusals, the read goes ahead with no lease
+// and the Lease is zero, as every read did before the door. That covers a
+// server that runs no yt-dlp or predates the lease route, which is said to no
+// one, and a server that is restarting or cannot be reached, which is said to
+// noDoor.
+func leaseTheDoor(ctx context.Context, client *api.Client, waitOutPause bool, waiting func(string), noDoor func(error)) (api.Lease, error) {
+	lease, err := atTheDoor(ctx, client.TakeLease, waitOutPause, waiting)
+	var refusal *api.Refusal
+	var busy *noAnswer
+	switch {
+	case err == nil:
+		return lease, nil
+	case ctx.Err() != nil:
+		return api.Lease{}, ctx.Err()
+	case errors.As(err, &busy), errors.As(err, &refusal) && refusal.Code == api.CodeReadsPaused:
+		return api.Lease{}, err
+	case errors.As(err, &refusal) && (refusal.Code == api.CodeReadsUnavailable || refusal.Status == http.StatusNotFound):
+		return api.Lease{}, nil
+	}
+	noDoor(err)
+	return api.Lease{}, nil
 }
 
 // streamResolver is the stand-in for mpv to resolve each stream with, behind
@@ -111,8 +176,12 @@ func streamResolver(lease api.Lease, ytdlp string) (mpv.Resolver, error) {
 		_ = os.Remove(beside)
 		return mpv.Resolver{}, fmt.Errorf("link the stand-in: %w", err)
 	}
-	if !lease.HeldUntil.IsZero() {
-		if err := os.WriteFile(handedLeasePath(), []byte(lease.HeldUntil.Format(time.RFC3339Nano)), 0o600); err != nil {
+	if lease.ID != "" {
+		held, err := json.Marshal(lease)
+		if err == nil {
+			err = os.WriteFile(handedLeasePath(), held, 0o600)
+		}
+		if err != nil {
 			return mpv.Resolver{}, fmt.Errorf("leave the lease for the first stream: %w", err)
 		}
 	}
@@ -123,53 +192,102 @@ func streamResolver(lease api.Lease, ytdlp string) (mpv.Resolver, error) {
 	return mpv.Resolver{Path: path, Env: env}, nil
 }
 
-// handedLease reports whether this resolve takes the lease `ypl play` took
-// before mpv started. The file is removed by the one resolve that takes it,
-// and the lease is used only while its hold lasts.
-func handedLease(now time.Time) bool {
+// handedLease is the lease `ypl play` took before mpv started, where this
+// resolve is the one to take it. The file is removed by the one resolve that
+// takes it, and the lease is used only while its hold lasts.
+func handedLease(now time.Time) (api.Lease, bool) {
 	path := handedLeasePath()
 	held, err := os.ReadFile(path)
 	if err != nil || os.Remove(path) != nil {
-		return false
+		return api.Lease{}, false
 	}
-	until, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(held)))
-	return err == nil && now.Before(until)
+	var lease api.Lease
+	if json.Unmarshal(held, &lease) != nil || !now.Before(lease.HeldUntil) {
+		return api.Lease{}, false
+	}
+	return lease, true
 }
 
+// The tail of a resolve's stderr that the door is told, and the longest the
+// telling may take. yt-dlp writes the error that ended a read last.
+const (
+	outcomeTail   = 32 << 10
+	outcomeWithin = 5 * time.Second
+)
+
 // standIn is the stand-in's whole run. While mpv resolves a stream, it takes a
-// turn at the door, then runs the real yt-dlp with mpv's arguments and
-// exits as that exits. A paused door fails the resolve rather than waiting it
-// out. mpv shows the stand-in's stderr when a resolve fails, and nothing while
-// one waits.
+// turn at the door, then runs the real yt-dlp with mpv's arguments and exits
+// as that exits. A door that is paused, or busy through every attempt, stops
+// the playback rather than wait, since mpv shows nothing while a resolve
+// waits. A resolve that fails is told to the door, which pauses every read
+// where YouTube refused the address.
 func (a *app) standIn(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	ytdlp := os.Getenv(realYtdlpEnv)
 	if ytdlp == "" {
 		_, _ = fmt.Fprintf(stderr, "error: %s is the yt-dlp `ypl play` hands mpv, and runs only under it\n", os.Args[0])
 		return 1
 	}
-	if !handedLease(time.Now()) {
-		apiOverride = os.Getenv(apiOverrideEnv)
+	apiOverride = os.Getenv(apiOverrideEnv)
+	withoutTurn := func(err error) {
+		_, _ = fmt.Fprintf(stderr, "Resolving without a turn at the server's door: %v\n", reported(err))
+	}
+	lease, handed := handedLease(time.Now())
+	if !handed {
 		client, err := a.client(ctx)
-		if err == nil {
-			_, err = leaseTheDoor(ctx, client, false, func(string) {})
-		}
 		if err != nil {
+			withoutTurn(err)
+		} else if lease, err = leaseTheDoor(ctx, client, false, func(string) {}, withoutTurn); err != nil {
 			report(stderr, reported(err))
+			stopPlayback(reported(err))
 			return 1
 		}
 	}
+	tail := &lastBytes{most: outcomeTail}
 	resolve := exec.CommandContext(ctx, ytdlp, args...)
-	resolve.Stdin, resolve.Stdout, resolve.Stderr = os.Stdin, stdout, stderr
+	resolve.Stdin, resolve.Stdout, resolve.Stderr = os.Stdin, stdout, io.MultiWriter(stderr, tail)
+	resolve.WaitDelay = time.Second
 	err := resolve.Run()
-	var exit *exec.ExitError
-	switch {
-	case errors.As(err, &exit) && exit.ExitCode() > 0:
-		return exit.ExitCode()
-	case err != nil:
+	code := -1
+	if resolve.ProcessState != nil {
+		code = resolve.ProcessState.ExitCode()
+	}
+	if code < 0 {
 		report(stderr, fmt.Errorf("run %s: %w", ytdlp, err))
 		return 1
 	}
-	return 0
+	if code != 0 && lease.ID != "" {
+		a.tellTheDoor(lease.ID, code, string(tail.held), stderr)
+	}
+	return code
+}
+
+// tellTheDoor tells the server's door how the read that lease id held for
+// ended. A failure to tell it is said on stderr, which mpv shows beside the
+// failed resolve.
+func (a *app) tellTheDoor(id string, code int, said string, stderr io.Writer) {
+	ctx, cancel := context.WithTimeout(context.Background(), outcomeWithin)
+	defer cancel()
+	client, err := a.client(ctx)
+	if err == nil {
+		err = client.EndLease(ctx, id, code, said)
+	}
+	if err != nil {
+		report(stderr, fmt.Errorf("tell the server's door how the read ended: %w", reported(err)))
+	}
+}
+
+// lastBytes keeps the last most bytes written to it.
+type lastBytes struct {
+	most int
+	held []byte
+}
+
+func (l *lastBytes) Write(p []byte) (int, error) {
+	l.held = append(l.held, p...)
+	if over := len(l.held) - l.most; over > 0 {
+		l.held = l.held[over:]
+	}
+	return len(p), nil
 }
 
 // realYtdlp is the first yt-dlp on PATH that is yt-dlp itself, rather than

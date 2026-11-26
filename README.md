@@ -160,7 +160,10 @@ through would say the wrong thing.
 Each video streams through the yt-dlp on this machine, which mpv runs. Before mpv resolves each
 one, `ypl play` takes a turn at the server's door, so this machine's reads and the server's own never
 come close together. A wait for the door is said on the terminal. While YouTube's refusal has
-paused the door, the first video waits for it to open, and a later one fails with the reason.
+paused the door, the first video waits for it to open. A pause that begins once playback is under
+way stops mpv, and `ypl play` says why and exits 1. A resolve that YouTube refuses is reported to
+the server, so its own reads pause too. Where the server cannot be reached, each video plays
+without a turn, and the terminal says so.
 
 `ypl play` records what it plays. It reads mpv's socket while the player runs. Once a mix has played
 long enough, which `ypl play --help` gives, it tells the server while mpv is still playing. Only
@@ -263,10 +266,14 @@ that the server is busy and when to try again.
 
 `ypl ytdlp -- <arguments>` runs yt-dlp on the server through that same door, with the server's own
 sleeps added. What yt-dlp prints is printed here, the files it writes land where `-o` names them
-under this directory, and the command exits with yt-dlp's code. Only YouTube links, video ids and
-`ytsearch:` are read. Cookies, logins and any option that runs or reads something on the server are
-refused, naming the option and why. A URL the run prints, such as a stream's from `-g`, is bound to
-the server's address, so it plays nowhere else.
+under this directory. Only YouTube links, video ids and `ytsearch:` are read. Cookies, logins, any
+option that runs or reads something on the server, and any option not yet weighed are refused,
+naming the option and why. A URL the run prints, such as a stream's from `-g`, is bound to the
+server's address, so it plays nowhere else. Through the server's public address, a run stops after
+90 seconds, and its answer may hold 100 MB.
+
+The command exits 0 where yt-dlp succeeded or stopped at `--max-downloads`. It exits 1 where yt-dlp
+failed, naming yt-dlp's code, and 4 where the door stayed busy through three tries.
 
 ## `server` — whether the mirror is keeping up, and an exit code that means look
 

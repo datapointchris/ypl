@@ -133,6 +133,7 @@ func (h *Handlers) routes() []route {
 		{http.MethodGet, "/api/v1/youtube/videos/{id}/audio", h.streamAudio},
 		{http.MethodPost, "/api/v1/ytdlp/runs", h.runYtdlp},
 		{http.MethodPost, "/api/v1/ytdlp/leases", h.leaseYtdlp},
+		{http.MethodPut, "/api/v1/ytdlp/leases/{id}/outcome", h.endLease},
 		{http.MethodGet, "/api/v1/suggestions", h.listSuggestions},
 		{http.MethodGet, "/api/v1/sync/runs", h.listSyncRuns},
 		{http.MethodGet, "/api/v1/status", h.showStatus},

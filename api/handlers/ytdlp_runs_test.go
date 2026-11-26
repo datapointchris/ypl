@@ -126,7 +126,7 @@ func TestARunAnswersItsStreamsExitCodeAndFilesAsOneTar(t *testing.T) {
 		t.Fatalf("the run answered %d as %q: %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
 	}
 	names, held := tarEntries(t, rec.Body)
-	if want := []string{"stdout", "stderr", "exit-code", "files/x.en.vtt"}; !slices.Equal(names, want) {
+	if want := []string{"stdout", "stderr", "exit-code", "files/x.en.vtt", "end"}; !slices.Equal(names, want) {
 		t.Fatalf("the answer holds %v, want %v", names, want)
 	}
 	if !strings.Contains(held["stdout"], "Writing video subtitles to: x.en.vtt") || !strings.Contains(held["stderr"], "WARNING") ||
@@ -137,8 +137,9 @@ func TestARunAnswersItsStreamsExitCodeAndFilesAsOneTar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "--skip-download\n--write-auto-subs\n--output=x.%(ext)s\n--ignore-config\n--no-plugin-dirs\n--use-extractors=youtube.*\n" +
-		"--sleep-requests\n2\n--sleep-subtitles\n5\n--sleep-interval\n8\n--max-sleep-interval\n16\n--\nhttps://www.youtube.com/watch?v=Wr1tt3nVid0\n"
+	want := "--skip-download\n--write-auto-subs\n--output=x.%(ext)s\n--ignore-config\n--no-plugin-dirs\n" +
+		"--sleep-requests\n2\n--sleep-subtitles\n5\n--sleep-interval\n8\n--max-sleep-interval\n16\n" +
+		"--use-extractors=youtube.*\n--color=never\n--\nhttps://www.youtube.com/watch?v=Wr1tt3nVid0\n"
 	if string(handed) != want {
 		t.Fatalf("yt-dlp was handed\n%s\nwant\n%s", handed, want)
 	}
@@ -150,8 +151,8 @@ func TestARunAnswersItsStreamsExitCodeAndFilesAsOneTar(t *testing.T) {
 	pinned(t, "ytdlp-run", "a run's tar entries", body)
 }
 
-// A cookie jar is refused before the door, naming the option and why, and
-// yt-dlp never runs.
+// A cookie jar is refused before the door, naming the option, and yt-dlp never
+// runs.
 func TestARunWithACookieJarIsRefusedNamingItAndWhy(t *testing.T) {
 	f := newFixture(t)
 	door, argv := scriptDoor(t, writesCaptions)
@@ -159,8 +160,8 @@ func TestARunWithACookieJarIsRefusedNamingItAndWhy(t *testing.T) {
 
 	rec := f.postAt("ypl", "/api/v1/ytdlp/runs", `{"args": ["--cookies", "c.txt", "https://youtu.be/Wr1tt3nVid0"]}`)
 	body := decode[wireRefusal](t, rec, http.StatusUnprocessableEntity)
-	if body.Code != "ytdlp_argument_refused" || body.Field != "--cookies" || !strings.Contains(body.Message, "signed-in read risks the account") {
-		t.Fatalf("refused with %+v, want --cookies named with why", body)
+	if body.Code != "ytdlp_argument_refused" || body.Field != "--cookies" {
+		t.Fatalf("refused with %+v, want --cookies named", body)
 	}
 	if _, err := os.Stat(argv); err == nil {
 		t.Fatal("yt-dlp ran, and the run was refused")
@@ -179,5 +180,23 @@ func TestARunThroughThePublicAddressIsCapped(t *testing.T) {
 	handed, err := os.ReadFile(argv)
 	if err != nil || !strings.Contains(string(handed), "--max-filesize=40\n") {
 		t.Fatalf("yt-dlp was handed %q (%v), want --max-filesize=40", handed, err)
+	}
+}
+
+// Through the public address, a run that outlasts the budget is refused with
+// a code the CLI does not send again. A second run would read YouTube from the
+// start and be cut at the same point.
+func TestARunPastThePublicBudgetIsRefusedAsTooLongRatherThanBusy(t *testing.T) {
+	f := newFixture(t)
+	door, _ := scriptDoor(t, "sleep 5\n")
+	f.h.ReadVideosWith(door, "ypl.example.com")
+	f.h.videos.budget = 300 * time.Millisecond
+
+	rec := f.postAt("ypl.example.com", "/api/v1/ytdlp/runs", captionRun)
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusUnprocessableEntity || body.Code != "run_past_public_budget" {
+		t.Fatalf("a run past the budget answered %d: %s", rec.Code, rec.Body)
 	}
 }

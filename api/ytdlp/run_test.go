@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"regexp"
@@ -53,27 +54,28 @@ func TestARunRefusesEachArgumentItDoesNotPassNamingWhy(t *testing.T) {
 	for _, c := range []struct {
 		args     []string
 		argument string
-		why      string
+		reason   reason
 	}{
-		{[]string{"--cookies", "c.txt", link}, "--cookies", "signed-in read"},
-		{[]string{"--cookies-from-browser=firefox", link}, "--cookies-from-browser", "signed-in read"},
-		{[]string{"-u", "me", link}, "-u", "signed-in read"},
-		{[]string{"--exec", "rm -rf /", link}, "--exec", "runs a program on the server"},
-		{[]string{"-a", "links.txt"}, "-a", "reads a file on the server"},
-		{[]string{"-P", "/tmp", link}, "-P", "outside the run's own directory"},
-		{[]string{"-o", "/etc/x.%(ext)s", link}, "-o /etc/x.%(ext)s", "absolute path"},
-		{[]string{"-o", "subtitle:../x.%(ext)s", link}, "-o subtitle:../x.%(ext)s", "climbs out"},
-		{[]string{"--output=$HOME/x", link}, "--output $HOME/x", "expands"},
-		{[]string{"--cook", "c.txt", link}, "--cook", "not among the options ypl passes"},
-		{[]string{"--skip-download=yes", link}, "--skip-download", "takes no value"},
-		{[]string{link, "-f"}, "-f", "needs a value"},
-		{[]string{"https://vimeo.com/1"}, "https://vimeo.com/1", "YouTube alone"},
-		{[]string{"--sleep-interval", "soon", link}, "--sleep-interval soon", "number of seconds"},
+		{[]string{"--cookies", "c.txt", link}, "--cookies", signsIn},
+		{[]string{"--cookies-from-browser=firefox", link}, "--cookies-from-browser", signsIn},
+		{[]string{"-u", "me", link}, "-u", signsIn},
+		{[]string{"--exec", "rm -rf /", link}, "--exec", runsOnServer},
+		{[]string{"-a", "links.txt"}, "-a", readsServer},
+		{[]string{"-P", "/tmp", link}, "-P", writesElsewhere},
+		{[]string{"--ignore-no-formats-error", "-J", link}, "--ignore-no-formats-error", hidesRefusal},
+		{[]string{"-o", "/etc/x.%(ext)s", link}, "-o /etc/x.%(ext)s", absolutePath},
+		{[]string{"-o", "subtitle:../x.%(ext)s", link}, "-o subtitle:../x.%(ext)s", climbsOut},
+		{[]string{"--output=$HOME/x", link}, "--output $HOME/x", expandsOnServer},
+		{[]string{"--cook", "c.txt", link}, "--cook", notWeighed},
+		{[]string{"--skip-download=yes", link}, "--skip-download", takesNoValue},
+		{[]string{link, "-f"}, "-f", needsValue},
+		{[]string{"https://vimeo.com/1"}, "https://vimeo.com/1", notYouTubeInput},
+		{[]string{"--sleep-interval", "soon", link}, "--sleep-interval soon", notSeconds},
 	} {
 		_, err := ReadRunArguments(c.args)
 		var refused *RefusedArgument
-		if !errors.As(err, &refused) || refused.Argument != c.argument || !strings.Contains(refused.Why, c.why) {
-			t.Errorf("%q was refused with %v, want %s named and %q", c.args, err, c.argument, c.why)
+		if !errors.As(err, &refused) || refused.Argument != c.argument || refused.reason != c.reason {
+			t.Errorf("%q was refused with %v, want %s named as %s", c.args, err, c.argument, c.reason)
 		}
 	}
 }
@@ -86,7 +88,7 @@ func TestARunKeepsTheLongerOfEachSleep(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(read.argv(DefaultPace.Sleeps, 0), " ")
-	if !strings.Contains(got, "--sleep-requests 2 --sleep-subtitles 5 --sleep-interval 30 --max-sleep-interval 30 -- "+link) {
+	if !strings.Contains(got, "--sleep-requests 2 --sleep-subtitles 5 --sleep-interval 30 --max-sleep-interval 30 --use-extractors=youtube.* --color=never -- "+link) {
 		t.Fatalf("argv %q, want the door's sleeps but the person's longer interval", got)
 	}
 }
@@ -148,9 +150,66 @@ func TestALeaseHoldsTheDoorAndThePauseTurnsItAway(t *testing.T) {
 		t.Fatalf("the read after a lease ended %v after it, want it to wait the hold of %v", waited, d.leaseHold)
 	}
 
-	d.paused = Pause{Until: time.Now().Add(time.Hour), Cause: PausedRefused}
+	// A desk's resolve that YouTube refused pauses the door as a read of its
+	// own would, though the desk's yt-dlp wrote its error in color.
+	lease, err := d.Lease(context.Background(), Person)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.EndLease(lease.ID, 1, "\x1b[0;31mERROR:\x1b[0m [youtube] ccccccccccc: Sign in to confirm you're not a bot\n")
 	if _, err := d.Lease(context.Background(), Person); !errors.Is(err, ErrPaused) {
-		t.Fatalf("a lease while paused answered %v, want the pause", err)
+		t.Fatalf("a lease after a desk's refused read answered %v, want the pause", err)
+	}
+}
+
+// Runs that fail on their own options, such as -x on a server with no
+// ffmpeg, pause the person's runs alone. The server's own reads and a desk's
+// leases go on.
+func TestRunsFailingInARowPauseRunsAloneAndLeasesGoOn(t *testing.T) {
+	d := reader(t, "fail")
+	d.leaseHold = time.Millisecond
+	t.Setenv(fakeError, "ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install or provide the path using --ffmpeg-location")
+	for _, id := range []string{"aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd"} {
+		read, err := ReadRunArguments([]string{"-x", "--", id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		made, err := d.Run(context.Background(), Person, read, 0)
+		if id == "ddddddddddd" {
+			if !errors.Is(err, ErrPaused) {
+				t.Fatalf("the run after %d failed answered %v, want the runs' pause", MaxFailuresInARow, err)
+			}
+			break
+		}
+		if err != nil || made.ExitCode != 1 {
+			t.Fatalf("a failing run answered %+v, %v, want its exit code", made, err)
+		}
+		_ = made.Close()
+	}
+	if _, paused := d.PausedUntil(); paused {
+		t.Fatal("failing runs paused every read")
+	}
+	if _, err := d.Lease(context.Background(), Person); err != nil {
+		t.Fatalf("a lease after failing runs answered %v, want a turn", err)
+	}
+}
+
+// A run stops once the disk it writes to falls below the floor, so a playlist
+// downloaded whole cannot fill the disk the store is on. The stop says nothing
+// of YouTube, so it moves no failures in a row.
+func TestARunStopsWhereTheDiskFallsBelowItsFloor(t *testing.T) {
+	d := reader(t, "sleep")
+	d.diskFloor = math.MaxInt64
+	read, err := ReadRunArguments([]string{link})
+	if err != nil {
+		t.Fatal(err)
+	}
+	began := time.Now()
+	if _, err := d.Run(context.Background(), Person, read, 0); !errors.Is(err, ErrDiskLow) || time.Since(began) > 5*time.Second {
+		t.Fatalf("a run with no room answered %v after %v, want ErrDiskLow at once", err, time.Since(began))
+	}
+	if len(d.failedRuns) != 0 {
+		t.Errorf("the stop counted %v as failures", d.failedRuns)
 	}
 }
 

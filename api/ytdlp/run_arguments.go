@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -29,11 +30,70 @@ func (a RunArguments) Inputs() []string { return a.inputs }
 // RefusedArgument names an argument that ypl keeps from yt-dlp, and why.
 type RefusedArgument struct {
 	Argument string
-	Why      string
+	reason   reason
 }
 
 func (r *RefusedArgument) Error() string {
-	return fmt.Sprintf("ypl does not pass %s to yt-dlp: %s", r.Argument, r.Why)
+	return fmt.Sprintf("ypl does not pass %s to yt-dlp: %s", r.Argument, whys[r.reason])
+}
+
+// reason is why ypl refuses an argument, by a name a test can branch on.
+type reason string
+
+// Why ypl refuses an option it knows yt-dlp has.
+const (
+	signsIn         reason = "signs_in"
+	runsOnServer    reason = "runs_on_server"
+	readsServer     reason = "reads_server"
+	writesElsewhere reason = "writes_elsewhere"
+	replacesYtdlp   reason = "replaces_ytdlp"
+	notYouTube      reason = "not_youtube"
+	otherExtractors reason = "other_extractors"
+	outpacesDoor    reason = "outpaces_door"
+	holdsDoor       reason = "holds_door"
+	hidesRefusal    reason = "hides_refusal"
+	definesOptions  reason = "defines_options"
+	notWeighed      reason = "not_weighed"
+)
+
+// Why ypl refuses how an argument is written.
+const (
+	takesNoValue    reason = "takes_no_value"
+	needsValue      reason = "needs_value"
+	notSeconds      reason = "not_seconds"
+	notASize        reason = "not_a_size"
+	notAPreset      reason = "not_a_preset"
+	absolutePath    reason = "absolute_path"
+	expandsOnServer reason = "expands_on_server"
+	climbsOut       reason = "climbs_out"
+	placeholderPath reason = "placeholder_path"
+	notYouTubeInput reason = "not_youtube_input"
+)
+
+// whys is the sentence each reason is refused with.
+var whys = map[reason]string{
+	signsIn:         "it signs the run in or hands YouTube a cookie, and a signed-in read risks the account",
+	runsOnServer:    "it runs a program on the server, or hands one arguments",
+	readsServer:     "it reads or writes a file on the server outside the run's own directory",
+	writesElsewhere: "it writes outside the run's own directory on the server; -o names a path under where ypl runs",
+	replacesYtdlp:   "it replaces the server's yt-dlp, which only the server's image does",
+	notYouTube:      "it sends the server's requests somewhere other than YouTube",
+	otherExtractors: "ypl runs YouTube's extractors alone; search with ytsearch:<words>",
+	outpacesDoor:    "it fetches several pieces at once, faster than the door's pace allows",
+	holdsDoor:       "it holds the server's one yt-dlp while it waits for a video to begin",
+	hidesRefusal:    "it turns YouTube's refusal of the server into a warning, which the door does not read",
+	definesOptions:  "it defines options ypl cannot check before yt-dlp reads them",
+	notWeighed:      "it is not among the options ypl passes, which read YouTube and write within the run's own directory",
+	takesNoValue:    "it takes no value",
+	needsValue:      "it needs a value after it",
+	notSeconds:      "it is not a number of seconds of at least 0",
+	notASize:        "it is not a size, such as 50k or 44.6M",
+	notAPreset:      "it is not one of the presets " + strings.Join(presetAliases, ", "),
+	absolutePath:    "the template is an absolute path on the server; name one relative to where ypl runs",
+	expandsOnServer: "yt-dlp expands ~ and $ to a path on the server; name one relative to where ypl runs",
+	climbsOut:       "the template climbs out of the run's own directory",
+	placeholderPath: "the placeholder names a path, and a field it stands in for is part of a file's name",
+	notYouTubeInput: "ypl runs yt-dlp on YouTube alone; name a YouTube link, a video id, or ytsearch:<words>",
 }
 
 // runOption is one passed option, by each of its spellings. value says it
@@ -43,7 +103,7 @@ func (r *RefusedArgument) Error() string {
 type runOption struct {
 	spellings []string
 	value     bool
-	check     func(value string) string
+	check     func(value string) reason
 	sleep     func(*Sleeps) *float64
 	maxSize   bool
 }
@@ -66,7 +126,7 @@ func valued(spellings ...string) *runOption { return &runOption{spellings: spell
 // shapes what is printed, or shapes the files written within the run's own
 // directory. Any option that is not here is refused, so an option yt-dlp adds
 // later is refused until it is weighed.
-var passedOptions = []*runOption{
+var passedOptions = append([]*runOption{
 	// What yt-dlp is and what it would do.
 	flags("-h", "--help"), flags("--version"), flags("--list-extractors"), flags("--extractor-descriptions"),
 	flags("-i", "--ignore-errors"), flags("--no-abort-on-error"), flags("--abort-on-error", "--no-ignore-errors"),
@@ -113,19 +173,13 @@ var passedOptions = []*runOption{
 
 	// What it prints.
 	flags("-q", "--quiet"), flags("--no-quiet"), flags("--no-warnings"), flags("-s", "--simulate"), flags("--no-simulate"),
-	flags("--ignore-no-formats-error"), flags("--no-ignore-no-formats-error"), flags("--skip-download", "--no-download"),
+	flags("--no-ignore-no-formats-error"), flags("--skip-download", "--no-download"),
 	valued("-O", "--print"), flags("-j", "--dump-json"), flags("-J", "--dump-single-json"),
 	flags("-g", "--get-url"), flags("-e", "--get-title"), flags("--get-id"), flags("--get-thumbnail"),
 	flags("--get-description"), flags("--get-duration"), flags("--get-filename"), flags("--get-format"),
 	flags("--newline"), flags("--no-progress"), flags("--progress"), flags("--console-title"),
 	valued("--progress-template"), valued("--progress-delta"), flags("-v", "--verbose"),
 	flags("--dump-pages"), flags("--write-pages"), flags("--print-traffic"),
-
-	// The door keeps the longest of each sleep.
-	{spellings: []string{"--sleep-requests"}, value: true, sleep: func(s *Sleeps) *float64 { return &s.Requests }},
-	{spellings: []string{"--sleep-interval", "--min-sleep-interval"}, value: true, sleep: func(s *Sleeps) *float64 { return &s.Interval }},
-	{spellings: []string{"--max-sleep-interval"}, value: true, sleep: func(s *Sleeps) *float64 { return &s.MaxInterval }},
-	{spellings: []string{"--sleep-subtitles"}, value: true, sleep: func(s *Sleeps) *float64 { return &s.Subtitles }},
 
 	// Formats and subtitles.
 	valued("-f", "--format"), valued("-S", "--format-sort"), flags("--format-sort-reset"),
@@ -151,20 +205,22 @@ var passedOptions = []*runOption{
 	valued("--remove-chapters"), flags("--no-remove-chapters"),
 	flags("--force-keyframes-at-cuts"), flags("--no-force-keyframes-at-cuts"), valued("--fixup"),
 	flags("--no-exec"), flags("--no-sponsorblock"),
-}
+}, sleepsPassed()...)
 
-// Why ypl refuses an option it knows yt-dlp has.
-const (
-	signsIn      = "it signs the run in, and a signed-in read risks the account"
-	runsOnServer = "it runs a program on the server"
-	readsServer  = "it reads a file on the server"
-	notYouTube   = "it sends the server's requests somewhere other than YouTube"
-)
+// sleepsPassed is a passed option for each of sleepOptions. The door keeps
+// the longer of each sleep and the person's.
+func sleepsPassed() []*runOption {
+	var passed []*runOption
+	for _, sleep := range sleepOptions {
+		passed = append(passed, &runOption{spellings: sleep.spellings, value: true, sleep: sleep.field})
+	}
+	return passed
+}
 
 // refusedOptions is why each option ypl knows of and does not pass is refused,
 // by every spelling yt-dlp takes for it. An option on neither list is refused
 // as one ypl has not weighed.
-var refusedOptions = map[string]string{
+var refusedOptions = map[string]reason{
 	"--cookies":                     signsIn,
 	"--cookies-from-browser":        signsIn,
 	"-u":                            signsIn,
@@ -184,7 +240,7 @@ var refusedOptions = map[string]string{
 	"--client-certificate":          signsIn,
 	"--client-certificate-key":      signsIn,
 	"--client-certificate-password": signsIn,
-	"--add-headers":                 "it can send YouTube a cookie, and a signed-in read risks the account",
+	"--add-headers":                 signsIn,
 	"--mark-watched":                signsIn,
 
 	"--exec":                     runsOnServer,
@@ -194,26 +250,26 @@ var refusedOptions = map[string]string{
 	"--external-downloader":      runsOnServer,
 	"--downloader-args":          runsOnServer,
 	"--external-downloader-args": runsOnServer,
-	"--postprocessor-args":       "it passes arguments to a program on the server",
-	"--ppa":                      "it passes arguments to a program on the server",
+	"--postprocessor-args":       runsOnServer,
+	"--ppa":                      runsOnServer,
 	"--ffmpeg-location":          runsOnServer,
 	"--js-runtimes":              runsOnServer,
 	"--config-locations":         readsServer,
-	"--plugin-dirs":              "it loads plugins from the server's disk",
-	"-a":                         readsServer + "; name the links themselves",
-	"--batch-file":               readsServer + "; name the links themselves",
+	"--plugin-dirs":              readsServer,
+	"-a":                         readsServer,
+	"--batch-file":               readsServer,
 	"--load-info-json":           readsServer,
 	"--load-pages":               readsServer,
 	"--enable-file-urls":         readsServer,
-	"--download-archive":         "it reads and writes a file on the server",
-	"--print-to-file":            "it writes a file on the server outside the run's own directory",
-	"--cache-dir":                "it writes a directory on the server outside the run's own",
-	"--rm-cache-dir":             "it removes a directory on the server",
-	"-P":                         "it writes outside the run's own directory on the server; -o names a path under where ypl runs",
-	"--paths":                    "it writes outside the run's own directory on the server; -o names a path under where ypl runs",
-	"-U":                         "it replaces the server's yt-dlp, which only the server's image does",
-	"--update":                   "it replaces the server's yt-dlp, which only the server's image does",
-	"--update-to":                "it replaces the server's yt-dlp, which only the server's image does",
+	"--download-archive":         readsServer,
+	"--print-to-file":            readsServer,
+	"--cache-dir":                readsServer,
+	"--rm-cache-dir":             readsServer,
+	"-P":                         writesElsewhere,
+	"--paths":                    writesElsewhere,
+	"-U":                         replacesYtdlp,
+	"--update":                   replacesYtdlp,
+	"--update-to":                replacesYtdlp,
 
 	"--proxy":                      notYouTube,
 	"--geo-verification-proxy":     notYouTube,
@@ -222,19 +278,18 @@ var refusedOptions = map[string]string{
 	"--sponsorblock-remove":        notYouTube,
 	"--sponsorblock-chapter-title": notYouTube,
 	"--sponsorblock-api":           notYouTube,
-	"--use-extractors":             "ypl runs YouTube's extractors alone",
-	"--ies":                        "ypl runs YouTube's extractors alone",
-	"--force-generic-extractor":    "ypl runs YouTube's extractors alone",
-	"--default-search":             "ypl runs YouTube's extractors alone; search with ytsearch:<words>",
+	"--use-extractors":             otherExtractors,
+	"--ies":                        otherExtractors,
+	"--force-generic-extractor":    otherExtractors,
+	"--default-search":             otherExtractors,
 
-	"-N":                     "it fetches several pieces at once, faster than the door's pace allows",
-	"--concurrent-fragments": "it fetches several pieces at once, faster than the door's pace allows",
-	"--wait-for-video":       "it holds the server's one yt-dlp while it waits for a video to begin",
-	"--alias":                "it defines options ypl cannot check before yt-dlp reads them",
+	"-N":                     outpacesDoor,
+	"--concurrent-fragments": outpacesDoor,
+	"--wait-for-video":       holdsDoor,
+	"--alias":                definesOptions,
+
+	"--ignore-no-formats-error": hidesRefusal,
 }
-
-// notWeighed is why an option on neither list is refused.
-const notWeighed = "it is not among the options ypl passes, which read YouTube and write within the run's own directory"
 
 // optionsBySpelling is every passed option by each of its spellings.
 var optionsBySpelling = func() map[string]*runOption {
@@ -279,10 +334,10 @@ func ReadRunArguments(args []string) (RunArguments, error) {
 			}
 			switch {
 			case !option.value && hasValue:
-				return RunArguments{}, &RefusedArgument{Argument: name, Why: "it takes no value"}
+				return RunArguments{}, &RefusedArgument{Argument: name, reason: takesNoValue}
 			case option.value && !hasValue:
 				if i+1 == len(args) {
-					return RunArguments{}, &RefusedArgument{Argument: name, Why: "it needs a value after it"}
+					return RunArguments{}, &RefusedArgument{Argument: name, reason: needsValue}
 				}
 				i++
 				value = args[i]
@@ -306,7 +361,7 @@ func ReadRunArguments(args []string) (RunArguments, error) {
 				value := arg[j+1:]
 				if value == "" {
 					if i+1 == len(args) {
-						return RunArguments{}, &RefusedArgument{Argument: name, Why: "it needs a value after it"}
+						return RunArguments{}, &RefusedArgument{Argument: name, reason: needsValue}
 					}
 					i++
 					value = args[i]
@@ -331,30 +386,30 @@ func lookUp(name string) (*runOption, error) {
 		return option, nil
 	}
 	if why, ok := refusedOptions[name]; ok {
-		return nil, &RefusedArgument{Argument: name, Why: why}
+		return nil, &RefusedArgument{Argument: name, reason: why}
 	}
-	return nil, &RefusedArgument{Argument: name, Why: notWeighed}
+	return nil, &RefusedArgument{Argument: name, reason: notWeighed}
 }
 
 // addOption keeps option, spelled name, with value where it takes one.
 func (a *RunArguments) addOption(name string, option *runOption, value string) error {
 	if option.check != nil {
 		if why := option.check(value); why != "" {
-			return &RefusedArgument{Argument: name + " " + value, Why: why}
+			return &RefusedArgument{Argument: name + " " + value, reason: why}
 		}
 	}
 	switch {
 	case option.sleep != nil:
 		seconds, err := strconv.ParseFloat(value, 64)
 		if err != nil || seconds < 0 {
-			return &RefusedArgument{Argument: name + " " + value, Why: "it is not a number of seconds of at least 0"}
+			return &RefusedArgument{Argument: name + " " + value, reason: notSeconds}
 		}
 		*option.sleep(&a.sleeps) = seconds
 		return nil
 	case option.maxSize:
 		size, ok := bytesOf(value)
 		if !ok {
-			return &RefusedArgument{Argument: name + " " + value, Why: "it is not a size, such as 50k or 44.6M"}
+			return &RefusedArgument{Argument: name + " " + value, reason: notASize}
 		}
 		a.maxFilesize = size
 		return nil
@@ -371,7 +426,7 @@ func (a *RunArguments) addOption(name string, option *runOption, value string) e
 // query.
 func (a *RunArguments) addInput(input string) error {
 	if !youTubeInput(input) {
-		return &RefusedArgument{Argument: input, Why: "ypl runs yt-dlp on YouTube alone; name a YouTube link, a video id, or ytsearch:<words>"}
+		return &RefusedArgument{Argument: input, reason: notYouTubeInput}
 	}
 	a.inputs = append(a.inputs, input)
 	return nil
@@ -415,24 +470,24 @@ var templateTypes = regexp.MustCompile(`(?i)^(chapter|subtitle|thumbnail|descrip
 // outputTemplate refuses a template that names a path outside the run's own
 // directory: an absolute one, one yt-dlp expands from ~ or an environment
 // variable on the server, and one holding .., which can climb out.
-func outputTemplate(template string) string {
+func outputTemplate(template string) reason {
 	template = templateTypes.ReplaceAllString(template, "")
 	switch {
 	case strings.HasPrefix(template, "/"):
-		return "the template is an absolute path on the server; name one relative to where ypl runs"
+		return absolutePath
 	case strings.HasPrefix(template, "~"), strings.Contains(template, "$"):
-		return "yt-dlp expands ~ and $ to a path on the server; name one relative to where ypl runs"
+		return expandsOnServer
 	case strings.Contains(template, ".."):
-		return "the template climbs out of the run's own directory"
+		return climbsOut
 	}
 	return ""
 }
 
 // placeholder refuses a placeholder for a missing field that could put a
 // file outside the run's own directory.
-func placeholder(text string) string {
+func placeholder(text string) reason {
 	if strings.Contains(text, "/") || strings.Contains(text, "..") {
-		return "the placeholder names a path, and a field it stands in for is part of a file's name"
+		return placeholderPath
 	}
 	return ""
 }
@@ -440,13 +495,11 @@ func placeholder(text string) string {
 // presetAliases are the presets -t takes.
 var presetAliases = []string{"mp3", "aac", "mp4", "mkv", "sleep"}
 
-func presetAlias(name string) string {
-	for _, preset := range presetAliases {
-		if name == preset {
-			return ""
-		}
+func presetAlias(name string) reason {
+	if slices.Contains(presetAliases, name) {
+		return ""
 	}
-	return "it is not one of the presets " + strings.Join(presetAliases, ", ")
+	return notAPreset
 }
 
 // sizeSuffix is a size as yt-dlp writes one: a number, then k, M, G, T, P, E,

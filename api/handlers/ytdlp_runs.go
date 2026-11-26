@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"archive/tar"
+	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,16 +17,6 @@ import (
 	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
-// PersonRoutes is every route that only a person's token reaches, by the
-// scope a person's token holds for it. goapiauth lets a person's token reach
-// every route and keeps a service's to ServiceRoutes, so none of these is
-// listed there. A run of yt-dlp and a lease of the door are a person's: what
-// they reach is a person's choosing, and a service's reads have routes of
-// their own.
-var PersonRoutes = map[string][]string{
-	"ypl.ytdlp.run": {"POST /api/v1/ytdlp/runs", "POST /api/v1/ytdlp/leases"},
-}
-
 // maxRunBody bounds the body of a run, many times a long command line.
 const maxRunBody = 64 << 10
 
@@ -35,20 +27,23 @@ type runRequest struct {
 }
 
 // The entries of a run's answer, in the order they are written. The run's
-// files follow them, each under runFiles.
+// files follow them, each under runFiles, and runEnd closes the answer, so an
+// answer cut short between two files is told from a whole one.
 const (
 	runStdout   = "stdout"
 	runStderr   = "stderr"
 	runExitCode = "exit-code"
 	runFiles    = "files/"
+	runEnd      = "end"
 )
 
 // runYtdlp runs a person's yt-dlp through the door and answers with one tar
-// stream: what it printed to stdout and stderr, its exit code, and each file
-// it wrote under files/. A request through the public address gets at most
-// maxPublic bytes of those, and no download larger.
+// stream: what it printed to stdout and stderr, its exit code, each file it
+// wrote under files/, and the end. A request through the public address gets
+// at most maxPublic bytes of those, and no download larger. No service scope
+// lists this route, so a service's token is refused it.
 func (h *Handlers) runYtdlp(w http.ResponseWriter, r *http.Request) {
-	if !h.forAPerson(w, r) {
+	if !h.hasDoor(w) {
 		return
 	}
 	body, ok := decodeJSON[runRequest](w, r, maxRunBody, `a run of yt-dlp, {"args": [...]}`)
@@ -68,7 +63,16 @@ func (h *Handlers) runYtdlp(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.videos.readContext(r)
 	defer cancel()
 	run, err := h.videos.door.Run(ctx, classOf(r), args, most)
-	if h.refuseVideoRead(ctx, w, r, err) {
+	switch {
+	case errors.Is(err, ytdlp.ErrRunCutShort) && errors.Is(context.Cause(ctx), errPastPublicBudget):
+		// Sending it again would read YouTube from the start and be cut again.
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeRunPastPublicBudget,
+			"the run took longer than the %v a request through the public address may take; run it through the server's own address", h.videos.budget)
+		return
+	case errors.Is(err, ytdlp.ErrDiskLow):
+		h.refuseAndLog(w, r, slog.LevelWarn, http.StatusConflict, wire.CodeDiskLow, err, "the server's disk needs room before a run")
+		return
+	case h.refuseVideoRead(ctx, w, r, err):
 		return
 	}
 	defer func() { _ = run.Close() }()
@@ -85,13 +89,13 @@ func (h *Handlers) runYtdlp(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-tar")
 	w.WriteHeader(http.StatusOK)
 	if err := writeRun(w, run, h.now()); err != nil {
-		h.log.InfoContext(r.Context(), "the answer of a run of yt-dlp ended early", "err", err)
+		h.log.ErrorContext(r.Context(), "the answer of a run of yt-dlp ended before its end entry", "err", err)
 	}
 }
 
 // writeRun writes run as a tar stream: its stdout, its stderr and its exit
 // code, each stamped at now, then each file it wrote under runFiles with the
-// time yt-dlp gave it.
+// time yt-dlp gave it, then runEnd.
 func writeRun(w io.Writer, run *ytdlp.Run, now time.Time) error {
 	archive := tar.NewWriter(w)
 	for _, stream := range []struct{ name, path string }{{runStdout, run.StdoutPath()}, {runStderr, run.StderrPath()}} {
@@ -115,6 +119,9 @@ func writeRun(w io.Writer, run *ytdlp.Run, now time.Time) error {
 			return err
 		}
 	}
+	if err := archive.WriteHeader(&tar.Header{Name: runEnd, Mode: 0o644, ModTime: now}); err != nil {
+		return err
+	}
 	return archive.Close()
 }
 
@@ -136,37 +143,59 @@ func addFile(archive *tar.Writer, name, path string, modified time.Time) error {
 	return err
 }
 
-// leaseAnswer is the body of POST /api/v1/ytdlp/leases: when the door's hold
-// for the caller's own read ends.
+// leaseAnswer is the body of POST /api/v1/ytdlp/leases: the lease's id, which
+// its outcome names, and when the door's hold for the caller's own read ends.
 type leaseAnswer struct {
+	ID        string `json:"id"`
 	HeldUntil string `json:"held_until"`
 }
 
 // leaseYtdlp holds the door for a read that the caller makes itself, once its
 // turn comes, and answers when the hold ends. The pause and the busy wait
-// answer as a read's do.
+// answer as a read's do. No service scope lists this route.
 func (h *Handlers) leaseYtdlp(w http.ResponseWriter, r *http.Request) {
-	if !h.forAPerson(w, r) {
+	if !h.hasDoor(w) {
 		return
 	}
 	ctx, cancel := h.videos.readContext(r)
 	defer cancel()
-	until, err := h.videos.door.Lease(ctx, classOf(r))
+	lease, err := h.videos.door.Lease(ctx, classOf(r))
 	if h.refuseVideoRead(ctx, w, r, err) {
 		return
 	}
-	wire.JSON(w, http.StatusCreated, leaseAnswer{HeldUntil: store.Timestamp(until)})
+	wire.JSON(w, http.StatusCreated, leaseAnswer{ID: lease.ID, HeldUntil: store.Timestamp(lease.HeldUntil)})
 }
 
-// forAPerson is whether r is a person's, on a server with a door to run
-// yt-dlp through. ok is false once it has answered. LimitServices already
-// keeps a service from PersonRoutes, and this holds the same line should a
-// scope ever list one.
-func (h *Handlers) forAPerson(w http.ResponseWriter, r *http.Request) bool {
-	if classOf(r) == ytdlp.Service {
-		wire.Refuse(w, http.StatusForbidden, wire.CodeOutsideServiceScope, "%s %s is a person's alone, and no service's scope reaches it", r.Method, r.URL.Path)
-		return false
+// maxOutcomeBody bounds the body of a lease's outcome, the tail of a read's
+// stderr with room to spare.
+const maxOutcomeBody = 128 << 10
+
+// leaseOutcome is the body of PUT /api/v1/ytdlp/leases/{id}/outcome: how the
+// caller's own read ended, and the tail of what its yt-dlp wrote to stderr.
+type leaseOutcome struct {
+	ExitCode int    `json:"exit_code"`
+	Stderr   string `json:"stderr"`
+}
+
+// endLease takes how the read a lease held for ended, and lets the door go.
+// Where YouTube refused that read, the door pauses as it does for a read of
+// its own. It answers 204 whatever the read met. No service scope lists this
+// route.
+func (h *Handlers) endLease(w http.ResponseWriter, r *http.Request) {
+	if !h.hasDoor(w) {
+		return
 	}
+	body, ok := decodeJSON[leaseOutcome](w, r, maxOutcomeBody, `how a read ended, {"exit_code": 1, "stderr": "..."}`)
+	if !ok {
+		return
+	}
+	h.videos.door.EndLease(r.PathValue("id"), body.ExitCode, body.Stderr)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// hasDoor is whether the server has a door to run yt-dlp through. ok is false
+// once it has answered 503.
+func (h *Handlers) hasDoor(w http.ResponseWriter) bool {
 	if h.videos == nil {
 		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsUnavailable, "this server runs no yt-dlp: it has none")
 		return false

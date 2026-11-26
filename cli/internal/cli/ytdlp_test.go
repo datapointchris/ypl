@@ -18,8 +18,9 @@ import (
 var written = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
 
 // runAnswer is a run's answer as the server writes it: what yt-dlp printed,
-// the code it exited with, and each file it wrote, as one tar.
-func runAnswer(t *testing.T, code int, files map[string]string) http.HandlerFunc {
+// the code it exited with, each file it wrote, and the end where ended holds,
+// as one tar.
+func runAnswer(t *testing.T, code int, files map[string]string, ended bool) http.HandlerFunc {
 	t.Helper()
 	entries := [][2]string{
 		{"stdout", "[info] Writing video subtitles to: x.en.vtt\n"},
@@ -28,6 +29,9 @@ func runAnswer(t *testing.T, code int, files map[string]string) http.HandlerFunc
 	}
 	for name, content := range files {
 		entries = append(entries, [2]string{"files/" + name, content})
+	}
+	if ended {
+		entries = append(entries, [2]string{"end", ""})
 	}
 	var answer bytes.Buffer
 	archive := tar.NewWriter(&answer)
@@ -50,17 +54,17 @@ func runAnswer(t *testing.T, code int, files map[string]string) http.HandlerFunc
 }
 
 // The command is yt-dlp run elsewhere: what it typed is sent as typed, what
-// yt-dlp printed is printed on the stream it printed on, the caption file
-// lands in this directory under the name -o gave it, and the exit code is
-// yt-dlp's.
-func TestYtdlpWritesWhatTheRunWroteHereAndExitsWithItsCode(t *testing.T) {
-	f := newFixture(t, runAnswer(t, 1, map[string]string{"x.en.vtt": "WEBVTT\n"}))
+// yt-dlp printed is printed on the stream it printed on, and the caption file
+// lands in this directory under the name -o gave it. yt-dlp's own code is
+// said rather than returned, so its 2 is no usage error of this command's.
+func TestYtdlpWritesWhatTheRunWroteHereAndExitsOneWhereYtdlpFailed(t *testing.T) {
+	f := newFixture(t, runAnswer(t, 2, map[string]string{"x.en.vtt": "WEBVTT\n"}, true))
 	here := t.TempDir()
 	t.Chdir(here)
 	typed := []string{"--skip-download", "--write-auto-subs", "-o", "x.%(ext)s", "https://youtu.be/Wr1tt3nVid0"}
 	got := f.run(append([]string{"ytdlp", "--"}, typed...)...)
 	if got.code != 1 || !strings.Contains(got.out, "Writing video subtitles") || !strings.Contains(got.err, "WARNING: a warning") {
-		t.Fatalf("exited %d, printing %q and %q; want yt-dlp's 1 and each stream on its own", got.code, got.out, got.err)
+		t.Fatalf("exited %d, printing %q and %q; want 1 for yt-dlp's 2, and each stream on its own", got.code, got.out, got.err)
 	}
 	caption, err := os.ReadFile(filepath.Join(here, "x.en.vtt"))
 	if err != nil || string(caption) != "WEBVTT\n" {
@@ -87,11 +91,32 @@ func TestYtdlpWritesWhatTheRunWroteHereAndExitsWithItsCode(t *testing.T) {
 	}
 
 	// An answer naming a file outside this directory writes nothing there.
-	f = newFixture(t, runAnswer(t, 0, map[string]string{"../escaped": "x"}))
-	if escaped := f.run("ytdlp", "--", "https://youtu.be/Wr1tt3nVid0"); escaped.code != 1 || !strings.Contains(escaped.err, "outside this directory") {
+	f = newFixture(t, runAnswer(t, 0, map[string]string{"../escaped": "x"}, true))
+	if escaped := f.run("ytdlp", "--", "https://youtu.be/Wr1tt3nVid0"); escaped.code != 1 {
 		t.Errorf("an answer climbing out exited %d saying %q, want it refused", escaped.code, escaped.err)
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(here), "escaped")); err == nil {
 		t.Error("the answer wrote outside the directory the command ran in")
+	}
+
+	// An answer that stops between two files fails, though yt-dlp ended well,
+	// since a file the run wrote may be missing.
+	f = newFixture(t, runAnswer(t, 0, map[string]string{"x.en.vtt": "WEBVTT\n"}, false))
+	if cut := f.run("ytdlp", "--", "https://youtu.be/Wr1tt3nVid0"); cut.code != 1 {
+		t.Errorf("an answer with no end exited %d saying %q, want 1", cut.code, cut.err)
+	}
+}
+
+// A door busy through every attempt, as while another person's long run holds
+// it, ends the command with 4. That is the code for an answer that may come
+// later, rather than asking again for as long as the other run takes.
+func TestYtdlpGivesUpOnADoorBusyThroughEveryAttemptWithFour(t *testing.T) {
+	f := newFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		refuses(http.StatusServiceUnavailable, "youtube_reads_busy", "the server's yt-dlp stayed busy with other reads")(w, r)
+	})
+	got := f.run("ytdlp", "--", "https://youtu.be/Wr1tt3nVid0")
+	if got.code != 4 || len(f.writes()) != doorAttempts {
+		t.Errorf("exited %d after %d runs asked for, saying %q; want 4 after %d", got.code, len(f.writes()), got.err, doorAttempts)
 	}
 }

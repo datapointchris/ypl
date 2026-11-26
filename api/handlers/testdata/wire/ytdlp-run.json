@@ -2,5 +2,6 @@
   "stdout",
   "stderr",
   "exit-code",
-  "files/x.en.vtt"
+  "files/x.en.vtt",
+  "end"
 ]

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -26,6 +28,21 @@ const unreadLimit = 30 * time.Second
 // stderrKept bounds how much of a failed run's stderr is read for why it
 // failed. yt-dlp writes the error that ended a run last.
 const stderrKept = 1 << 20
+
+// DiskFloor is the least free room a run leaves on the disk it writes to. The
+// server's store may share that disk, and a write it cannot make fails a play,
+// a sync or the record of a pause.
+const DiskFloor = 1 << 30
+
+// diskEvery is how often a run's disk is read for its free room.
+const diskEvery = time.Second
+
+// ErrDiskLow is a run stopped once the disk it writes to fell below DiskFloor.
+var ErrDiskLow = errors.New("the run stopped, since the server's disk had too little room left")
+
+// ErrRunCutShort is a run that began, and whose caller stopped waiting before
+// it ended. It wraps the caller's own error.
+var ErrRunCutShort = errors.New("the run began, and its caller stopped waiting before it ended")
 
 // Run is a person's yt-dlp run as it ended: its exit code, what it printed,
 // and the files it wrote. Close removes them.
@@ -101,11 +118,12 @@ func (r *Run) Size() (int64, error) {
 // is larger than maxBytes.
 //
 // A run that yt-dlp ended, whatever its exit code, is answered as it ended:
-// the exit code is the person's to read, and it moves the door's failures in
-// a row as a read's error would. A run with no input asks YouTube nothing, so
-// it does not wait at the door. The error wraps ErrRateLimited where YouTube
-// refused the address, which stops the run at once, and is the door's own
-// refusal where no turn came.
+// the exit code is the person's to read, and it moves the runs' own failures
+// in a row as a read's error would. A run with no input asks YouTube nothing,
+// so it does not wait at the door. The error wraps ErrRateLimited where
+// YouTube refused the address, which stops the run at once, and is the door's
+// own refusal where no turn came. It wraps ErrRunCutShort where ctx ended once
+// the run had begun, and ErrDiskLow where the disk filled.
 func (d *Door) Run(ctx context.Context, class Class, args RunArguments, maxBytes int64) (*Run, error) {
 	argv := args.argv(d.binary.sleeps, maxBytes)
 	if len(args.inputs) == 0 {
@@ -117,14 +135,16 @@ func (d *Door) Run(ctx context.Context, class Class, args RunArguments, maxBytes
 		}
 		readCtx, cancel := context.WithTimeout(ctx, unreadLimit)
 		defer cancel()
-		return d.binary.passThrough(readCtx, argv)
+		return d.binary.passThrough(readCtx, argv, d.diskFloor)
 	}
 	// made is the run the read made, which through drops where the caller left
 	// or the door closed as it ended, and which is then removed here.
 	var made *Run
-	terms := readTerms{class: class, subject: strings.Join(args.inputs, " "), limit: RunLimit}
+	began := false
+	terms := readTerms{class: class, subject: strings.Join(args.inputs, " "), limit: RunLimit, run: true}
 	run, err := through(ctx, d, terms, func(ctx context.Context) (*Run, error) {
-		run, err := d.binary.passThrough(ctx, argv)
+		began = true
+		run, err := d.binary.passThrough(ctx, argv, d.diskFloor)
 		if err != nil {
 			return nil, err
 		}
@@ -143,16 +163,20 @@ func (d *Door) Run(ctx context.Context, class Class, args RunArguments, maxBytes
 	case run != nil:
 		return run, nil
 	}
+	if began && ctx.Err() != nil {
+		return nil, fmt.Errorf("%w: %w", ErrRunCutShort, err)
+	}
 	return nil, err
 }
 
 // argv is what a run passes yt-dlp: the person's options, then what every
-// run passes, each sleep at least sleeps, the smaller of the person's
-// --max-filesize and maxBytes, and the inputs after --.
+// read passes with each sleep at least sleeps, then runOnly, the smaller of the
+// person's --max-filesize and maxBytes, and the inputs after --. What ypl adds
+// comes after the person's options, so yt-dlp keeps ypl's where both name one.
 func (a RunArguments) argv(sleeps Sleeps, maxBytes int64) []string {
 	args := append([]string{}, a.options...)
-	args = append(args, "--ignore-config", "--no-plugin-dirs", "--use-extractors=youtube.*")
-	args = append(args, sleeps.longerOf(a.sleeps).arguments()...)
+	args = append(args, paced(sleeps.longerOf(a.sleeps))...)
+	args = append(args, runOnly...)
 	most := a.maxFilesize
 	if maxBytes > 0 && (most == 0 || most > maxBytes) {
 		most = maxBytes
@@ -197,8 +221,9 @@ func (r *Run) verdict() error {
 // passThrough runs argv in a new directory, writing yt-dlp's two streams
 // beside the directory it works in. It stops yt-dlp at the first error line
 // saying YouTube refused the address, since reading on is what turns a pause
-// into a block.
-func (b Binary) passThrough(ctx context.Context, argv []string) (run *Run, err error) {
+// into a block. It stops it too once the disk holds less than floor bytes
+// free.
+func (b Binary) passThrough(ctx context.Context, argv []string, floor int64) (run *Run, err error) {
 	dir, err := os.MkdirTemp("", "ypl-run-")
 	if err != nil {
 		return nil, err
@@ -231,11 +256,18 @@ func (b Binary) passThrough(ctx context.Context, argv []string) (run *Run, err e
 	cmd.Stdout = stdout
 	cmd.Stderr = io.MultiWriter(stderr, watch)
 	cmd.WaitDelay = waitDelay
+	diskLow := make(chan error, 1)
+	var watching sync.WaitGroup
+	watching.Go(func() { watchDisk(runCtx, dir, floor, stop, diskLow) })
 	ran := cmd.Run()
+	stop()
+	watching.Wait()
 	var exit *exec.ExitError
 	switch {
 	case ctx.Err() != nil:
 		return nil, ctx.Err()
+	case len(diskLow) > 0:
+		return nil, <-diskLow
 	case watch.refused != nil:
 		return nil, watch.refused
 	case errors.As(ran, &exit):
@@ -244,6 +276,36 @@ func (b Binary) passThrough(ctx context.Context, argv []string) (run *Run, err e
 		return nil, ran
 	}
 	return made, nil
+}
+
+// watchDisk reads the free room on dir's disk at once and every diskEvery
+// until ctx ends. Once it falls below floor, it sends ErrDiskLow to low and
+// stops the run.
+func watchDisk(ctx context.Context, dir string, floor int64, stop context.CancelFunc, low chan<- error) {
+	tick := time.NewTicker(diskEvery)
+	defer tick.Stop()
+	for {
+		if free, err := freeBytes(dir); err == nil && free < floor {
+			low <- fmt.Errorf("%w: %d bytes free, under the %d it keeps", ErrDiskLow, free, floor)
+			stop()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// freeBytes is the room left to an unprivileged writer on the disk that holds
+// path.
+func freeBytes(path string) (int64, error) {
+	var disk syscall.Statfs_t
+	if err := syscall.Statfs(path, &disk); err != nil {
+		return 0, err
+	}
+	return int64(disk.Bavail) * disk.Bsize, nil
 }
 
 // refusalWatch reads yt-dlp's stderr a line at a time as it is written, and

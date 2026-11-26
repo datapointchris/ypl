@@ -158,7 +158,9 @@ type State struct {
 // The resolver is handed to mpv's ytdl_hook after the caller's own arguments,
 // so a ytdl_path the caller passed does not replace it. It is appended to the
 // script options rather than setting them, so every other one the person's
-// config sets is kept.
+// config sets is kept. The hook is asked to resolve before mpv opens a URL
+// itself, since mpv's own open of a watch URL is a request to YouTube that
+// the resolver never sees.
 //
 // started is handed the player's process id once it is running, so a reader of
 // the socket can tell this player from another that took the same path.
@@ -176,7 +178,8 @@ func Play(ctx context.Context, socketPath string, extra Arguments, urls WatchURL
 	}
 	arguments = append(arguments, extra...)
 	if resolver.Path != "" {
-		arguments = append(arguments, "--script-opts-append=ytdl_hook-ytdl_path="+resolver.Path)
+		arguments = append(arguments, "--script-opts-append=ytdl_hook-ytdl_path="+resolver.Path,
+			"--script-opts-append=ytdl_hook-try_ytdl_first=yes")
 	}
 	arguments = append(arguments, urls...)
 

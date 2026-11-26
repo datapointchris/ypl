@@ -29,7 +29,8 @@ type VideoReader interface {
 	Transcript(ctx context.Context, class ytdlp.Class, id, lang string) (ytdlp.Transcript, error)
 	Audio(ctx context.Context, class ytdlp.Class, id string, maxBytes int64) (*ytdlp.Audio, error)
 	Run(ctx context.Context, class ytdlp.Class, args ytdlp.RunArguments, maxBytes int64) (*ytdlp.Run, error)
-	Lease(ctx context.Context, class ytdlp.Class) (time.Time, error)
+	Lease(ctx context.Context, class ytdlp.Class) (ytdlp.Lease, error)
+	EndLease(id string, exitCode int, stderr string)
 	PausedUntil() (ytdlp.Pause, bool)
 	Pace() ytdlp.Pace
 }
@@ -296,7 +297,7 @@ func (h *Handlers) refuseVideoRead(ctx context.Context, w http.ResponseWriter, r
 	case errors.Is(err, ytdlp.ErrNoCaptions):
 		wire.Refuse(w, http.StatusNotFound, wire.CodeNoCaptions, "the video has no caption track in that language")
 	case errors.Is(err, ytdlp.ErrTooLarge):
-		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeAudioTooLarge,
+		wire.Refuse(w, http.StatusUnprocessableEntity, wire.CodeAnswerTooLarge,
 			"the video's audio is larger than %d bytes, the most this server sends through its public address; ask its own address instead", h.videos.maxPublic)
 	case errors.Is(err, ytdlp.ErrUnreadable):
 		wire.RefuseVideos(w, http.StatusUnprocessableEntity, wire.CodeVideoUnavailable, []string{r.PathValue("id")}, "YouTube lets no signed-out read reach this video")
@@ -315,6 +316,10 @@ func (h *Handlers) refuseVideoRead(ctx context.Context, w http.ResponseWriter, r
 func (h *Handlers) refuseAtTheDoor(w http.ResponseWriter, r *http.Request, err error) bool {
 	pause, paused := ytdlp.PauseOf(err)
 	switch {
+	case paused && pause.Cause == ytdlp.PausedRunsFailing:
+		retryAfter(w, pause.Until.Sub(h.now()))
+		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsPaused,
+			"the server runs no one's yt-dlp until %s, after runs failed in a row; its own reads go on", store.Timestamp(pause.Until))
 	case paused:
 		retryAfter(w, pause.Until.Sub(h.now()))
 		wire.Refuse(w, http.StatusServiceUnavailable, wire.CodeYouTubeReadsPaused,

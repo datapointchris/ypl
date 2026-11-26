@@ -62,10 +62,12 @@ func (f *fakeDoor) Run(_ context.Context, class ytdlp.Class, _ ytdlp.RunArgument
 }
 
 // Lease is held for LeaseHold from arrival.
-func (f *fakeDoor) Lease(_ context.Context, class ytdlp.Class) (time.Time, error) {
+func (f *fakeDoor) Lease(_ context.Context, class ytdlp.Class) (ytdlp.Lease, error) {
 	f.classes = append(f.classes, class)
-	return arrival.Add(ytdlp.LeaseHold), f.err
+	return ytdlp.Lease{ID: "LEASE", HeldUntil: arrival.Add(ytdlp.LeaseHold)}, f.err
 }
+
+func (f *fakeDoor) EndLease(string, int, string) {}
 
 func (f *fakeDoor) Pace() ytdlp.Pace { return ytdlp.DefaultPace }
 

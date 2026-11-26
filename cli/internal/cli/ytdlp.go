@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/datapointchris/goclikit"
 	"github.com/spf13/cobra"
@@ -22,9 +21,12 @@ func (a *app) ytdlpCommand() *cobra.Command {
 		GroupID: groupVideos,
 		Long: "Runs yt-dlp on the server, through the one door every read of YouTube takes, so\n" +
 			"reads from here and the server's own never come close together. What it prints\n" +
-			"is printed here, the files it writes land where -o names them under this\n" +
-			"directory, and this exits with its exit code. The server adds its own sleeps\n" +
-			"between requests, and keeps a longer one given here.\n\n" +
+			"is printed here, and the files it writes land where -o names them under this\n" +
+			"directory. The server adds its own sleeps between requests, and keeps a longer\n" +
+			"one given here.\n\n" +
+			"This exits 0 where yt-dlp ended well or stopped at a --max-downloads or\n" +
+			"--break-on limit, and 1 naming yt-dlp's exit code where it failed. It exits 4\n" +
+			"where the server's door stayed busy through every attempt.\n\n" +
 			"Only YouTube links, video ids and ytsearch: are read. Cookies, logins, and any\n" +
 			"option that runs or reads something on the server are refused, naming why.\n\n" +
 			"A URL the run prints, such as a stream's from -g, is bound to the server's\n" +
@@ -43,7 +45,8 @@ func (a *app) ytdlpCommand() *cobra.Command {
 			if err != nil {
 				return reported(err)
 			}
-			run, err := runWhenTheDoorOpens(cmd.Context(), client, args, func(waiting string) { nothing(cmd, waiting) })
+			run, err := atTheDoor(cmd.Context(), func(ctx context.Context) (*api.Run, error) { return client.RunYtdlp(ctx, args) },
+				false, func(waiting string) { nothing(cmd, waiting) })
 			var refusal *api.Refusal
 			if errors.As(err, &refusal) && refusal.Code == api.CodeArgumentRefused {
 				return goclikit.UsageError(err)
@@ -68,37 +71,24 @@ func (a *app) ytdlpCommand() *cobra.Command {
 					return err
 				}
 			}
-			if code != 0 {
-				return exitCode(code)
+			// yt-dlp's code is said rather than returned, since it spends 2
+			// on what yt-dlp itself refused and -1 on a signal.
+			switch {
+			case code == 0, code == ytdlpStoppedAtLimit:
+				return nil
+			case code < 0:
+				nothing(cmd, "yt-dlp was stopped by a signal on the server.")
+			default:
+				nothing(cmd, fmt.Sprintf("yt-dlp exited %d.", code))
 			}
-			return nil
+			return exitCode(1)
 		},
 	}
 }
 
-// runWhenTheDoorOpens runs args on the server, sending them again while the
-// door is busy, which leaves the run unstarted. It says once why it waits. A
-// paused door is answered as a failure naming when it opens, since a pause can
-// last a day.
-func runWhenTheDoorOpens(ctx context.Context, client *api.Client, args []string, waiting func(string)) (*api.Run, error) {
-	said := false
-	for {
-		run, err := client.RunYtdlp(ctx, args)
-		var refusal *api.Refusal
-		if !errors.As(err, &refusal) || refusal.Code != api.CodeReadsBusy {
-			return run, err
-		}
-		if !said {
-			waiting(fmt.Sprintf("Waiting for a turn at the server's door: %s.", refusal.Message))
-			said = true
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(max(refusal.RetryAfter, time.Second)):
-		}
-	}
-}
+// ytdlpStoppedAtLimit is yt-dlp's exit code for a run that stopped at
+// --max-downloads or a --break-on option, as it was asked to.
+const ytdlpStoppedAtLimit = 101
 
 // writeRunFile writes file under dir at the path yt-dlp gave it, with its
 // time, replacing a file already there. A path that is absolute or climbs out

@@ -17,6 +17,15 @@ type exitCode int
 
 func (e exitCode) Error() string { return "" }
 
+// noAnswer is a command whose server gave no answer it could act on, such as
+// a door busy through every attempt. The same command run later can work, so
+// it exits 4.
+type noAnswer struct{ err error }
+
+func (n *noAnswer) Error() string { return n.err.Error() }
+
+func (n *noAnswer) Unwrap() error { return n.err }
+
 // moved is a hidden command answering name with the command line to type
 // instead. Whatever it is given, it refuses as a usage mistake, so a habit or
 // a script meets the command's place rather than a bare "unknown command".
@@ -40,7 +49,8 @@ func moved(name, to string) *cobra.Command {
 }
 
 // exitCodeFor is the process exit code for err: 0 for success, 2 for a usage
-// mistake, an exitCode's own value, and 1 for anything else.
+// mistake, 4 where no answer came, an exitCode's own value, and 1 for
+// anything else.
 //
 // One marker covers both what this tree refuses and what cobra refuses before
 // any RunE runs, because goclikit.UsageError wraps to the same sentinel cobra's
@@ -55,6 +65,10 @@ func exitCodeFor(err error) int {
 	}
 	if errors.Is(err, goclikit.ErrUsage) {
 		return 2
+	}
+	var none *noAnswer
+	if errors.As(err, &none) {
+		return 4
 	}
 	return 1
 }
