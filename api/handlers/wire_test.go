@@ -9,6 +9,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,7 +17,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/datapointchris/ypl/api/tracklist"
 	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
@@ -48,9 +51,20 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 	if set := f.do(http.MethodPut, "/api/v1/youtube/session", fmt.Sprintf(`{"cookie_jar": %q}`, cookieJar)); set.Code != http.StatusOK {
 		t.Fatalf("setting the session answered %d: %s", set.Code, set.Body)
 	}
-	f.h.ReadVideosWith(&fakeDoor{transcript: ytdlp.Transcript{
-		VideoID: "a", Track: ytdlp.Track{Language: "en", Kind: ytdlp.Manual}, Text: "a written line of the mix ",
-	}}, "ypl.example.com")
+	// A captions read with every field filled, so a client's decode of the
+	// captions document meets each one.
+	duration := int64(3600)
+	f.h.ReadVideosWith(&fakeDoor{
+		captions: &ytdlp.Captions{
+			VideoID: "a", Title: "A night of deep house", Description: "Recorded live.\n0:00 Opening\n30:00 Peak",
+			DurationSeconds: &duration, Language: "en", Track: &ytdlp.Track{Language: "en", Kind: ytdlp.Manual},
+			Segments: []ytdlp.Segment{{StartMs: 0, DurationMs: 2500, Text: "welcome in"}, {StartMs: 2500, DurationMs: 3000, Text: "here we go"}},
+			Chapters: []tracklist.Chapter{{StartSeconds: 0, EndSeconds: 1800, Title: "Opening"}, {StartSeconds: 1800, EndSeconds: 3600, Title: "Peak"}},
+		},
+		transcript: ytdlp.Transcript{
+			VideoID: "a", Track: ytdlp.Track{Language: "en", Kind: ytdlp.Manual}, Text: "a written line of the mix ",
+		},
+	}, "ypl.example.com")
 	// An edit no sync has pushed, so the status document lists a push rather
 	// than none.
 	if edited := f.editItems("PLB", []string{"e", "c", "b"}, "*"); edited.Code != http.StatusOK {
@@ -79,6 +93,7 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		{name: "tags", target: "/api/v1/tags"},
 		{name: "history", target: "/api/v1/youtube/history"},
 		{name: "transcript", target: "/api/v1/youtube/videos/a/transcript?lang=en"},
+		{name: "captions", target: "/api/v1/youtube/videos/a/captions"},
 		{name: "version", target: "/api/v1/version"},
 	} {
 		rec := f.get(doc.target)
@@ -155,6 +170,22 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		t.Fatalf("encode the YouTube id pattern: %v", err)
 	}
 	pinned(t, "youtube_id_pattern", "youtubeID", body)
+
+	// The longest that the door holds a person's or a service's read for its
+	// turn, and that the captions and audio routes hold a request before their
+	// answer begins, in whole seconds. A client that gives up sooner abandons a
+	// read that the server goes on making. A request through the public address
+	// ends sooner, at publicReadBudget.
+	seconds := func(d time.Duration) int64 { return int64(math.Ceil(d.Seconds())) }
+	body, err = json.Marshal(struct {
+		DoorWaitSeconds     int64 `json:"door_wait_seconds"`
+		CaptionsReadSeconds int64 `json:"captions_read_seconds"`
+		AudioReadSeconds    int64 `json:"audio_read_seconds"`
+	}{seconds(ytdlp.MostWait), seconds(ytdlp.LongestCaptionsRead), seconds(ytdlp.LongestAudioRead)})
+	if err != nil {
+		t.Fatalf("encode the video read budgets: %v", err)
+	}
+	pinned(t, "video_read_budgets", "ytdlp's longest reads", body)
 
 	// The shape of a transcript's language. The CLI refuses a language of any
 	// other shape as a usage error, and one the server refuses that the CLI

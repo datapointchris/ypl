@@ -1,0 +1,35 @@
+{
+  "video_id": "a",
+  "title": "A night of deep house",
+  "description": "Recorded live.\n0:00 Opening\n30:00 Peak",
+  "language": "en",
+  "duration_seconds": 3600,
+  "track": {
+    "language": "en",
+    "kind": "manual"
+  },
+  "segments": [
+    {
+      "start_ms": 0,
+      "duration_ms": 2500,
+      "text": "welcome in"
+    },
+    {
+      "start_ms": 2500,
+      "duration_ms": 3000,
+      "text": "here we go"
+    }
+  ],
+  "chapters": [
+    {
+      "start_seconds": 0,
+      "end_seconds": 1800,
+      "title": "Opening"
+    },
+    {
+      "start_seconds": 1800,
+      "end_seconds": 3600,
+      "title": "Peak"
+    }
+  ]
+}

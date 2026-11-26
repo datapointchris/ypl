@@ -213,6 +213,10 @@ to read them through. So are `leaseAnswerWithin` and `runAnswerWithin`, each cho
 server's own bound on the same wait.
 
 A client of the `/api/v1/youtube/` routes in another repo copies the documents it holds into its
-own suite. Two are written for such a client alone. `video_details_limit.json` holds the most ids
+own suite. Four are written for such a client alone. `video_details_limit.json` holds the most ids
 that one read of video details names. `youtube_id_pattern.json` holds the shape of a channel or
-playlist item id in a path.
+playlist item id in a path. `video_read_budgets.json` holds the longest that the door holds a read
+for its turn, and that the captions and audio routes hold a request before their answer begins.
+`ytdlp.LongestCaptionsRead` and `ytdlp.LongestAudioRead` set those two, so a client whose own
+timeout is shorter abandons reads the server goes on making. `captions.json` is the captions
+route's answer to a read with every field filled.

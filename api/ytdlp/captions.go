@@ -24,6 +24,12 @@ var ErrNoCaptions = errors.New("the video has no caption track in that language"
 // it has, then the read of the one picked.
 const captionLimit = 3 * time.Minute
 
+// LongestCaptionsRead is the longest that a person's or a service's read of a
+// video's captions or transcript holds its caller. That is MostWait for a turn,
+// captionLimit for the read, and then waitDelay for yt-dlp's output to close
+// once the limit has stopped it.
+const LongestCaptionsRead = MostWait + captionLimit + waitDelay
+
 // TrackKind says who wrote a caption track.
 type TrackKind string
 

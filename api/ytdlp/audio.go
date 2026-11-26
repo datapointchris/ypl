@@ -20,6 +20,12 @@ var ErrTooLarge = errors.New("the video's audio is larger than this read may fet
 // second.
 const audioLimit = 30 * time.Minute
 
+// LongestAudioRead is the longest that a person's or a service's read of a
+// video's audio holds its caller before the file is whole. That is MostWait for
+// a turn, audioLimit for the read, and then waitDelay for yt-dlp's output to
+// close once the limit has stopped it.
+const LongestAudioRead = MostWait + audioLimit + waitDelay
+
 // Audio is a video's best audio, fetched to a file of Size bytes at Path whose
 // extension Ext names its container. Close removes it.
 type Audio struct {

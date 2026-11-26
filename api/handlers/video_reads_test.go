@@ -12,11 +12,12 @@ import (
 	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
-// fakeDoor answers reads through the door with transcript, or with err, and
-// records each read's class and the most audio it allowed. Its audio is the
-// file audio names. Under slow, a read of captions runs until its context
-// ends.
+// fakeDoor answers reads through the door with captions or transcript, or with
+// err, and records each read's class and the most audio it allowed. Without
+// captions, a read of them finds no track. Its audio is the file audio names.
+// Under slow, a read of captions runs until its context ends.
 type fakeDoor struct {
+	captions   *ytdlp.Captions
 	transcript ytdlp.Transcript
 	audio      string
 	err        error
@@ -31,6 +32,9 @@ func (f *fakeDoor) Captions(ctx context.Context, class ytdlp.Class, id string) (
 	if f.slow {
 		<-ctx.Done()
 		return ytdlp.Captions{}, ctx.Err()
+	}
+	if f.captions != nil {
+		return *f.captions, f.err
 	}
 	return ytdlp.Captions{VideoID: id, Segments: []ytdlp.Segment{}}, f.err
 }
