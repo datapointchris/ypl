@@ -647,12 +647,13 @@ func TestPlayHandsMpvTheUrlsItCanServeAndNothingElse(t *testing.T) {
 	}
 
 	// With no playlist the library plays in the order the server draws it,
-	// asked for as much as one draw holds.
+	// asked for as much as one draw holds. This server is older than the
+	// lease route, which answers 404, so it has no door and the draw plays
+	// without a lease.
 	f = newFixture(t, serves(map[string]string{
 		"/api/v1/suggestions": `[
 		{"id": "ccccccccccc", "title": "C", "channel_title": "One", "duration_seconds": 60, "play_count": 0, "last_played_ts": null},
 		{"id": "aaaaaaaaaaa", "title": "A", "channel_title": "One", "duration_seconds": 60, "play_count": 1, "last_played_ts": "2026-01-01T00:00:00Z"}]`,
-		"/api/v1/ytdlp/leases": leased,
 	}))
 	argv = stubMpv(t, 0)
 	if got := f.run("play"); got.code != 0 {

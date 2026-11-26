@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,8 +55,9 @@ func handedLeasePath() string { return filepath.Join(goclilogin.StateDir("ypl"),
 // leaseTheDoor takes a turn at the server's door for a read that this machine
 // makes. While the door is busy it asks again, and so it does while the door is
 // paused where waitOutPause holds. It says once why it waits. A server that
-// runs no yt-dlp has no door, so the read goes ahead with no lease, and the
-// Lease is zero.
+// runs no yt-dlp has no door, and neither has one older than the lease route,
+// which answers 404. The read then goes ahead with no lease, and the Lease is
+// zero.
 func leaseTheDoor(ctx context.Context, client *api.Client, waitOutPause bool, waiting func(string)) (api.Lease, error) {
 	said := false
 	for {
@@ -65,7 +67,7 @@ func leaseTheDoor(ctx context.Context, client *api.Client, waitOutPause bool, wa
 			return lease, err
 		}
 		switch {
-		case refusal.Code == api.CodeReadsUnavailable:
+		case refusal.Code == api.CodeReadsUnavailable, refusal.Status == http.StatusNotFound:
 			return api.Lease{}, nil
 		case refusal.Code == api.CodeReadsBusy, refusal.Code == api.CodeReadsPaused && waitOutPause:
 		default:

@@ -135,7 +135,8 @@ backup of the store carries no usable session.
 The server needs yt-dlp only when it is configured to read videos. `ENRICH_PACE=off` is a
 supported configuration and starts without one. The server looks for yt-dlp at start whatever
 `ENRICH_PACE` says, and the history, video-read, run and lease routes answer 503 when it found
-none. `ypl play` reads that 503 from a lease as a server with no door, and plays without one.
+none. `ypl play` reads that 503 from a lease as a server with no door, and plays without one. It
+reads a 404 the same way, since a server older than the lease route has no door to lease either.
 
 ## Classifying another program's prose is the fragile part
 
