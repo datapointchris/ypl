@@ -157,3 +157,8 @@ it requests to reach the route `ypl server status` calls. The kinds of rating ar
 The shape of a transcript's language is the fourth: `language_pattern.json` holds the server's,
 and the CLI's wire test requires `LanguagePattern` to match. `PageSize` and `VideoSorts` are unpinned copies of a number and words the server owns, with no
 door to read them through.
+
+A client of the `/api/v1/youtube/` routes in another repo copies the documents it holds into its
+own suite. Two are written for such a client alone. `video_details_limit.json` holds the most ids
+that one read of video details names. `youtube_id_pattern.json` holds the shape of a channel or
+playlist item id in a path.
