@@ -31,8 +31,9 @@ FROM debian:13.8-slim
 
 # ca-certificates because every door out of this process is HTTPS. tzdata
 # because an operator setting TZ needs a zone database to resolve it against.
+# wget because a container healthcheck probes /ready with it.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates tzdata && \
+    apt-get install -y --no-install-recommends ca-certificates tzdata wget && \
     rm -rf /var/lib/apt/lists/*
 
 # yt-dlp ships in the image, pinned. The server reads videos unless ENRICH_PACE
@@ -42,8 +43,9 @@ RUN apt-get update && \
 # Pinned rather than floating so the image is the whole answer to what a read
 # runs, and so a yt-dlp that starts failing is a version to move off rather than
 # a change nobody chose. The release executable carries the yt-dlp-ejs its
-# release pins, 0.8.0 for this one. The checksum is the release's own
-# SHA2-256SUMS entry, and a mismatch fails the build rather than the read.
+# release pins, which the build check below names. The checksum is the
+# release's own SHA2-256SUMS entry, and a mismatch fails the build rather than
+# the read.
 ADD --chmod=0755 \
     --checksum=sha256:249ddb058234276bc449b9cd9492aad9f133bda5923c61a9e39983ae114ef17d \
     https://github.com/yt-dlp/yt-dlp/releases/download/2026.11.23/yt-dlp_linux \
@@ -59,6 +61,7 @@ COPY --from=deno /out/deno /usr/local/bin/deno
 # grep finding neither fails the build rather than a read on the deployed host.
 RUN yt-dlp --version && \
     deno --version && \
+    wget -nv --version && \
     yt-dlp -v 2>&1 | grep -E 'yt_dlp_ejs-0\.8\.0' && \
     yt-dlp -v 2>&1 | grep -E 'JS runtimes: .*deno-2\.9\.8'
 
