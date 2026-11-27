@@ -39,8 +39,8 @@ jobs:
           pipx install "yt-dlp==$(echo "$tag" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3 }')"
 
       # generated:go-api
-      # Shared by the go job and the hooks job, whose go-vet, go-build,
-      # go-mod-tidy and go-test hooks call the go on PATH.
+      # The go on PATH, which this job's tests or its Go hooks call. Each
+      # job that needs Go installs it here.
       - name: Install the Go api/go.mod names
         uses: actions/setup-go@v7
         with:
@@ -83,8 +83,8 @@ jobs:
         uses: actions/checkout@v7
 
       # generated:go-cli
-      # Shared by the go job and the hooks job, whose go-vet, go-build,
-      # go-mod-tidy and go-test hooks call the go on PATH.
+      # The go on PATH, which this job's tests or its Go hooks call. Each
+      # job that needs Go installs it here.
       - name: Install the Go cli/go.mod names
         uses: actions/setup-go@v7
         with:
@@ -117,8 +117,8 @@ jobs:
         uses: actions/checkout@v7
 
       # generated:hooks
-      # Shared by the go job and the hooks job, whose go-vet, go-build,
-      # go-mod-tidy and go-test hooks call the go on PATH.
+      # The go on PATH, which this job's tests or its Go hooks call. Each
+      # job that needs Go installs it here.
       - name: Install the Go api/go.mod names
         uses: actions/setup-go@v7
         with:
@@ -128,8 +128,8 @@ jobs:
           cache: true
           cache-dependency-path: "api/go.sum"
 
-      # Shared by the go job and the hooks job, whose go-vet, go-build,
-      # go-mod-tidy and go-test hooks call the go on PATH.
+      # The go on PATH, which this job's tests or its Go hooks call. Each
+      # job that needs Go installs it here.
       - name: Install the Go cli/go.mod names
         uses: actions/setup-go@v7
         with:
@@ -172,7 +172,8 @@ jobs:
       # install`, or a merge in the web UI, passes every hook by not running it,
       # and this is the gate that catches both. CI runs the hooks themselves
       # rather than copies of their checks, because a copy is a second spelling
-      # of the check that drifts from the first.
+      # of the check that drifts from the first. refcheck runs only at commit,
+      # because it tests `~` paths against a box, and a runner installs nothing.
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
@@ -339,10 +340,13 @@ jobs:
       # brought it, and its findings would land on the next author to touch the
       # code.
       #
+      # validate.yml is on the list too. A new hook joins this job through a
+      # change to validate.yml alone, one apply after the change to the hook
+      # config. Without it, no run would check a whole tree with the new hook.
+      #
       # The checkout is one commit deep, and diffing needs one more. pre-commit
       # falls back to a two-dot diff where the two commits share no history on
-      # disk, and refcheck's --moves reads the range as a two-dot diff too, so
-      # the base commit alone is enough.
+      # disk, so the base commit alone is enough.
       #
       # The scope is chosen once, and written to a file beside the script every
       # hook's step runs, so each hook checks the same files.
@@ -374,7 +378,8 @@ jobs:
                   .prettierignore | rustfmt.toml | .rustfmt.toml | \
                   eslint.config.* | tsconfig*.json | stylua.toml | .stylua.toml | \
                   pyproject.toml | uv.lock | go.mod | go.sum | Cargo.toml | Cargo.lock | \
-                  rust-toolchain.toml | package.json | package-lock.json | .nvmrc | .terraform.lock.hcl)
+                  rust-toolchain.toml | package.json | package-lock.json | .nvmrc | .terraform.lock.hcl | \
+                  validate.yml)
                   echo "::notice::$changed changed, so every file is checked"
                   scope=(--all-files)
                   reason="every file, because $changed changed"
@@ -536,12 +541,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash "$RUNNER_TEMP/run-hook" codespell
-
-      - name: pre-commit run refcheck
-        if: ${{ !cancelled() && steps.hook-scope.outcome == 'success' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: bash "$RUNNER_TEMP/run-hook" refcheck
 
       - name: pre-commit run gofumpt-api
         if: ${{ !cancelled() && steps.hook-scope.outcome == 'success' }}
