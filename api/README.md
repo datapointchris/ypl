@@ -320,7 +320,8 @@ A video's captions, transcript and audio are read through the same door, signed 
 or for a service with the scope. The captions route picks one track. That is the manual track in
 the video's language, else the manual English one, else the automatic track YouTube recognized from
 the audio, filed as `<language>-orig`, else the automatic track in the video's language, else the
-automatic English one. It answers the track's segments with their times, the video's chapters, and
+automatic English one. When YouTube dubs a video, it files a recognized track for each dubbed
+language. So the recognized track in the video's language wins, then a lone one, then English's. It answers the track's segments with their times, the video's chapters, and
 its title, description and length. A video with no such track answers 200 with `track` null and no
 segments.
 

@@ -151,6 +151,9 @@ func TestATrackIsPickedManualThenEnglishThenRecognizedThenTranslated(t *testing.
 		{"manual in the video's language", "de", []string{"de-DE", "en"}, []string{"de-orig", "en"}, Track{"de-DE", Manual}, true},
 		{"manual English", "de", []string{"en-GB"}, []string{"de-orig", "en"}, Track{"en-GB", Manual}, true},
 		{"automatic in the original language", "de", nil, []string{"de", "de-orig", "en", "fr"}, Track{"de-orig", Automatic}, true},
+		{"dubbed, the video's own language", "en-US", nil, []string{"ar-orig", "bn-orig", "de-DE-orig", "en", "en-orig"}, Track{"en-orig", Automatic}, true},
+		{"dubbed, a regional original", "de", nil, []string{"ar-orig", "de-DE-orig", "en-orig"}, Track{"de-DE-orig", Automatic}, true},
+		{"dubbed, no video language", "", nil, []string{"ar-orig", "en-orig"}, Track{"en-orig", Automatic}, true},
 		{"automatic English", "", nil, []string{"en", "fr"}, Track{"en", Automatic}, true},
 		{"none", "de", nil, []string{"fr"}, Track{}, false},
 	}

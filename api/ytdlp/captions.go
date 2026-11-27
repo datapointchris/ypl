@@ -301,10 +301,8 @@ func pickTrack(videoLanguage string, manual, automatic []string) (Track, bool) {
 	if lang, ok := matching(manual, "en", "en"); ok {
 		return Track{Language: lang, Kind: Manual}, true
 	}
-	for _, lang := range automatic {
-		if strings.HasSuffix(lang, "-orig") {
-			return Track{Language: lang, Kind: Automatic}, true
-		}
+	if lang, ok := recognized(automatic, videoLanguage, base); ok {
+		return Track{Language: lang, Kind: Automatic}, true
 	}
 	if lang, ok := matching(automatic, videoLanguage, base); ok {
 		return Track{Language: lang, Kind: Automatic}, true
@@ -313,6 +311,39 @@ func pickTrack(videoLanguage string, manual, automatic []string) (Track, bool) {
 		return Track{Language: "en", Kind: Automatic}, true
 	}
 	return Track{}, false
+}
+
+// recognized is the automatic track that YouTube recognized from an audio
+// track, filed as <language>-orig, and false where it cannot tell which one is
+// the video's. A video that YouTube dubbed carries one such track for each
+// dubbed language. So the track in the video's language comes first, then a
+// lone recognized track, then English's.
+func recognized(automatic []string, exact, base string) (string, bool) {
+	var recognized []string
+	for _, lang := range automatic {
+		if strings.HasSuffix(lang, "-orig") {
+			recognized = append(recognized, lang)
+		}
+	}
+	if base != "" {
+		for _, want := range []string{exact + "-orig", base + "-orig"} {
+			if slices.Contains(recognized, want) {
+				return want, true
+			}
+		}
+		for _, lang := range recognized {
+			if strings.HasPrefix(lang, base+"-") {
+				return lang, true
+			}
+		}
+	}
+	switch {
+	case len(recognized) == 1:
+		return recognized[0], true
+	case slices.Contains(recognized, "en-orig"):
+		return "en-orig", true
+	}
+	return "", false
 }
 
 // matching is the language of languages that is exact, else the one that is
