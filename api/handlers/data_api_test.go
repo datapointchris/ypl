@@ -28,6 +28,7 @@ type fakeDataAPI struct {
 	deleted         []youtube.ItemID
 	hold            chan struct{}
 	refused         error
+	comments        []youtube.Comment
 }
 
 func (f *fakeDataAPI) spend(units int64) {
@@ -70,7 +71,10 @@ func (f *fakeDataAPI) VideoDetails(_ context.Context, ids []youtube.VideoID) ([]
 
 func (f *fakeDataAPI) TopComments(context.Context, youtube.VideoID) ([]youtube.Comment, error) {
 	f.spend(1)
-	return nil, youtube.ErrCommentsDisabled
+	if f.comments == nil {
+		return nil, youtube.ErrCommentsDisabled
+	}
+	return f.comments, nil
 }
 
 func (f *fakeDataAPI) Requests() int64 { return f.requests.Load() }

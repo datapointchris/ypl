@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/datapointchris/ypl/api/tracklist"
+	"github.com/datapointchris/ypl/api/youtube"
 	"github.com/datapointchris/ypl/api/ytdlp"
 )
 
@@ -106,6 +107,20 @@ func TestTheWireDocumentsAreWhatTheServerAnswers(t *testing.T) {
 		}
 		pinned(t, doc.name, doc.target, body)
 	}
+
+	// A video's top comments, one by a commenter with a channel and one by a
+	// commenter without, so both shapes of author_channel_id cross the seam.
+	// It is pinned after the loop because a Data API makes the status
+	// document list its quota.
+	f.h.CallDataAPIWith(&fakeDataAPI{comments: []youtube.Comment{
+		{ID: "Ugw1", Author: "a listener", AuthorChannelID: "UClistener", Text: "the second hour is the one", LikeCount: 12, ReplyCount: 2, PublishedAt: "2026-11-20T08:00:00Z"},
+		{ID: "Ugw2", Author: "a passer-by", Text: "track id at 41:10?", LikeCount: 3, PublishedAt: "2026-11-21T09:30:00Z"},
+	}})
+	commented := f.get("/api/v1/youtube/videos/a/comments")
+	if commented.Code != http.StatusOK {
+		t.Fatalf("the comments answered %d: %s", commented.Code, commented.Body)
+	}
+	pinned(t, "comments", "/api/v1/youtube/videos/a/comments", commented.Body.Bytes())
 
 	// A lease of the door, which `ypl play` takes before each stream.
 	leased := f.do(http.MethodPost, "/api/v1/ytdlp/leases", "")
